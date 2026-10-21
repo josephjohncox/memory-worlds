@@ -88,7 +88,7 @@ the secret value never enters command-line arguments:
 
 ```sh
 umask 077
-python -c 'import secrets; print(secrets.token_hex(32), end="")' \
+mise exec -- python -c 'import secrets; print(secrets.token_hex(32), end="")' \
   > /private/operator/falkordb-password
 mise run kubectl -- --context YOUR_CONTEXT create namespace memory-worlds
 mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
@@ -230,9 +230,8 @@ cross-store procedure described in [deployments.md](deployments.md#backups-and-r
 Validate the packaged deployment contract locally:
 
 ```sh
-python scripts/check-helm.py --helm /path/to/helm
-helm lint --strict deploy/helm/memory-worlds
-helm package deploy/helm/memory-worlds --destination /private/build-output
+mise run helm:check
+mise run helm -- package deploy/helm/memory-worlds --destination /private/build-output
 ```
 
 The validator checks six profiles, rejects unsafe values, and checks security,

@@ -12,13 +12,14 @@ The package is licensed under Apache-2.0.
 ## Install
 
 ```sh
-cd packages/pi
-npm ci
-npm run build
-pi install "$(pwd)"
+mise install --locked
+mise run pi:build
+mise exec -- node packages/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js \
+  install "$(pwd)/packages/pi"
 ```
 
-For one invocation, use `pi --extension ./dist/extension.js`. `npm pack` builds an
+Run these commands from the repository root. For one invocation, use the installed
+`pi --extension ./packages/pi/dist/extension.js`. `mise run pi:pack` builds an
 archive containing compiled code, type declarations, README and LICENSE. The build
 cleans its owned `dist` directory before compilation.
 
@@ -249,10 +250,9 @@ write or publish memory. `correctionHints` defaults true and is independently co
 ## Verify
 
 ```sh
-npm test
-npm run smoke
-npm run smoke:service
-npm pack --dry-run
+mise run pi:verify
+mise run pi:smoke
+mise run pi:pack -- --dry-run
 ```
 
 Tests cover scope authorization, UUID bindings, audience flow, source/graph modes,

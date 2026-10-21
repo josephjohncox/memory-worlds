@@ -83,15 +83,15 @@ paid provider.
 umask 077
 cat /private/operator/providers.env /private/operator/okta.env \
   > /private/operator/runtime.env
-kubectl --context YOUR_CONTEXT -n memory-worlds create secret generic \
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
   memory-worlds-runtime --from-env-file=/private/operator/runtime.env \
-  --dry-run=client -o yaml | kubectl --context YOUR_CONTEXT apply -f -
-helm --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
+  --dry-run=client -o yaml | mise run kubectl -- --context YOUR_CONTEXT apply -f -
+mise run helm -- --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
   deploy/helm/memory-worlds --namespace memory-worlds \
   -f deploy/helm/examples/okta.yaml -f /private/operator/installation-values.yaml \
   --wait --timeout 5m
-kubectl --context YOUR_CONTEXT -n memory-worlds rollout restart statefulset/memory-worlds
-kubectl --context YOUR_CONTEXT -n memory-worlds rollout status statefulset/memory-worlds
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds rollout restart statefulset/memory-worlds
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds rollout status statefulset/memory-worlds
 ```
 
 The [Helm guide](helm.md) covers image digests, bootstrap, storage, FalkorDB
