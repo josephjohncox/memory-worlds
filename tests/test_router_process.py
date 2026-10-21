@@ -252,11 +252,15 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
             local_data, *publication_args, text=selected, url=local_url, token=publisher["token"]
         )
         assert queued["state"] == "pending"
+        # A claim increments attempts before the network request completes.
+        # Wait for its durable failure result before testing crash recovery.
         pending = _delivery(
             local_url,
             publisher["token"],
             queued["id"],
-            lambda row: row["attempts"] >= 1 and row["state"] == "pending",
+            lambda row: (
+                row["attempts"] >= 1 and row["state"] == "pending" and row["error"] is not None
+            ),
         )
         assert pending["error"] == "remote_unavailable"
         denied = _cli(
