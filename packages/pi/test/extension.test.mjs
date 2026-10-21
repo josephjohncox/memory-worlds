@@ -41,7 +41,7 @@ function fixture(configOverrides = {}, dependencies = {}) {
     captureScope: async (selected, input) => { captures.push({ worldId: selected.world_id, scopeId: selected.scope_id, input }); return { episode: { ...selected, id: "scoped-receipt" }, replayed: false }; },
     searchScopes: async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: privateScope, record_type: "source", content: "bearing" }], failures: [], complete: true }),
     searchMounts: async () => ({ results: [], failures: [], complete: true }),
-    publishScope: async (selected, input) => { publications.push({ selected, input }); return { episode: { ...selected, id: "published" }, replayed: false }; },
+    publishScope: async (selected, input) => { publications.push({ selected, input }); return { episode: { ...input, ...selected, id: "published", source_type: "publication", metadata: {} }, replayed: false }; },
     worlds: async () => [world, { ...world, id: "shared", kind: "team" }], mounts: async () => [{ id: "team", name: "Team", world_ids: ["shared"] }], deliveries: async () => [],
     publish: async input => { publications.push(input); return { id: "delivery", state: "pending" }; },
   };
@@ -59,6 +59,94 @@ test("graph extraction and retrieval are the normal configuration with explicit 
   const recovery = parseConfig({ projectCaptured: false, retrieval: { mode: "source" } }, {});
   assert.equal(recovery.projectCaptured, false);
   assert.equal(recovery.retrieval.mode, "source");
+});
+
+test("native chat sharing is user-enabled, future-only, and independent of private capture", async () => {
+  let classified = 0;
+  const f = fixture({ sharing: { classifier: { provider: "fixture", model: "small" } } }, {
+    classifySharing: async (_ctx, selected) => {
+      classified++;
+      return selected.map(entry => ({ entryId: entry.entryId, excerpt: entry.text, category: "decision", visibility: "shareable", confidence: 0.99 }));
+    },
+  });
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : "invocation-private", name: "Selected" });
+  f.entries.push(message("before-rule", null, "Earlier private conversation"));
+  await f.run("session_start", { reason: "startup" });
+  await f.run("agent_end");
+  assert.equal(classified, 0);
+  assert.equal(f.publications.length, 0);
+  await f.command(`sharing auto shared ${rootScope}`);
+  assert.match(f.widgets.get("memory-worlds"), /sharing auto/);
+  f.entries.push(message("eligible", f.entries.at(-1)?.id, "We decided to use a bounded retry queue."));
+  await f.run("agent_end");
+  assert.equal(classified, 1);
+  assert.equal(f.publications.length, 1);
+  assert.equal(f.publications[0].input.content, "We decided to use a bounded retry queue.");
+  assert.deepEqual(Object.keys(f.publications[0].input).sort(), ["content", "occurred_at", "project", "source_id"]);
+  assert.equal(f.publications[0].input.project, true);
+  await f.command("sharing status");
+  const sharingStatus = JSON.parse(f.notices.at(-1).text);
+  assert.equal(sharingStatus.accepted, 1);
+  assert.equal(sharingStatus.failed, 0);
+  assert.equal(f.captures.length, 0, "Sharing must not enable raw private transcript capture");
+  await f.command("sharing private");
+  f.entries.push(message("after-private", f.entries.at(-1)?.id, "Another later decision"));
+  await f.run("agent_end");
+  assert.equal(classified, 1);
+  assert.equal(f.publications.length, 1);
+  assert(!JSON.stringify(f.publications).includes("Earlier private conversation"));
+});
+
+test("chat sharing configuration cannot enable publication and tree navigation stops its rule", async () => {
+  assert.throws(() => parseConfig({ sharing: { classifier: { provider: "fixture", model: "small" }, mode: "auto" } }, {}), /sharing|Unknown/i);
+  const f = fixture({ sharing: { classifier: { provider: "fixture", model: "small" } } }, { classifySharing: async () => { throw new Error("Classifier must stay disabled"); } });
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : "invocation-private", name: "Selected" });
+  await f.run("session_start", { reason: "startup" });
+  await f.command(`sharing auto shared ${rootScope}`);
+  assert.match(f.widgets.get("memory-worlds"), /sharing auto/);
+  await f.run("session_tree");
+  assert.match(f.widgets.get("memory-worlds"), /sharing private/);
+  f.entries.push(message("navigated", f.entries.at(-1)?.id, "We decided to keep this private."));
+  await f.run("agent_end");
+  assert.equal(f.publications.length, 0);
+  assert.equal(f.tools.has("memory_publish"), false);
+});
+
+test("interactive sharing selection chooses an authorized named scope without model publication tools", async () => {
+  const f = fixture({ sharing: { classifier: { provider: "fixture", model: "small" } } });
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : "invocation-private", name: "Selected" });
+  f.client.scopes = async worldId => [{ world_id: worldId, id: rootScope, kind: "world-shared", name: "Team knowledge" }];
+  await f.run("session_start", { reason: "startup" });
+  f.ctx.hasUI = true;
+  f.ctx.ui.select = async (title, options) => {
+    if (title === "Memory Worlds") { assert(options.includes("sharing")); return "sharing"; }
+    if (title === "Chat sharing") return "review";
+    assert.equal(title, "Sharing destination");
+    assert.equal(options.length, 1, "Read-only mount must not appear as a sharing destination");
+    assert.match(options[0], /Team knowledge.*shared\//);
+    return options[0];
+  };
+  await f.command("");
+  assert.match(f.widgets.get("memory-worlds"), /sharing review/);
+  assert.equal(f.publications.length, 0);
+  assert.equal(f.tools.has("memory_publish"), false);
+});
+
+test("graceful Pi shutdown preserves a verified sharing rule for the same chat's next session start", async () => {
+  const f = fixture({ sharing: { classifier: { provider: "fixture", model: "small" } } }, {
+    classifySharing: async (_ctx, selected) => selected.map(entry => ({ entryId: entry.entryId, excerpt: entry.text, category: "procedure", visibility: "shareable", confidence: 0.99 })),
+  });
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : "invocation-private", name: "Selected" });
+  await f.run("session_start", { reason: "startup" });
+  await f.command(`sharing auto shared ${rootScope}`);
+  await f.run("session_shutdown");
+  await f.run("session_start", { reason: "startup" });
+  assert.match(f.widgets.get("memory-worlds"), /sharing auto/);
+  assert(!f.widgets.get("memory-worlds").includes("auto paused"));
+  f.entries.push(message("resumed-procedure", f.entries.at(-1)?.id, "Isolate the fixture before replacing the bearing."));
+  await f.run("agent_end");
+  assert.equal(f.publications.length, 1);
+  assert.equal(f.publications[0].input.content, "Isolate the fixture before replacing the bearing.");
 });
 
 test("the extension registers native tools, command, UI and lifecycle hooks", async () => {

@@ -55,7 +55,8 @@ The [native Pi extension](../packages/pi/README.md) uses direct typed HTTP calls
 commands, session hooks, provenance renderers, and visible world selection.
 Its client is also exported as `memory-worlds-pi/client` for other native Pi code.
 It does not need MCP or a Pi fork. Automatic capture is off by default;
-publication is an explicit user slash command. See [sharing](sharing.md) for
+publication uses an explicit user slash command or an enabled per-chat rule.
+See [chat sharing modes](chat-sharing.md) and [sharing](sharing.md) for
 remote mount configuration, OIDC membership, and outbox receipts.
 
 Use [discovery](../README.md#discover-worlds-scopes-and-mounts) to find canonical IDs

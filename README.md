@@ -121,6 +121,9 @@ Capture goes to an explicitly selected private world or private scope. Shared
 destinations require a separate publication operation with selected text.
 Scoped publications can link authorized source evidence without copying its
 transcript. Reading a shared world never changes an agent's capture destination.
+Native Pi chats also support [private, review, and automatic sharing modes](docs/chat-sharing.md).
+An explicitly enabled chat rule can publish classifier-selected excerpts to one
+shared destination, with category and topic exclusions and private decision records.
 
 Worlds contain four [memory scopes](docs/scopes.md): world-shared, run-shared,
 agent-persistent, and invocation-private. UUID child identities use attenuated,

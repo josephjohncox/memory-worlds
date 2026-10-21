@@ -84,7 +84,7 @@ invocation UUID fixed by its delegation.
 Read scopes and the private capture target are independent. Capture requires an
 `agent-persistent` or `invocation-private` target. World membership never implicitly
 grants access to another invocation's private notes. Shared writes use explicit
-selected publications.
+selected publications or a user-enabled per-chat sharing rule.
 
 Before automatic capture, the daemon verifies that every current reader of the
 write target can read every source scope exposed in the session. Run-shared context
@@ -111,18 +111,26 @@ inspect authority/world/scope/source attribution.
 | `/memory capture on` | Capture future user/assistant text after authorization |
 | `/memory capture off` | Stop automatic capture |
 | `/memory capture TEXT` | Save an explicitly selected private note |
-| `/memory search QUERY` | Search source episodes |
+| `/memory search QUERY` | Retrieve graph evidence |
 | `/memory source QUERY` | Retrieve durable source evidence explicitly |
 | `/memory alias project WORLD SCOPE` | Bind the project alias; `global` binds the other alias |
 | `/memory share WORLD SCOPE TEXT` | Publish selected text to another local scope |
+| `/memory sharing review WORLD SCOPE` | Classify future messages into proposals for user approval |
+| `/memory sharing auto WORLD SCOPE` | Enable selected automatic publication under the configured rule |
+| `/memory sharing auto mount MOUNT WORLD` | Enable selected remote publication through an authorized mount |
+| `/memory sharing pending` | Inspect private proposals and publication state |
+| `/memory sharing approve ID` | Publish an individual review proposal |
+| `/memory sharing private` | Stop new and unsubmitted automatic sharing |
 | `/memory publish MOUNT WORLD TEXT` | Publish selected text through the router outbox |
 | `/memory deliveries` | Inspect this caller's remote publication deliveries |
 | `/memory spool status` | Inspect the configured local queue |
 | `/memory spool drain` | Dispatch sources pinned to the current credential and authority |
 
 The model receives `memory_search`, `memory_capture`, `memory_status`, and `graph`.
-Publication is a user command. No model tool or automatic hook publishes shared
-memory. An explicit selected note remains available when automatic capture is off.
+Publication requires a user command or a user-enabled sharing rule. A model tool
+cannot enable a rule or choose its destination. An explicit selected note remains
+available when automatic capture is off. See [chat sharing modes](../../docs/chat-sharing.md)
+for classifier configuration, category/topic exclusions, review, and retry behavior.
 
 ## Graph actions
 
@@ -260,4 +268,5 @@ credential rotation, immutable retries, spool retention, branch exposure, select
 publication, isolated Pi sessions and validated review. RPC smokes load the actual
 Pi package and exercise a real authenticated Python daemon with SQLite. Set
 `MEMORY_WORLDS_SMOKE_PYTHON` to an installed Python interpreter containing Memory
-Worlds and uvicorn. These smokes use synthetic data and no paid-model calls.
+Worlds and uvicorn. The sharing smoke also exercises the actual Pi model registry
+with a synthetic provider. These smokes use synthetic data and no paid-model calls.

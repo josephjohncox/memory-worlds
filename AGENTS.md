@@ -32,6 +32,9 @@ repository must preserve.
 - Keep read selection separate from the write destination. Parent and sibling
   agents receive no implicit access to invocation-private memory. Broader
   publication requires an explicit authorized action.
+- A user-enabled per-chat sharing rule can authorize selected automatic
+  publication. Classifiers select excerpts inside that rule; they never grant
+  access, choose destinations, override exclusions, or weaken scope-flow checks.
 - SQLite journals are the durable source. Graphiti performs graph extraction
   and retrieval in isolated scope namespaces. Verify these boundaries with
   meaningful current-contract tests.

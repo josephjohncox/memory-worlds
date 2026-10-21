@@ -22,9 +22,9 @@ description = "Type-check and test native Pi with one locked dependency install"
 depends = ["pi:check", "pi:test"]
 
 ["pi:smoke"]
-description = "Exercise both the real Pi runtime and its real local service integration"
+description = "Exercise the real Pi runtime, scoped service, and chat sharing classifier"
 depends = ["pi:deps", "python:deps"]
-run = ["npm run smoke --prefix packages/pi", "npm run smoke:service --prefix packages/pi"]
+run = ["npm run smoke --prefix packages/pi", "npm run smoke:service --prefix packages/pi", "npm run smoke:sharing --prefix packages/pi"]
 
 ["pi:pack"]
 description = "Build and package the native Pi extension; npm pack arguments are forwarded"

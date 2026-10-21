@@ -41,12 +41,12 @@ remain defined by the checked-in configuration.
 | --- | --- |
 | `mise run deps` | Install locked Python and native Pi dependencies |
 | `mise run check` | Python lint, formatting, tests, dependency checks, Pi type checks/tests, and Helm validation |
-| `mise run ci` | Run `check`, then both actual Pi runtime smokes |
+| `mise run ci` | Run `check`, then the actual Pi runtime, scoped service, and sharing smokes |
 | `mise run test` | Run current Python tests |
 | `mise run test -- tests/test_scopes.py` | Pass additional arguments directly to pytest |
 | `mise run format` | Apply the locked Ruff formatter |
 | `mise run pi:verify` | Check and test the native Pi package |
-| `mise run pi:smoke` | Run real Pi runtime and local service smokes |
+| `mise run pi:smoke` | Run real Pi runtime, scoped service, and classifier-driven sharing smokes |
 | `mise run cli -- --help` | Run the current Memory Worlds CLI |
 | `mise run graph:backend-up` | Start FalkorDB for a daemon running directly on the host |
 | `mise run graph:up` | Build and start the configured API and graph Compose stack |

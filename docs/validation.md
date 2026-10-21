@@ -9,7 +9,7 @@ Executed on 2026-10-20 local time (2026-10-21 UTC), Linux ARM64:
 | Python 3.15.0 complete default suite | 294 passed, 4 infrastructure checks skipped |
 | Real Graphiti/FalkorDB check, enabled separately | 15 passed through mise, including extraction and entity/fact retrieval across worlds and private scopes |
 | Final built-image and authenticated Compose checks | 3 passed, including default Compose model-outage durability; all 17 service source modules match the built image byte for byte |
-| Node 26.12.0 / Pi 1.3.0 | 69 unit cases, TypeScript checks, and both actual Pi RPC smokes passed |
+| Node 26.12.0 / Pi 1.3.0 | 122 unit cases, TypeScript checks, and actual Pi runtime, scoped service, and classifier-sharing smokes passed |
 | Helm 4.3.1 / Kubernetes 1.37.0 | Six profile contracts and 22 invalid configurations checked; isolated kind and Helm lifecycle smokes passed |
 
 Mise 2026.10.17 manages the locked tools and developer/CI tasks. Actual task
@@ -64,3 +64,20 @@ volume.
 The project maintains one current contract. There are no historical Memory Worlds
 API/schema readers, migrations, or compatibility harnesses. See the repository
 [agent instructions](../AGENTS.md).
+
+## Chat sharing
+
+The native sharing implementation adds strict classifier decisions, deterministic
+source/excerpt exclusions, private/review/auto modes, rule-bound immutable retries,
+and the [sharing model-registry/service smoke](../packages/pi/test/sharing-service-smoke.mjs).
+The smoke uses a synthetic provider through the actual Pi registry and a real
+authenticated local service. It does not measure a paid model's classification
+accuracy. See [chat sharing behavior and limits](chat-sharing.md).
+
+Sharing validation also reran 45 scoped API, adversarial authorization, router,
+and real router-process cases. The sharing smoke verifies a real Pi session-file
+restart with a lost-acknowledgment intent, exact replay without reclassification,
+review approval, live revocation, whole-window sensitive-context exclusion,
+path-prefixed and malformed Unicode input, future-only mode activation, and
+omission of private pointers from publication requests. All 17 Python service
+modules are unchanged by the chat-mode feature.

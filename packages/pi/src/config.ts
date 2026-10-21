@@ -2,12 +2,14 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { scopeSelection, serviceURL, type ScopeSelection } from "./client.js";
+import { parseSharingSettings, type SharingSettings } from "./sharing.js";
 
 export interface MemoryConfig {
   url: string; tokenFile: string; readMountIds: string[];
   automaticCapture: boolean; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
   graphAliases: { project?: ScopeSelection; global?: ScopeSelection }; projectCaptured: boolean; correctionHints: boolean; reviewCorrections: boolean; spoolDirectory?: string;
   retrieval: { enabled: boolean; mode: "source" | "graph"; limit: number; maxChars: number };
+  sharing?: SharingSettings;
 }
 function ids(value: unknown): string[] {
   if (value === undefined) return [];
@@ -19,7 +21,7 @@ function ids(value: unknown): string[] {
 export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env, home = homedir()): MemoryConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Memory Worlds config");
   const config = value as Record<string, unknown>;
-  const allowed = ["url", "tokenFile", "readMountIds", "automaticCapture", "retrieval", "readScopes", "writeScope", "graphAliases", "projectCaptured", "correctionHints", "reviewCorrections", "spoolDirectory"];
+  const allowed = ["url", "tokenFile", "readMountIds", "automaticCapture", "retrieval", "readScopes", "writeScope", "graphAliases", "projectCaptured", "correctionHints", "reviewCorrections", "spoolDirectory", "sharing"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("Unknown Memory Worlds config key; use tokenFile for credentials");
   const rawTokenFile = env.MEMORY_WORLDS_TOKEN_FILE ?? config.tokenFile ?? join(home, ".config/memory-worlds/pi.token");
   if (typeof rawTokenFile !== "string") throw new Error("tokenFile must be an absolute path");
@@ -55,6 +57,7 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
     url: serviceURL(url), tokenFile, readMountIds,
     readScopes, writeScope, graphAliases, spoolDirectory, reviewCorrections: config.reviewCorrections === true, projectCaptured: config.projectCaptured !== false, correctionHints: config.correctionHints !== false,
     automaticCapture: Boolean(writeScope && config.automaticCapture === true),
+    sharing: parseSharingSettings(config.sharing),
     retrieval: { enabled: retrieval.enabled === true, mode: mode as "source" | "graph", limit: Number(limit), maxChars: Number(maxChars) },
   };
 }

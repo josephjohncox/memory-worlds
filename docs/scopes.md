@@ -122,6 +122,12 @@ provenance without copying the transcript. Source records retain their scope.
 Sharing into a run or world requires the destination's `publish` operation.
 Reads never select or widen the write destination.
 
+Native Pi [chat sharing modes](chat-sharing.md) can authorize selected automatic
+publication from one private source under a user-enabled per-chat rule. The rule
+pins the destination and classifier/category/exclusion policy. It does not grant
+scope access, expose another invocation's scratch, or change the separate private
+capture flow check. Review mode requires approval of an individual excerpt.
+
 For automatic capture, `scope-flow --input FILE.json` checks whether every
 current reader of a selected write scope can also read every source scope.
 The HTTP endpoint is `POST /v1/scopes/flow`; it returns only `allowed`, without

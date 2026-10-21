@@ -33,6 +33,10 @@
     "./graph": {
       "types": "./dist/graph.d.ts",
       "import": "./dist/graph.js"
+    },
+    "./sharing": {
+      "types": "./dist/sharing-session.d.ts",
+      "import": "./dist/sharing-session.js"
     }
   },
   "pi": {
@@ -46,6 +50,7 @@
     "test": "npm run build && node --test test/*.test.mjs",
     "smoke": "npm run build && node test/runtime-smoke.mjs",
     "smoke:service": "npm run build && node test/real-service-smoke.mjs",
+    "smoke:sharing": "npm run build && node test/sharing-service-smoke.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

@@ -84,6 +84,8 @@ contracts are described separately.
 Memory Worlds already adds multi-agent authenticated service access, SSH
 tunnels, organizational worlds, explicit publications, OIDC memberships,
 federated routing, conservative graph recovery, and Kubernetes persistence.
+Its native [chat sharing modes](chat-sharing.md) also support classifier-assisted
+review and selected automatic publication under a user-enabled per-chat rule.
 These do not by themselves establish complete upstream feature parity.
 
 Memory Worlds is not a drop-in replacement for every upstream command,

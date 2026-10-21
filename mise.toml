@@ -32,5 +32,5 @@ description = "Check Python, native Pi, and deployment contracts"
 depends = ["python:check", "pi:check", "pi:test", "helm:check"]
 
 [tasks.ci]
-description = "Run local checks and both actual Pi runtime smokes"
+description = "Run local checks and actual Pi runtime, service, and sharing smokes"
 run = [{ task = "check" }, { task = "pi:smoke" }]
