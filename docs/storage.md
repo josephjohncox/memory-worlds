@@ -1,74 +1,124 @@
-# Storage and recovery boundaries
+# Storage and recovery
 
-One Unix daemon owns a local data directory. It contains `control.sqlite3` and
-`worlds/<opaque-id>/source.sqlite3`, plus `router.sqlite3` for explicit remote
-publication envelopes and delivery receipts. The control database owns authority
-identity, world metadata, token hashes, OIDC sessions, memberships, and grants.
-A scope database owns source episodes,
-capture audit, projection jobs, active generation, and public model provenance.
-The world-level journal holds the world-shared scope. Additional scope journals live at
-`worlds/<world-id>/scopes/<scope-uuid>/source.sqlite3`; scope grants and invocation
-contexts remain in `control.sqlite3`. See [agent scopes](scopes.md).
-Capture and enqueue commit together with SQLite synchronous FULL transactions.
-Files are private to their operating-system owner. Use a local filesystem.
+Memory Worlds uses SQL journals as the durable source and Graphiti/FalkorDB for
+extraction and graph retrieval. Select SQLite for a local authority or PostgreSQL
+for a shared authority with several API replicas. PostgreSQL replaces the
+control, source, and publication journals; it does not replace the graph backend.
 
-SQLite readers and writers use the daemon; agents do not synchronize open files.
-Local administrative import/export uses the same authorization and SQLite
-transactions. A source read transaction establishes the episode snapshot; world
-and scope metadata are copied into the archive at export time.
+## Local SQLite
 
-`.mworld` archives contain durable source evidence rather than a graph snapshot.
-Restore queues a new Graphiti extraction by default. The archive preserves attributed evidence and audit
-records and deliberately excludes live ACLs and credentials. It can reconstruct
-a new graph, but model extraction need not reproduce the same interpretation.
-The current archive format identifies the selected scope and preserves invocation
-provenance. Historical archive formats are not supported. World-only export includes the
-world-shared journal; select private scopes explicitly. Private archives require
-an explicit compatible private restore destination.
-Archive checksums detect corruption, not malicious forgery; the archive is not
-signed or encrypted. Only import archives from a trusted source.
+One daemon owns the data directory. Agents and SSH clients use that daemon's API.
+The daemon lock prevents another local process from opening the same authority
+as a second server. Keep the directory on a local filesystem, outside a sync
+folder or network filesystem.
 
-`backup` uses SQLite's online backup API and checks the resulting source
-database. The native source backup is not an authority backup: it does not carry
-the control database's credential or membership state. `restore` accepts portable
-archives rather than arbitrary SQLite files. For routine migration use
-export/restore. Native SQLite file recovery requires an administrator to preserve
-the matching world/authority metadata and stop the daemon before replacing files.
-The current `backup` command selects the world-shared source database;
-it does not combine private scope journals into one SQLite file.
+The journals are:
 
-FalkorDB uses a separate persistent volume. Namespaces separate authorities,
-worlds, scopes, and graph generations logically; several worlds may share one backend
-snapshot. AOF reduces graph loss across backend restarts but is not an off-host
-backup. The source journal remains authoritative when graph delivery is unknown.
-The graph deployment requires a database password as well as loopback binding;
-only the daemon receives that credential. Routine agents receive API tokens.
+| Journal | Contents |
+| --- | --- |
+| `control.sqlite3` | Authority identity, worlds, scopes, named identities, token hashes, OIDC sessions, memberships, grants, worker leases, generation inventory |
+| `worlds/<world-id>/source.sqlite3` | The world-shared scope's episodes, audit, projection jobs and state, lifecycle tombstones and purge intents |
+| `worlds/<world-id>/scopes/<scope-uuid>/source.sqlite3` | The corresponding private or run scope's source journal |
+| `router.sqlite3` | Explicit publication envelopes, idempotency identities and remote delivery receipts |
 
-For a backend-native RDB snapshot, stop graph writers, use synchronous `SAVE`
-and check its success, then copy the completed configured `dump.rdb` into private
-backup storage. Record the backend version and matching source/projection state.
-Restore only into an isolated, compatible backend first. An existing AOF can
-take precedence over RDB on restart; copying one file into an active volume is
-not a valid restore procedure. Exact coordinated authority/graph restoration is
-not yet automated or qualified by this release's portable-source tests.
+Directories are private to their OS owner and database files have mode `0600`.
+Connections use WAL, synchronous `FULL`, foreign keys, and secure deletion of
+freed SQLite cells. Lifecycle maintenance truncates the WAL after committed
+source erasure. These operations do not erase previous filesystem snapshots,
+backups, storage-device history, or information already published elsewhere.
 
-Completed portable archives and native backup artifacts can be uploaded to
-OneDrive, S3, or another storage service. No cloud credentials are needed by the
-memory daemon for a sync-folder workflow. Staging files use the destination
-filesystem so final publication is atomic; configure sync exclusions for staging
-files. Never place a live source or graph data directory in file synchronization.
+## Shared PostgreSQL
 
-For shared deployment, a PVC/StatefulSet can hold a single authoritative backend.
-It does not supply replication or backups. Multiple API replicas need shared SQL
-storage and durable work ownership; sharing SQLite WAL over a network filesystem
-is unsupported. Graphiti is the extraction and retrieval engine; the default backend is FalkorDB.
-The experimental Neptune adapter requires OpenSearch as well as
-graph storage. It has offline contract tests; real AWS ingestion and recovery
-remain unverified. See [deployment configuration](deployments.md).
+Set `MEMORY_WORLDS_STORAGE_BACKEND=postgres`, `MEMORY_WORLDS_DATABASE_URL`, and a fixed
+`MEMORY_WORLDS_AUTHORITY_ID` UUID for every replica of one authority. All replicas
+must also use the same graph endpoint, extraction configuration, OIDC policy,
+and mount configuration. An invalid PostgreSQL configuration fails startup.
 
-RDS PostgreSQL with pgvector cannot replace this graph backend: the pinned
-Graphiti distribution has no PostgreSQL driver. It also cannot replace SQLite
-by configuration alone; the application has no PostgreSQL source/control store.
-For AWS without Neptune, deploy the normal FalkorDB/PVC topology. See the
-[PostgreSQL and RDS assessment](rds-postgresql.md) for verified upstream and AWS
-support, preflight queries, and the implementation work required for RDS.
+SQLAlchemy Core and Psycopg 3 execute the current schema directly. Every table
+reference has an explicit schema; `search_path` does not select an authority or
+scope. PostgreSQL schemas separate the authority control tables, authority
+outbox, and each UUID scope's source tables. Scope schemas are derived from the
+authority and scope IDs. Source schemas create independent table/index sets, so
+capacity planning must include the number of scopes as well as episode volume.
+
+A database role with schema ownership can inspect its tables. Agent isolation is
+enforced by live service authorization and scoped API selection, not by giving
+agents SQL accounts. The service exposes no arbitrary SQL, Cypher or graph-key
+interface. See [scope rules](scopes.md) and [RDS configuration](rds-postgresql.md).
+
+Nested resource sessions share one PostgreSQL transaction. This allows source,
+control and outbox mutations to participate in one fenced commit. Control
+operations serialize authority decisions; source write transactions serialize
+per scope. PostgreSQL sequences are restored explicitly when recovering rows.
+There are no historical schema readers or automatic migrations. Development
+schema changes require disposable data to be reset.
+
+## Worker ownership and graph generations
+
+Each scope projection and each outbox envelope has a database lease with an
+owner, a monotonic fencing counter, and a deadline measured by the database's
+clock. Workers renew leases while external calls run. Another replica does not
+reset live processing jobs at startup. Every durable completion checks the
+current fence before changing its receipt or activating a generation.
+
+A dispatched graph write cannot be recalled by a SQL lock. If ownership expires
+while graph delivery is in flight, the next owner marks that delivery unknown
+and blocks the affected projection. Rebuild creates a fresh namespace; the stale
+worker cannot activate its earlier namespace. Namespace inventory is recorded
+before external writes and retains failed and retired generations for recovery
+and erasure. Graph reads also acquire scope ownership so another replica's
+partially applied incremental write cannot be returned as a ready projection.
+
+Remote publications have immutable envelopes and source IDs. An expired delivery
+may retry the exact envelope; a lost acknowledgement does not authorize a new
+publication identity. Terminal retention can remove envelope content while
+preserving its deduplication identity. A retained identity cannot be retried.
+
+Authority maintenance blocks new operations and drains in-flight graph calls.
+Ordinary PostgreSQL SQL sessions use a transaction-level shared lock on their
+own connection. Graph calls retain a separate session-level lock across network
+operations, with bounded fail-fast concurrency. Both conflict with the authority's
+exclusive maintenance lock. SQLite uses the local daemon's
+barrier. Ordinary requests fail promptly with `503` while maintenance is pending
+or active. Asynchronous maintenance waits without blocking the event loop.
+Lifecycle graph purge also requires explicit worker-drain attestation: a remote
+request already dispatched by a failed process may outlive that process's lease.
+See [lifecycle and retention](lifecycle.md).
+
+## Exports and authority backups
+
+A `.mworld` export contains the selected scope's evidence and attributed source
+audit, without live credentials or membership policy. Import requires an
+explicit authorized destination and queues Graphiti extraction by default.
+Extraction may produce a different interpretation under a new model. An export
+is neither encrypted nor signed; its checksums detect corruption.
+
+An authority backup preserves the current control/source/outbox tables and,
+when native graph mode is selected, the inventoried FalkorDB graph keys. The
+backup takes an exclusive authority maintenance cut across all replicas and
+external graph operations. Its AES-256-GCM archive is authenticated before any
+archive members are parsed during recovery. Keep the encryption key separately
+from the artifact. Recovery targets a fresh stopped authority; native graph
+recovery additionally requires an isolated empty graph backend and the recorded
+compatible backend version. Rebuild-mode backups restore evidence and queue
+extraction instead of claiming an exact graph copy.
+
+Use `authority-backup` to request/download a completed encrypted artifact and
+`authority-restore` for offline recovery. The former per-world native SQLite
+backup command is absent: a single source journal omits authority policy and
+private scopes. Coordinate database/PVC/provider snapshots with the same
+maintenance boundary if using external backup tooling.
+
+FalkorDB has a separate persistent volume. AOF reduces graph loss after a
+restart; it is not an off-host backup. Failed or unknown graph delivery leaves
+source evidence usable. Native snapshots preserve the exact selected graph key;
+recovery never renames a graph key or replaces an existing graph. Neptune
+remains experimental and complete erasure is unavailable because its secondary
+OpenSearch documents also require verified removal.
+
+Completed exports and encrypted backups may be copied to a OneDrive folder,
+S3 or another storage provider. Publish only completed artifacts; exclude
+staging files from file synchronization. Never synchronize open database files
+or an active graph data directory. Replicated SQL and a PVC improve availability
+and durability in different ways; neither supplies a tested recovery procedure
+without an actual restore exercise.

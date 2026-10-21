@@ -11,7 +11,7 @@ The repository builds four versioned distributions together:
 
 `manifest.json` records the full source commit, whether the checkout was clean, the tracked working-tree digest, the actual mise and build-tool versions, and each distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the manifest. The manifest is a build receipt; it is not a cryptographic signature. Archive timestamps may differ between builds, so matching source commits do not imply byte-identical archives.
 
-Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.2.0`. Builds fail if these identities differ.
+Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.3.0`. Builds fail if these identities differ.
 
 ## Build locally
 
@@ -59,4 +59,12 @@ Every image receives a `sha-<full-source-commit>` tag. A matching version-tag bu
 
 To pull private images, authenticate with a GitHub credential that has `read:packages` and access to the package. Configure Kubernetes `imagePullSecrets` when required. Do not put registry tokens in chart values, manifests or Git history.
 
-This pipeline does not publish to PyPI, npm or a public Helm registry. It does not create GitHub releases. Actions artifacts expire; a durable release needs a separate explicit publication decision and retention policy.
+The automated pipeline does not publish to PyPI, npm or a public Helm registry.
+Actions artifacts expire. Durable private releases retain the signed source tag,
+four distributions, manifest, checksums, immutable image receipt and sanitized
+local qualification receipts as GitHub Release assets in the private repository.
+Create them only after the exact source commit passes CI, verify repository and
+container privacy, and verify every asset checksum after downloading it. A
+private release is available only to repository readers; it does not change
+repository or package visibility. Public publication requires a separate explicit
+user decision.

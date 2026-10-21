@@ -24,6 +24,7 @@ run = [
 
 [test]
 description = "Run current-contract Python tests; additional pytest arguments are forwarded"
+tools.rclone = "1.75.2"
 raw_args = true
 run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest -q'
 

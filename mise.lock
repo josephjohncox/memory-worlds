@@ -113,6 +113,26 @@ checksum = "sha256:80af02b62e3675f653e79fd9560f90f7ab8ced848cd4a5a81ee7e3d6c8dc2
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261020/cpython-3.15.0+20261020-aarch64-apple-darwin-install_only_stripped.tar.gz"
 provenance = "github-attestations"
 
+[[tools.rclone]]
+version = "1.75.2"
+backend = "aqua:rclone/rclone"
+specifiers = ["1.75.2"]
+
+[tools.rclone."platforms.linux-arm64"]
+checksum = "sha256:7e1e8d69654941b7b7df84ee74c5f7fb09cce7d5496947fb7bf16b55ff427d10"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-arm64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/624698085"
+
+[tools.rclone."platforms.linux-x64"]
+checksum = "sha256:349ac8fba6ff65d6247043f1750cdcb518ec5d500ef91463a10d37c0ccdf3702"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-linux-amd64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/624695998"
+
+[tools.rclone."platforms.macos-arm64"]
+checksum = "sha256:610ab7d48615135dfc60b763858b11a426a0d3d1160c1bb76fb0ae6011b02edd"
+url = "https://github.com/rclone/rclone/releases/download/v1.75.2/rclone-v1.75.2-osx-arm64.zip"
+url_api = "https://api.github.com/repos/rclone/rclone/releases/assets/624713742"
+
 [[tools.uv]]
 version = "0.13.4"
 backend = "aqua:astral-sh/uv"

@@ -157,10 +157,10 @@ No raw database port is exposed externally. The default HTTPS egress rule is
 broad because standard NetworkPolicy cannot select DNS names; narrow it using
 an egress gateway or the target CNI's FQDN policy.
 
-Network policies require a policy-enforcing CNI. Default kindnet does not enforce
-them, so the kind smoke makes no network-isolation claim. Test allowed API,
-denied API, and denied graph traffic on the actual production CNI before treating
-these rules as an isolation boundary.
+Network policies require a policy-enforcing CNI. The local qualification cluster
+uses pinned Cilium and verifies allowed API traffic, denied clients and denied
+graph traffic with positive controls. Default kindnet does not enforce policy.
+Run the same checks for the CNI and network configuration used in a deployment.
 
 ## Backups and recovery
 
@@ -169,7 +169,9 @@ Node-local kind storage disappears with the node. For portable source recovery,
 use the existing authenticated world export/restore CLI; copy only a finalized
 artifact to object storage or a synchronized folder. Exports exclude live
 credentials and grants. Re-extract graphs after portable source restoration.
-The `backup` CLI uses SQLite's online backup API for an exact source database.
+The administrator `authority-backup` CLI creates and downloads an encrypted
+authority cut, including credentials, every private/shared scope, durable jobs,
+outbox and native graph namespaces. See [recovery](recovery.md).
 
 FalkorDB uses AOF with `appendfsync everysec` and periodic RDB snapshots. A host
 failure can lose approximately the last second of graph writes; source receipts
@@ -184,25 +186,25 @@ private invocation data and parent/sibling isolation after pod replacement,
 upgrade, and uninstall/reinstall. See [agent scopes](scopes.md) for the data and
 authorization model. Scope isolation does not require a pod or PVC per agent.
 
-An exact whole-authority disaster recovery procedure must quiesce graph writers,
-record source/projection watermarks, back up all source/control/outbox databases,
-and capture and restore a native graph snapshot on a separate backend. That
-cross-store backup/restore procedure is not automated or claimed as verified
-here. Do not copy live SQLite/WAL files or call independent volume snapshots a
-distributed transaction. Cluster credentials and grants also require an explicit
-recovery policy; portable world restore never activates archived grants.
+Whole-authority recovery is implemented for fresh SQLite and PostgreSQL targets.
+Native FalkorDB restore preserves original keys, vectors, indexes and provenance
+on an isolated empty backend. A source-only backup explicitly requests fresh
+extraction instead. Maintenance coordinates the cut across replicas; stale
+worker claims are cleared on recovery. Portable world restore continues to copy
+selected evidence without activating archived grants. See [lifecycle](lifecycle.md)
+for deletion receipts and independent backup retention.
 
 ## AWS without Neptune: FalkorDB, and the RDS boundary
 
-Use the normal Helm deployment with block-backed PVCs on EKS when Neptune is
-unwanted. RDS PostgreSQL with pgvector is not a drop-in Graphiti backend: the
-pinned Graphiti distribution has no PostgreSQL driver, and this application
-has no PostgreSQL source/control store. The deployment therefore cannot be
-switched to RDS by adding extensions or a connection URL.
+Use RDS PostgreSQL for shared source/control/outbox journals and FalkorDB for
+Graphiti extraction and retrieval. The chart's PostgreSQL profile uses multiple
+API replicas, authority-wide maintenance locks and fenced per-scope workers.
+SQLite remains the single-daemon local/PVC profile. No PostgreSQL extension is
+required for the current relational journals. pgvector does not replace the
+pinned Graphiti graph driver.
 
-The [RDS PostgreSQL guide](rds-postgresql.md) records verified backend and
-extension support, an EKS storage example, read-only extension discovery, and
-the work needed before an RDS profile would be runnable.
+The [RDS PostgreSQL guide](rds-postgresql.md) covers TLS, stable authority identity,
+schema ownership, deployment configuration and extension discovery.
 
 ## AWS Neptune evaluation lane
 
@@ -232,9 +234,8 @@ long-lived AWS access keys nor cluster-wide administrator roles are needed.
 the Neptune backend; supply its endpoints and provider settings through the
 runtime secret. Add scoped Neptune egress and workload identity in an
 installation-specific overlay, then test it against your existing VPC, identity
-mechanism, and storage class. Source durability still has the one-pod SQLite
-boundary until the shared
-SQL implementation exists; managed graph availability does not change it.
+mechanism, and storage class. Choose the PostgreSQL profile for shared relational
+durability; managed graph availability alone does not provide that durability.
 
 The pinned upstream driver creates four fixed OpenSearch indices, performs
 network calls synchronously inside async methods, waits after index creation,

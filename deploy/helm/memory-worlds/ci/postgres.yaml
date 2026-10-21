@@ -1,0 +1,15 @@
+replicaCount: 2
+storage:
+  backend: postgres
+  postgres:
+    existingSecret: synthetic-postgres
+    authorityId: 7cfebda9-5ac1-4292-8242-06a0b605b700
+    caExistingSecret: synthetic-postgres-ca
+networkPolicy:
+  postgresEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: database}
+          podSelector:
+            matchLabels: {app: postgres}
+      ports: [{protocol: TCP, port: 5432}]

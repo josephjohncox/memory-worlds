@@ -1,9 +1,9 @@
 import argparse
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
-import sqlite3
 import stat
 import sys
 import tempfile
@@ -17,6 +17,8 @@ from pydantic import BaseModel, ValidationError
 
 from .client import Client, scope_path
 from .errors import MemoryError
+from .identity_names import CreateIdentity, UpdateIdentity
+from .lifecycle import LifecycleRequest, RetentionRequest
 from .locking import DaemonLock
 from .models import (
     BindContext,
@@ -34,6 +36,7 @@ from .models import (
     UpdateScopeGrant,
     WorldKind,
 )
+from .operations import BackupRequest
 from .outbox import RoutedPublication, RouterSearch
 
 
@@ -314,6 +317,22 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("deliveries", help="inspect your durable publication outbox")
     retry = sub.add_parser("delivery-retry", help="reauthorize and retry your queued publication")
     retry.add_argument("delivery_id")
+    named = sub.add_parser("identities", help="list your named agent/run/invocation UUIDs")
+    named.add_argument("kind", choices=("agent", "run", "invocation"))
+    named_create = sub.add_parser("identity-create", help="register a named canonical UUID")
+    named_create.add_argument("kind", choices=("agent", "run", "invocation"))
+    named_create.add_argument("--input", type=Path, required=True)
+    named_resolve = sub.add_parser(
+        "identity-resolve", help="resolve a visible identity ID or @alias"
+    )
+    named_resolve.add_argument("kind", choices=("agent", "run", "invocation"))
+    named_resolve.add_argument("reference")
+    named_update = sub.add_parser(
+        "identity-update", help="rename an owned identity or change its alias"
+    )
+    named_update.add_argument("kind", choices=("agent", "run", "invocation"))
+    named_update.add_argument("reference")
+    named_update.add_argument("--input", type=Path, required=True)
     directory_import = sub.add_parser(
         "import-directory", help="preview or import extracted chats into an explicit private scope"
     )
@@ -341,12 +360,30 @@ def parser() -> argparse.ArgumentParser:
     directory_import.add_argument(
         "--source-only", action="store_true", help="store evidence without Graphiti extraction"
     )
-    for name in ("export", "restore", "import-chatgpt", "import-pi", "backup"):
+    planner = sub.add_parser(
+        "plan-directory", help="emit validated private records for a native client integration"
+    )
+    planner.add_argument("directory", type=Path)
+    planner.add_argument(
+        "--emit-records",
+        action="store_true",
+        required=True,
+        help="explicitly include private transcript records in stdout",
+    )
+    planner.add_argument(
+        "--format",
+        choices=("auto", "chatgpt", "claude", "richlow-md", "documents"),
+        default="auto",
+    )
+    planner.add_argument("--all-branches", action="store_true")
+    planner.add_argument("--source-timezone")
+    planner.add_argument("--fallback-timestamp")
+    planner.add_argument("--source-only", action="store_true")
+    for name in ("export", "restore", "import-chatgpt", "import-pi"):
         cmd = sub.add_parser(name, help="local authenticated administrative operation")
         cmd.add_argument("world")
         cmd.add_argument("path", type=Path)
-        if name != "backup":
-            cmd.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
+        cmd.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
         if name.startswith("import-"):
             cmd.add_argument("--all-branches", action="store_true")
     rebuild = sub.add_parser("graph-rebuild", help="rebuild while the daemon is stopped")
@@ -358,6 +395,52 @@ def parser() -> argparse.ArgumentParser:
         dest="include_unprojected",
         help="rebuild only sources already selected for extraction",
     )
+    keygen = sub.add_parser("authority-keygen", help="create a private authority encryption key")
+    keygen.add_argument("path", type=Path)
+    sub.add_parser("authority-backups", help="list completed authority backup artifacts")
+    backup = sub.add_parser(
+        "authority-backup", help="request and download an encrypted authority cut"
+    )
+    backup.add_argument("path", type=Path)
+    backup.add_argument("--graph-mode", choices=("native", "rebuild"), default="native")
+    recover = sub.add_parser(
+        "authority-restore", help="recover an archive into a fresh stopped authority"
+    )
+    recover.add_argument("path", type=Path)
+    recover.add_argument("--key-file", type=Path, required=True)
+    recover.add_argument(
+        "--native-graph",
+        action="store_true",
+        help="restore original graph keys into a configured empty backend",
+    )
+    sync = sub.add_parser(
+        "artifact-sync", help="copy a verified encrypted backup to a named cloud remote"
+    )
+    sync.add_argument("path", type=Path)
+    sync.add_argument("--key-file", type=Path, required=True)
+    sync.add_argument("--config", type=Path, required=True)
+    for name in ("lifecycle", "lifecycle-receipt", "graph-purge"):
+        operation = sub.add_parser(name)
+        operation.add_argument("world")
+        operation.add_argument("--scope", type=scope_reference, required=True)
+        if name == "lifecycle":
+            operation.add_argument("--input", type=Path, required=True)
+            operation.add_argument("--preview", action="store_true")
+        elif name == "lifecycle-receipt":
+            operation.add_argument("operation_id", type=UUID)
+        else:
+            operation.add_argument(
+                "--workers-drained",
+                action="store_true",
+                required=True,
+                help="confirm all authority graph writers are stopped/drained",
+            )
+    retention = sub.add_parser(
+        "retention", help="apply or preview an explicit bounded retention policy"
+    )
+    retention.add_argument("--input", type=Path, required=True)
+    retention.add_argument("--preview", action="store_true")
+    sub.add_parser("retention-receipt").add_argument("operation_id", type=UUID)
     sub.add_parser("mcp", help="serve stdio MCP tools as a client of the HTTP daemon")
     return p
 
@@ -365,44 +448,138 @@ def parser() -> argparse.ArgumentParser:
 def local_store(args):
     from .store import MemoryStore
 
-    store = MemoryStore(args.data_dir)
+    store = MemoryStore.from_env(args.data_dir)
     return store, store.authenticate(read_token(args))
 
 
-def backup_source(store, principal, world_id: str, target: Path):
-    # Restrict backend-file operations to authority administrators.
-    if not principal.admin:
-        from .errors import Forbidden
+def download_backup(client, artifact_id: str, target: Path):
+    from .recovery_archive import MAX_ENCRYPTED_BACKUP_BYTES
 
-        raise Forbidden("source database backup requires an administrator")
-    world = store.get_world(principal, world_id)
-    target = target.expanduser().resolve()
+    target = target.expanduser().absolute()
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         raise MemoryError("backup destination already exists")
-    fd, temporary = tempfile.mkstemp(prefix=".memory-backup-", suffix=".pending", dir=target.parent)
-    os.close(fd)
+    fd, temporary = tempfile.mkstemp(
+        prefix=".authority-backup-", suffix=".pending", dir=target.parent
+    )
+    digest, size = hashlib.sha256(), 0
     try:
-        source_path = store.world_path(world.id)
-        with sqlite3.connect(source_path.as_uri() + "?mode=ro", uri=True) as source:
-            with sqlite3.connect(temporary) as destination:
-                source.backup(destination)
-                if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                    raise MemoryError("backup integrity check failed")
-        with open(temporary, "rb") as completed:
-            os.fsync(completed.fileno())
+        with (
+            os.fdopen(fd, "wb") as output,
+            client.http.stream(
+                "GET",
+                f"/v1/authority/backups/{UUID(artifact_id)}",
+                timeout=1200,
+            ) as response,
+        ):
+            response.raise_for_status()
+            expected = int(response.headers["content-length"])
+            if not 0 < expected <= MAX_ENCRYPTED_BACKUP_BYTES:
+                raise MemoryError("authority artifact exceeds the download limit")
+            for chunk in response.iter_bytes(65536):
+                size += len(chunk)
+                if size > expected:
+                    raise MemoryError("authority artifact size changed during download")
+                output.write(chunk)
+                digest.update(chunk)
+            if size != expected:
+                raise MemoryError("authority artifact download was truncated")
+            output.flush()
+            os.fsync(output.fileno())
         os.link(temporary, target)
         directory_fd = os.open(target.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
         finally:
             os.close(directory_fd)
-        emit({"path": str(target), "world_id": world.id, "format": "sqlite-source-backup"})
+        return {"path": str(target), "bytes": size, "sha256": digest.hexdigest()}
     finally:
         Path(temporary).unlink(missing_ok=True)
 
 
 def run(args):
+    if args.command == "artifact-sync":
+        from .artifact_sync import ArtifactSyncConfig, sync_artifact
+
+        emit(sync_artifact(args.path, args.key_file, read_input(args.config, ArtifactSyncConfig)))
+        return
+    if args.command == "authority-keygen":
+        from .recovery_archive import generate_key
+
+        generate_key(args.path)
+        emit({"path": str(args.path), "format": "aes-256-gcm-key"})
+        return
+    if args.command == "authority-restore":
+        from .graph import GraphConfig
+        from .graph_snapshots import FalkorSnapshots
+        from .recovery import restore_authority
+        from .store import MemoryStore
+
+        config = GraphConfig.from_env() if args.native_graph else None
+        if args.native_graph and config is None:
+            raise MemoryError("native recovery requires a configured empty FalkorDB backend")
+        graph = FalkorSnapshots(config) if config else None
+        try:
+            emit(
+                restore_authority(
+                    args.path,
+                    args.key_file,
+                    args.data_dir,
+                    database_url=MemoryStore.database_url_from_env(),
+                    graph=graph,
+                )
+            )
+        finally:
+            if graph is not None:
+                graph.close()
+        return
+    if args.command == "plan-directory":
+        from .directory_import import plan_directory
+
+        plan = plan_directory(
+            args.directory,
+            format=args.format,
+            all_branches=args.all_branches,
+            timezone=args.source_timezone,
+            fallback_timestamp=args.fallback_timestamp,
+        )
+        if args.source_only:
+            plan = replace(
+                plan,
+                episodes=[
+                    episode.model_copy(update={"project": False}) for episode in plan.episodes
+                ],
+            )
+            payload = plan.payload(UUID(int=0))
+            plan = replace(
+                plan,
+                report={
+                    **plan.report,
+                    "payload_bytes": len(
+                        json.dumps(
+                            payload,
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ),
+                },
+            )
+        records = [
+            episode.model_copy(update={"project": not args.source_only}).model_dump(mode="json")
+            for episode in plan.episodes
+        ]
+        # Private integration transport: never use the human preview formatter.
+        # Compact UTF-8 bounds the native client's pipe to the same batch budget.
+        sys.stdout.write(
+            json.dumps(
+                {"report": plan.report, "episodes": records},
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        return
     if args.command == "login":
         from .login import device_login
 
@@ -419,7 +596,7 @@ def run(args):
     if args.command == "init":
         from .store import MemoryStore
 
-        world, token = MemoryStore(args.data_dir).bootstrap(args.user)
+        world, token = MemoryStore.from_env(args.data_dir).bootstrap(args.user)
         emit({"world": world, "token": token})
         return
     if args.command == "serve":
@@ -437,7 +614,7 @@ def run(args):
             raise MemoryError("non-loopback binding requires --allow-network and TLS ingress")
         config = GraphConfig.from_env()
         worker = (
-            ProjectionWorker(MemoryStore(args.data_dir), GraphitiAdapter(config))
+            ProjectionWorker(MemoryStore.from_env(args.data_dir), GraphitiAdapter(config))
             if config
             else None
         )
@@ -449,7 +626,7 @@ def run(args):
             access_log=False,
         )
         return
-    if args.command in {"export", "restore", "import-chatgpt", "import-pi", "backup"}:
+    if args.command in {"export", "restore", "import-chatgpt", "import-pi"}:
         from . import portability
 
         store, principal = local_store(args)
@@ -492,29 +669,42 @@ def run(args):
                     scope_id=args.scope,
                 )
             )
-        else:
-            backup_source(store, principal, args.world, args.path)
         return
-    if args.command == "graph-rebuild":
+    if args.command in {"graph-rebuild", "graph-purge"}:
+        from contextlib import nullcontext
+
         from .graph import GraphConfig, GraphitiAdapter, ProjectionWorker
+        from .lifecycle import EpisodeLifecycle
 
         store, principal = local_store(args)
         resolve_local_selection(store, principal, args)
         if not principal.admin:
-            raise MemoryError("graph rebuild requires an administrator")
+            raise MemoryError("graph maintenance requires an administrator")
         config = GraphConfig.from_env()
         if config is None:
             raise MemoryError("graph processing is not configured")
         world = store.get_world(principal, args.world, write=True, scope_id=args.scope)
 
         async def rebuild():
+            if args.command == "graph-purge":
+                adapter = GraphitiAdapter(config)
+                try:
+                    return await EpisodeLifecycle(store).purge(
+                        principal,
+                        args.world,
+                        args.scope,
+                        adapter,
+                        workers_drained=args.workers_drained,
+                    )
+                finally:
+                    await adapter.close()
             worker = ProjectionWorker(store, GraphitiAdapter(config))
             try:
                 return await worker.rebuild(world, include_unprojected=args.include_unprojected)
             finally:
                 await worker.close()
 
-        with DaemonLock(args.data_dir):
+        with nullcontext() if store.persistence.is_postgres else DaemonLock(args.data_dir):
             emit(asyncio.run(rebuild()))
         return
     if args.command == "import-directory":
@@ -587,7 +777,30 @@ def run(args):
                 )
                 for world, sid in args.select
             ]
-        if args.command == "import-directory":
+        if args.command == "authority-backup":
+            if args.path.exists() or args.path.is_symlink():
+                raise MemoryError("backup destination already exists")
+            client.http.timeout = httpx.Timeout(1200)
+            receipt = client.create_backup(BackupRequest(graph_mode=args.graph_mode))
+            emit({**receipt, **download_backup(client, receipt["artifact_id"], args.path)})
+        elif args.command == "authority-backups":
+            emit(client.backups())
+        elif args.command == "lifecycle":
+            emit(
+                client.lifecycle(
+                    args.world,
+                    args.scope,
+                    read_input(args.input, LifecycleRequest),
+                    preview=args.preview,
+                )
+            )
+        elif args.command == "lifecycle-receipt":
+            emit(client.lifecycle_receipt(args.world, args.scope, args.operation_id))
+        elif args.command == "retention":
+            emit(client.retention(read_input(args.input, RetentionRequest), preview=args.preview))
+        elif args.command == "retention-receipt":
+            emit(client.retention_receipt(args.operation_id))
+        elif args.command == "import-directory":
             result = client.request(
                 "POST",
                 f"{scope_path(args.world, args.scope)}/imports",
@@ -601,6 +814,19 @@ def run(args):
                     "destination": {"world_id": args.world, "scope_id": str(args.scope)},
                     "project": not args.source_only,
                 }
+            )
+        elif args.command == "identities":
+            emit(client.identities(args.kind))
+        elif args.command == "identity-create":
+            emit(client.create_identity(args.kind, read_input(args.input, CreateIdentity)))
+        elif args.command == "identity-resolve":
+            emit(client.resolve_identity(args.kind, args.reference))
+        elif args.command == "identity-update":
+            selected = client.resolve_identity(args.kind, args.reference)
+            emit(
+                client.update_identity(
+                    args.kind, selected.id, read_input(args.input, UpdateIdentity)
+                )
             )
         elif args.command == "worlds":
             listing(client.worlds(), "worlds") if args.table else emit(client.worlds())

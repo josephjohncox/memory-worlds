@@ -11,7 +11,6 @@ import json
 import os
 import re
 import secrets
-import sqlite3
 import threading
 import time
 from collections.abc import Iterator
@@ -19,6 +18,9 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
+
+from sqlalchemy import select, text
+from sqlalchemy.engine import Connection, RowMapping
 
 from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized, Unavailable
 from memory_worlds.errors import MemoryError as InvalidRequest
@@ -39,6 +41,12 @@ from memory_worlds.models import (
 )
 from memory_worlds.scopes import ScopedStore, scope_uuid, world_shared_scope_id
 
+from . import (
+    identity_names,  # noqa: F401 -- registers the current authority identity table
+    lifecycle,
+)
+from .persistence import LeaseLost, Persistence, WorkerLease
+
 _PRIVATE = {WorldKind.PERSONAL, WorldKind.PRIVATE_WORK}
 _WRITERS = {Role.WRITER.value, Role.MANAGER.value}
 _ID = re.compile(r"^[a-zA-Z0-9_-]{1,100}$")
@@ -56,91 +64,49 @@ def _canonical(value: dict) -> str:
 
 
 class MemoryStore(ScopedStore):
-    def __init__(self, data_dir: Path):
-        self.data_dir = Path(data_dir).expanduser().absolute()
-        self._control_lock = threading.RLock()
+    def __init__(
+        self, data_dir: Path, database_url: str | None = None, authority_id: str | None = None
+    ):
+        self.persistence = Persistence(data_dir, database_url, authority_id)
+        self.data_dir = self.persistence.data_dir
+        self.control_path = self.data_dir / "control.sqlite3"
         self._locks_lock = threading.Lock()
         self._world_locks: dict[str, threading.RLock] = {}
-        self._directory(self.data_dir)
-        self._directory(self.data_dir / "worlds")
-        self.control_path = self.data_dir / "control.sqlite3"
-        with self._control() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS worlds (
-                    id TEXT PRIMARY KEY, authority_id TEXT NOT NULL,
-                    name TEXT NOT NULL, kind TEXT NOT NULL,
-                    owner_id TEXT NOT NULL, created_at TEXT NOT NULL, alias TEXT
-                );
-                CREATE TABLE IF NOT EXISTS credentials (
-                    id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
-                    user_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-                    admin INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0
-                );
-                CREATE TABLE IF NOT EXISTS grants (
-                    credential_id TEXT NOT NULL REFERENCES credentials(id),
-                    world_id TEXT NOT NULL REFERENCES worlds(id), role TEXT NOT NULL,
-                    PRIMARY KEY (credential_id, world_id)
-                );
-                CREATE TABLE IF NOT EXISTS identities (
-                    issuer TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL UNIQUE,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    private_world_id TEXT NOT NULL REFERENCES worlds(id),
-                    PRIMARY KEY (issuer, subject)
-                );
-                CREATE TABLE IF NOT EXISTS identity_sessions (
-                    credential_id TEXT PRIMARY KEY REFERENCES credentials(id),
-                    user_id TEXT NOT NULL REFERENCES identities(user_id),
-                    token_digest TEXT NOT NULL UNIQUE, expires_at REAL NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS identity_group_state (
-                    user_id TEXT PRIMARY KEY REFERENCES identities(user_id),
-                    claims_iat REAL NOT NULL, groups_digest TEXT NOT NULL,
-                    mappings_digest TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS memberships (
-                    user_id TEXT NOT NULL, world_id TEXT NOT NULL REFERENCES worlds(id),
-                    role TEXT NOT NULL CHECK(role IN ('reader','writer','manager')),
-                    source TEXT NOT NULL,
-                    PRIMARY KEY (user_id, world_id, source)
-                );
-            """)
-            db.execute("INSERT OR IGNORE INTO metadata VALUES ('authority_id', ?)", (uuid4().hex,))
-            self.authority_id = db.execute(
-                "SELECT value FROM metadata WHERE key='authority_id'"
-            ).fetchone()[0]
-            self._initialize_scopes(db)
+        self.persistence.initialize()
+        self.authority_id = self.persistence.authority_id
 
     @staticmethod
-    def _directory(path: Path) -> None:
-        if path.is_symlink():
-            raise Conflict("Memory storage directories cannot be symbolic links")
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path.chmod(0o700)
+    def database_url_from_env() -> str | None:
+        """Validate the deployment selector without opening a recovery destination."""
+        backend = os.environ.get("MEMORY_WORLDS_STORAGE_BACKEND")
+        url = os.environ.get("MEMORY_WORLDS_DATABASE_URL", "").strip() or None
+        if backend not in {None, "sqlite", "postgres"}:
+            raise InvalidRequest("MEMORY_WORLDS_STORAGE_BACKEND must be sqlite or postgres")
+        if backend == "postgres" and url is None:
+            raise InvalidRequest("PostgreSQL storage requires MEMORY_WORLDS_DATABASE_URL")
+        if backend == "sqlite" and url is not None:
+            raise InvalidRequest("SQLite storage cannot configure MEMORY_WORLDS_DATABASE_URL")
+        return url
+
+    @classmethod
+    def from_env(cls, data_dir: Path):
+        return cls(
+            data_dir,
+            database_url=cls.database_url_from_env(),
+            authority_id=os.environ.get("MEMORY_WORLDS_AUTHORITY_ID") or None,
+        )
+
+    def _table(self, db: Connection, name: str):
+        return self.persistence.table(db, name)
 
     @staticmethod
-    def _connect(path: Path) -> sqlite3.Connection:
-        if path.is_symlink():
-            raise Conflict("Memory database files cannot be symbolic links")
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
-        os.close(fd)
-        path.chmod(0o600)
-        db = sqlite3.connect(path, timeout=15, isolation_level=None)
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA busy_timeout=15000")
-        db.execute("PRAGMA foreign_keys=ON")
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA synchronous=FULL")
-        return db
+    def _directory(path: Path):
+        Persistence.directory(path)
 
     @contextmanager
-    def _control(self) -> Iterator[sqlite3.Connection]:
-        with self._control_lock:
-            db = self._connect(self.control_path)
-            try:
-                yield db
-            finally:
-                db.close()
+    def _control(self) -> Iterator[Connection]:
+        with self.persistence.control() as db, self.persistence.transaction(db):
+            yield db
 
     def _lock(self, world_id: str) -> threading.RLock:
         if not _ID.fullmatch(world_id):
@@ -149,87 +115,58 @@ class MemoryStore(ScopedStore):
             return self._world_locks.setdefault(world_id, threading.RLock())
 
     def world_path(self, world_id: str, scope_id=None) -> Path:
-        """Trusted administration helper; callers still authorize the world first."""
+        """Native SQLite administration only; shared storage has no local journals."""
         self._lock(world_id)
-        directory = self.data_dir / "worlds" / world_id
-        if scope_id is not None:
-            sid = scope_uuid(scope_id)
-            if sid != world_shared_scope_id(self.authority_id, world_id):
-                directory = directory / "scopes" / sid
-        return directory / "source.sqlite3"
+        return self.persistence.source_path(world_id, scope_id)
 
     @contextmanager
-    def _world_db(self, world_id: str, scope_id=None) -> Iterator[sqlite3.Connection]:
-        with self._lock(world_id):
-            path = self.world_path(world_id, scope_id)
-            if not path.parent.is_dir() or path.parent.is_symlink():
-                raise NotFound("World storage not found")
-            db = self._connect(path)
-            try:
-                yield db
-            finally:
-                db.close()
+    def _world_db(self, world_id: str, scope_id=None) -> Iterator[Connection]:
+        self._lock(world_id)
+        with self.persistence.source(world_id, scope_id) as db:
+            yield db
 
-    @staticmethod
     @contextmanager
-    def _transaction(db: sqlite3.Connection) -> Iterator[None]:
-        db.execute("BEGIN IMMEDIATE")
-        try:
+    def _transaction(self, db: Connection):
+        with self.persistence.transaction(db):
             yield
-            db.commit()
-        except BaseException:
-            db.rollback()
-            raise
 
-    def _initialize_world(self, world_id: str, scope_id=None) -> None:
-        self._directory(self.data_dir / "worlds" / world_id)
-        if scope_id is not None:
-            self._directory(self.data_dir / "worlds" / world_id / "scopes")
-            self._directory(self.world_path(world_id, scope_id).parent)
-        with self._world_db(world_id, scope_id) as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS episodes (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    id TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL UNIQUE,
-                    digest TEXT NOT NULL, payload TEXT NOT NULL,
-                    received_at TEXT NOT NULL, actor_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-                    projection_state TEXT NOT NULL,
-                    agent_uuid TEXT, invocation_id TEXT, parent_invocation_id TEXT
-                );
-                CREATE TABLE IF NOT EXISTS projection (
-                    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-                    generation TEXT, state TEXT NOT NULL,
-                    configuration TEXT NOT NULL DEFAULT '{}'
-                );
-                INSERT OR IGNORE INTO projection (singleton,generation,state)
-                    VALUES (1, NULL, 'disabled');
-                CREATE TABLE IF NOT EXISTS projection_jobs (
-                    episode_id TEXT PRIMARY KEY REFERENCES episodes(id),
-                    state TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-                    generation TEXT, error TEXT, updated_at TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS audit (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    event TEXT NOT NULL, episode_id TEXT NOT NULL,
-                    actor_id TEXT NOT NULL, occurred_at TEXT NOT NULL
-                );
-            """)
+    def _initialize_world(self, world_id: str, scope_id=None):
+        self._lock(world_id)
+        self.persistence.initialize_source(world_id, scope_id)
 
-    def _principal(self, db: sqlite3.Connection, principal: Principal) -> Principal:
+    def _principal(self, db: Connection, principal: Principal) -> Principal:
         self._validate_ancestors(db, principal.credential_id)
-        row = db.execute(
-            "SELECT * FROM credentials WHERE id=? AND revoked=0", (principal.credential_id,)
-        ).fetchone()
+        row = (
+            db.execute(
+                text(f"SELECT * FROM {self._table(db, 'credentials')} WHERE id=:p0 AND revoked=0"),
+                {"p0": principal.credential_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         if row is None:
             raise Unauthorized("Credential is invalid or revoked")
-        session = db.execute(
-            "SELECT s.expires_at,i.enabled FROM identity_sessions s "
-            "JOIN identities i ON i.user_id=s.user_id WHERE s.credential_id=?",
-            (principal.credential_id,),
-        ).fetchone()
-        identity = db.execute(
-            "SELECT enabled FROM identities WHERE user_id=?", (row["user_id"],)
-        ).fetchone()
+        session = (
+            db.execute(
+                text(
+                    f"SELECT s.expires_at,i.enabled FROM "
+                    f"{self._table(db, 'identity_sessions')} s "
+                    f"JOIN {self._table(db, 'identities')} i ON "
+                    f"i.user_id=s.user_id WHERE s.credential_id=:p0"
+                ),
+                {"p0": principal.credential_id},
+            )
+            .mappings()
+            .fetchone()
+        )
+        identity = (
+            db.execute(
+                text(f"SELECT enabled FROM {self._table(db, 'identities')} WHERE user_id=:p0"),
+                {"p0": row["user_id"]},
+            )
+            .mappings()
+            .fetchone()
+        )
         if identity is not None and not identity["enabled"]:
             raise Unauthorized("Identity is disabled")
         if session is not None and session["expires_at"] <= time.time():
@@ -252,29 +189,49 @@ class MemoryStore(ScopedStore):
         """
         with self._control() as db, self._transaction(db):
             db.execute(
-                "UPDATE credentials SET revoked=1 WHERE id IN ("
-                "SELECT s.credential_id FROM identity_sessions s "
-                "JOIN identities i ON i.user_id=s.user_id "
-                "WHERE ? IS NULL OR i.issuer<>?)",
-                (active_issuer, active_issuer),
+                text(
+                    f"UPDATE {self._table(db, 'credentials')} SET "
+                    f"revoked=1 WHERE id IN (SELECT "
+                    f"s.credential_id FROM "
+                    f"{self._table(db, 'identity_sessions')} s "
+                    f"JOIN {self._table(db, 'identities')} i ON "
+                    f"i.user_id=s.user_id WHERE CAST(:p0 AS TEXT) "
+                    f"IS NULL OR i.issuer<>:p1)"
+                ),
+                {"p0": active_issuer, "p1": active_issuer},
             )
 
     def reconcile_oidc_policy(self, issuer: str, policy_digest: str) -> None:
         """Invalidate sessions and descendants when the trusted token policy changes."""
         key = "oidc-policy:" + issuer
         with self._control() as db, self._transaction(db):
-            previous = db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
-            if previous is None or previous[0] != policy_digest:
+            previous = (
                 db.execute(
-                    "UPDATE credentials SET revoked=1 WHERE id IN ("
-                    "SELECT s.credential_id FROM identity_sessions s "
-                    "JOIN identities i ON i.user_id=s.user_id WHERE i.issuer=?)",
-                    (issuer,),
+                    text(f"SELECT value FROM {self._table(db, 'metadata')} WHERE key=:p0"),
+                    {"p0": key},
+                )
+                .mappings()
+                .fetchone()
+            )
+            if previous is None or previous["value"] != policy_digest:
+                db.execute(
+                    text(
+                        f"UPDATE {self._table(db, 'credentials')} SET "
+                        f"revoked=1 WHERE id IN (SELECT "
+                        f"s.credential_id FROM "
+                        f"{self._table(db, 'identity_sessions')} s "
+                        f"JOIN {self._table(db, 'identities')} i ON "
+                        f"i.user_id=s.user_id WHERE i.issuer=:p0)"
+                    ),
+                    {"p0": issuer},
                 )
             db.execute(
-                "INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) "
-                "DO UPDATE SET value=excluded.value",
-                (key, policy_digest),
+                text(
+                    f"INSERT INTO {self._table(db, 'metadata')} "
+                    f"VALUES (:p0,:p1) ON CONFLICT(key) DO UPDATE "
+                    f"SET value=excluded.value"
+                ),
+                {"p0": key, "p1": policy_digest},
             )
 
     def reconcile_oidc_mappings(
@@ -290,42 +247,61 @@ class MemoryStore(ScopedStore):
         with self._control() as db, self._transaction(db):
             for mappings in group_mappings.values():
                 for world_id in mappings:
-                    world = db.execute("SELECT kind FROM worlds WHERE id=?", (world_id,)).fetchone()
+                    world = (
+                        db.execute(
+                            text(f"SELECT kind FROM {self._table(db, 'worlds')} WHERE id=:p0"),
+                            {"p0": world_id},
+                        )
+                        .mappings()
+                        .fetchone()
+                    )
                     if world is None or WorldKind(world["kind"]) in _PRIVATE:
                         raise ValueError(
                             "OIDC group mappings must target existing shared world IDs"
                         )
             db.execute(
-                "DELETE FROM memberships WHERE source=? AND user_id IN ("
-                "SELECT i.user_id FROM identities i "
-                "LEFT JOIN identity_group_state g ON g.user_id=i.user_id "
-                "WHERE i.issuer=? AND (g.mappings_digest IS NULL OR g.mappings_digest<>?))",
-                ("oidc:" + issuer, issuer, digest),
+                text(
+                    f"DELETE FROM {self._table(db, 'memberships')} "
+                    f"WHERE source=:p0 AND user_id IN (SELECT "
+                    f"i.user_id FROM "
+                    f"{self._table(db, 'identities')} i LEFT JOIN "
+                    f"{self._table(db, 'identity_group_state')} g "
+                    f"ON g.user_id=i.user_id WHERE i.issuer=:p1 "
+                    f"AND (g.mappings_digest IS NULL OR "
+                    f"g.mappings_digest<>:p2))"
+                ),
+                {"p0": "oidc:" + issuer, "p1": issuer, "p2": digest},
             )
 
-    def _admin(self, db: sqlite3.Connection, principal: Principal) -> None:
+    def _admin(self, db: Connection, principal: Principal) -> None:
         if not self._principal(db, principal).admin:
             raise Forbidden("Administrative credential required")
 
-    @staticmethod
-    def _token(db: sqlite3.Connection, request: CreateToken) -> str:
+    def _token(self, db: Connection, request: CreateToken) -> str:
         credential_id = uuid4().hex
         token = f"mw_{credential_id}.{secrets.token_urlsafe(32)}"
         db.execute(
-            "INSERT INTO credentials (id,token_hash,user_id,agent_id,admin) VALUES (?,?,?,?,?)",
-            (
-                credential_id,
-                hashlib.sha256(token.encode()).hexdigest(),
-                request.user_id,
-                request.agent_id,
-                int(request.admin),
+            text(
+                f"INSERT INTO {self._table(db, 'credentials')} "
+                f"(id,token_hash,user_id,agent_id,admin) "
+                f"VALUES (:p0,:p1,:p2,:p3,:p4)"
             ),
+            {
+                "p0": credential_id,
+                "p1": hashlib.sha256(token.encode()).hexdigest(),
+                "p2": request.user_id,
+                "p3": request.agent_id,
+                "p4": int(request.admin),
+            },
         )
         for world_id, role in request.grants.items():
-            db.execute("INSERT INTO grants VALUES (?,?,?)", (credential_id, world_id, role.value))
+            db.execute(
+                text(f"INSERT INTO {self._table(db, 'grants')} VALUES (:p0,:p1,:p2)"),
+                {"p0": credential_id, "p1": world_id, "p2": role.value},
+            )
         return token
 
-    def _new_world(self, db: sqlite3.Connection, request: CreateWorld, owner_id: str) -> World:
+    def _new_world(self, db: Connection, request: CreateWorld, owner_id: str) -> World:
         world_id = uuid4().hex
         world = World(
             id=world_id,
@@ -339,16 +315,16 @@ class MemoryStore(ScopedStore):
         )
         self._initialize_world(world.id)
         db.execute(
-            "INSERT INTO worlds VALUES (?,?,?,?,?,?,?)",
-            (
-                world.id,
-                world.authority_id,
-                world.name,
-                world.kind.value,
-                world.owner_id,
-                world.created_at.isoformat(),
-                world.alias,
-            ),
+            text(f"INSERT INTO {self._table(db, 'worlds')} VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6)"),
+            {
+                "p0": world.id,
+                "p1": world.authority_id,
+                "p2": world.name,
+                "p3": world.kind.value,
+                "p4": world.owner_id,
+                "p5": world.created_at.isoformat(),
+                "p6": world.alias,
+            },
         )
         self._create_shared_scope(db, world)
         return world
@@ -356,19 +332,36 @@ class MemoryStore(ScopedStore):
     def bootstrap(self, user_id: str = "owner") -> tuple[World, str]:
         request = CreateToken(user_id=user_id, agent_id="admin", admin=True)
         with self._control() as db, self._transaction(db):
-            if db.execute("SELECT 1 FROM metadata WHERE key='bootstrapped'").fetchone():
+            if (
+                db.execute(
+                    text(f"SELECT 1 FROM {self._table(db, 'metadata')} WHERE key='bootstrapped'")
+                )
+                .mappings()
+                .fetchone()
+            ):
                 raise Conflict("This authority is already initialized")
             world = self._new_world(db, CreateWorld(name="Personal"), request.user_id)
             token = self._token(db, request)
-            db.execute("INSERT INTO metadata VALUES ('bootstrapped', '1')")
+            db.execute(
+                text(f"INSERT INTO {self._table(db, 'metadata')} VALUES ('bootstrapped', '1')")
+            )
             return world, token
 
     def authenticate(self, token: str) -> Principal:
         digest = hashlib.sha256(token.encode()).hexdigest()
         with self._control() as db:
-            row = db.execute(
-                "SELECT * FROM credentials WHERE token_hash=? AND revoked=0", (digest,)
-            ).fetchone()
+            row = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM "
+                        f"{self._table(db, 'credentials')} WHERE "
+                        f"token_hash=:p0 AND revoked=0"
+                    ),
+                    {"p0": digest},
+                )
+                .mappings()
+                .fetchone()
+            )
             if row is None:
                 raise Unauthorized("Credential is invalid or revoked")
             return self._principal(db, self._credential_principal(db, row))
@@ -391,32 +384,54 @@ class MemoryStore(ScopedStore):
         if not issuer or not subject or expires_at <= time.time():
             raise Unauthorized("Invalid identity session")
         with self._control() as db, self._transaction(db):
-            identity = db.execute(
-                "SELECT * FROM identities WHERE issuer=? AND subject=?", (issuer, subject)
-            ).fetchone()
+            identity = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM {self._table(db, 'identities')}"
+                        f" WHERE issuer=:p0 AND subject=:p1"
+                    ),
+                    {"p0": issuer, "p1": subject},
+                )
+                .mappings()
+                .fetchone()
+            )
             if identity is None:
                 user_id = "user_" + uuid4().hex
                 world = self._new_world(
                     db, CreateWorld(name="Private work", kind=WorldKind.PRIVATE_WORK), user_id
                 )
                 db.execute(
-                    "INSERT INTO identities (issuer,subject,user_id,private_world_id) "
-                    "VALUES (?,?,?,?)",
-                    (issuer, subject, user_id, world.id),
+                    text(
+                        f"INSERT INTO {self._table(db, 'identities')} "
+                        f"(issuer,subject,user_id,private_world_id) "
+                        f"VALUES (:p0,:p1,:p2,:p3)"
+                    ),
+                    {"p0": issuer, "p1": subject, "p2": user_id, "p3": world.id},
                 )
                 db.execute(
-                    "INSERT INTO memberships VALUES (?,?,?,'manual')",
-                    (user_id, world.id, Role.MANAGER.value),
+                    text(
+                        f"INSERT INTO {self._table(db, 'memberships')} "
+                        f"VALUES (:p0,:p1,:p2,'manual')"
+                    ),
+                    {"p0": user_id, "p1": world.id, "p2": Role.MANAGER.value},
                 )
             else:
                 if not identity["enabled"]:
                     raise Unauthorized("Identity is disabled")
                 user_id = identity["user_id"]
-            session = db.execute(
-                "SELECT c.* FROM credentials c JOIN identity_sessions s "
-                "ON s.credential_id=c.id WHERE s.token_digest=?",
-                (token_digest,),
-            ).fetchone()
+            session = (
+                db.execute(
+                    text(
+                        f"SELECT c.* FROM "
+                        f"{self._table(db, 'credentials')} c JOIN "
+                        f"{self._table(db, 'identity_sessions')} s ON "
+                        f"s.credential_id=c.id WHERE s.token_digest=:p0"
+                    ),
+                    {"p0": token_digest},
+                )
+                .mappings()
+                .fetchone()
+            )
             if session is not None:
                 if session["revoked"] or session["user_id"] != user_id:
                     raise Unauthorized("Identity session is revoked")
@@ -434,9 +449,18 @@ class MemoryStore(ScopedStore):
                     _canonical({"groups": sorted(set(groups or []))}).encode()
                 ).hexdigest()
                 mappings_digest = hashlib.sha256(_canonical(group_mappings).encode()).hexdigest()
-                previous = db.execute(
-                    "SELECT * FROM identity_group_state WHERE user_id=?", (user_id,)
-                ).fetchone()
+                previous = (
+                    db.execute(
+                        text(
+                            f"SELECT * FROM "
+                            f"{self._table(db, 'identity_group_state')} "
+                            f"WHERE user_id=:p0"
+                        ),
+                        {"p0": user_id},
+                    )
+                    .mappings()
+                    .fetchone()
+                )
                 if previous is not None and (
                     issued_at < previous["claims_iat"]
                     or (
@@ -449,24 +473,41 @@ class MemoryStore(ScopedStore):
                 # accepted claim set against a new map on its next authentication;
                 # an older or conflicting claim set can never advance this watermark.
                 db.execute(
-                    "INSERT INTO identity_group_state VALUES (?,?,?,?) "
-                    "ON CONFLICT(user_id) DO UPDATE SET claims_iat=excluded.claims_iat,"
-                    "groups_digest=excluded.groups_digest,mappings_digest=excluded.mappings_digest",
-                    (user_id, issued_at, groups_digest, mappings_digest),
+                    text(
+                        f"INSERT INTO "
+                        f"{self._table(db, 'identity_group_state')} "
+                        f"VALUES (:p0,:p1,:p2,:p3) ON "
+                        f"CONFLICT(user_id) DO UPDATE SET "
+                        f"claims_iat=excluded.claims_iat,"
+                        f"groups_digest=excluded.groups_digest,"
+                        f"mappings_digest=excluded.mappings_digest"
+                    ),
+                    {"p0": user_id, "p1": issued_at, "p2": groups_digest, "p3": mappings_digest},
                 )
             else:
                 # Disabling the map removes mapped memberships while retaining the
                 # signed-claim watermark in case the operator enables mappings again.
                 db.execute(
-                    "UPDATE identity_group_state SET mappings_digest=? WHERE user_id=?",
-                    (hashlib.sha256(_canonical({}).encode()).hexdigest(), user_id),
+                    text(
+                        f"UPDATE "
+                        f"{self._table(db, 'identity_group_state')} "
+                        f"SET mappings_digest=:p0 WHERE user_id=:p1"
+                    ),
+                    {"p0": hashlib.sha256(_canonical({}).encode()).hexdigest(), "p1": user_id},
                 )
             # An operator controls the map. Token strings can never name arbitrary worlds.
             mapped: dict[str, Role] = {}
             rank = {Role.READER: 0, Role.WRITER: 1, Role.MANAGER: 2}
             for group in groups or []:
                 for world_id, role in (group_mappings or {}).get(group, {}).items():
-                    world = db.execute("SELECT * FROM worlds WHERE id=?", (world_id,)).fetchone()
+                    world = (
+                        db.execute(
+                            text(f"SELECT * FROM {self._table(db, 'worlds')} WHERE id=:p0"),
+                            {"p0": world_id},
+                        )
+                        .mappings()
+                        .fetchone()
+                    )
                     if world is None or WorldKind(world["kind"]) in _PRIVATE:
                         raise Forbidden(
                             "Identity group mappings must target existing shared worlds"
@@ -474,24 +515,33 @@ class MemoryStore(ScopedStore):
                     if world_id not in mapped or rank[role] > rank[mapped[world_id]]:
                         mapped[world_id] = role
             db.execute(
-                "DELETE FROM memberships WHERE user_id=? AND source=?", (user_id, "oidc:" + issuer)
+                text(
+                    f"DELETE FROM {self._table(db, 'memberships')} WHERE user_id=:p0 AND source=:p1"
+                ),
+                {"p0": user_id, "p1": "oidc:" + issuer},
             )
             for world_id, role in mapped.items():
                 db.execute(
-                    "INSERT INTO memberships VALUES (?,?,?,?)",
-                    (user_id, world_id, role.value, "oidc:" + issuer),
+                    text(f"INSERT INTO {self._table(db, 'memberships')} VALUES (:p0,:p1,:p2,:p3)"),
+                    {"p0": user_id, "p1": world_id, "p2": role.value, "p3": "oidc:" + issuer},
                 )
             if session is not None:
                 return principal
             credential_id = uuid4().hex
             agent_id = "oidc"
             db.execute(
-                "INSERT INTO credentials (id,token_hash,user_id,agent_id,admin) VALUES (?,?,?,?,0)",
-                (credential_id, "oidc:" + token_digest, user_id, agent_id),
+                text(
+                    f"INSERT INTO {self._table(db, 'credentials')} "
+                    f"(id,token_hash,user_id,agent_id,admin) "
+                    f"VALUES (:p0,:p1,:p2,:p3,0)"
+                ),
+                {"p0": credential_id, "p1": "oidc:" + token_digest, "p2": user_id, "p3": agent_id},
             )
             db.execute(
-                "INSERT INTO identity_sessions VALUES (?,?,?,?)",
-                (credential_id, user_id, token_digest, expires_at),
+                text(
+                    f"INSERT INTO {self._table(db, 'identity_sessions')} VALUES (:p0,:p1,:p2,:p3)"
+                ),
+                {"p0": credential_id, "p1": user_id, "p2": token_digest, "p3": expires_at},
             )
             return Principal(credential_id=credential_id, user_id=user_id, agent_id=agent_id)
 
@@ -501,21 +551,33 @@ class MemoryStore(ScopedStore):
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT user_id,issuer,subject,enabled,private_world_id "
-                    "FROM identities ORDER BY user_id"
-                ).fetchall()
+                    text(
+                        f"SELECT user_id,issuer,subject,enabled,"
+                        f"private_world_id FROM "
+                        f"{self._table(db, 'identities')} ORDER BY "
+                        f"user_id"
+                    )
+                )
+                .mappings()
+                .fetchall()
             ]
 
     def set_user_enabled(self, principal: Principal, user_id: str, enabled: bool) -> None:
         with self._control() as db, self._transaction(db):
             self._admin(db, principal)
             changed = db.execute(
-                "UPDATE identities SET enabled=? WHERE user_id=?", (int(enabled), user_id)
+                text(f"UPDATE {self._table(db, 'identities')} SET enabled=:p0 WHERE user_id=:p1"),
+                {"p0": int(enabled), "p1": user_id},
             ).rowcount
             if not changed:
                 raise NotFound("Identity not found")
             if not enabled:
-                db.execute("UPDATE credentials SET revoked=1 WHERE user_id=?", (user_id,))
+                db.execute(
+                    text(
+                        f"UPDATE {self._table(db, 'credentials')} SET revoked=1 WHERE user_id=:p0"
+                    ),
+                    {"p0": user_id},
+                )
 
     def list_memberships(self, principal: Principal, world_id: str) -> list[dict]:
         with self._control() as db:
@@ -524,10 +586,15 @@ class MemoryStore(ScopedStore):
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT user_id,world_id,role,source FROM memberships "
-                    "WHERE world_id=? ORDER BY user_id,source",
-                    (world_id,),
-                ).fetchall()
+                    text(
+                        f"SELECT user_id,world_id,role,source FROM "
+                        f"{self._table(db, 'memberships')} WHERE "
+                        f"world_id=:p0 ORDER BY user_id,source"
+                    ),
+                    {"p0": world_id},
+                )
+                .mappings()
+                .fetchall()
             ]
 
     def set_membership(
@@ -544,14 +611,22 @@ class MemoryStore(ScopedStore):
                 raise Forbidden("Private world memberships must belong to the world owner")
             if role is None:
                 db.execute(
-                    "DELETE FROM memberships WHERE user_id=? AND world_id=? AND source='manual'",
-                    (user_id, world_id),
+                    text(
+                        f"DELETE FROM {self._table(db, 'memberships')} "
+                        f"WHERE user_id=:p0 AND world_id=:p1 AND "
+                        f"source='manual'"
+                    ),
+                    {"p0": user_id, "p1": world_id},
                 )
             else:
                 db.execute(
-                    "INSERT INTO memberships VALUES (?,?,?,'manual') "
-                    "ON CONFLICT(user_id,world_id,source) DO UPDATE SET role=excluded.role",
-                    (user_id, world_id, role.value),
+                    text(
+                        f"INSERT INTO {self._table(db, 'memberships')} "
+                        f"VALUES (:p0,:p1,:p2,'manual') ON "
+                        f"CONFLICT(user_id,world_id,source) DO UPDATE "
+                        f"SET role=excluded.role"
+                    ),
+                    {"p0": user_id, "p1": world_id, "p2": role.value},
                 )
 
     def create_world(self, principal: Principal, request: CreateWorld) -> World:
@@ -563,58 +638,117 @@ class MemoryStore(ScopedStore):
         with self._control() as db, self._transaction(db):
             self._admin(db, principal)
             self._authorized(db, principal, world_id)
-            db.execute("UPDATE worlds SET alias=? WHERE id=?", (request.alias, world_id))
-            row = db.execute("SELECT * FROM worlds WHERE id=?", (world_id,)).fetchone()
+            db.execute(
+                text(f"UPDATE {self._table(db, 'worlds')} SET alias=:p0 WHERE id=:p1"),
+                {"p0": request.alias, "p1": world_id},
+            )
+            row = (
+                db.execute(
+                    text(f"SELECT * FROM {self._table(db, 'worlds')} WHERE id=:p0"),
+                    {"p0": world_id},
+                )
+                .mappings()
+                .fetchone()
+            )
         return self._hydrate(row)
 
     def _authorized(
-        self, db: sqlite3.Connection, principal: Principal, world_id: str, write: bool = False
-    ) -> sqlite3.Row:
+        self, db: Connection, principal: Principal, world_id: str, write: bool = False
+    ) -> RowMapping:
         self._lock(world_id)
         self._principal(db, principal)
-        row = db.execute("SELECT * FROM worlds WHERE id=?", (world_id,)).fetchone()
+        row = (
+            db.execute(
+                text(f"SELECT * FROM {self._table(db, 'worlds')} WHERE id=:p0"), {"p0": world_id}
+            )
+            .mappings()
+            .fetchone()
+        )
         if row is None:
             raise NotFound("World not found")
         if principal.admin:
             return row
         if WorldKind(row["kind"]) in _PRIVATE and row["owner_id"] != principal.user_id:
             raise Forbidden("World access denied")
-        identity_session = db.execute(
-            "SELECT 1 FROM identity_sessions WHERE credential_id=?",
-            (principal.credential_id,),
-        ).fetchone()
+        identity_session = (
+            db.execute(
+                text(
+                    f"SELECT 1 FROM {self._table(db, 'identity_sessions')} WHERE credential_id=:p0"
+                ),
+                {"p0": principal.credential_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         if identity_session is not None:
-            memberships = db.execute(
-                "SELECT role FROM memberships WHERE user_id=? AND world_id=?",
-                (principal.user_id, world_id),
-            ).fetchall()
+            memberships = (
+                db.execute(
+                    text(
+                        f"SELECT role FROM "
+                        f"{self._table(db, 'memberships')} WHERE "
+                        f"user_id=:p0 AND world_id=:p1"
+                    ),
+                    {"p0": principal.user_id, "p1": world_id},
+                )
+                .mappings()
+                .fetchall()
+            )
             roles = {membership["role"] for membership in memberships}
         else:
             # A separate agent credential is an explicit capability scope. The
             # owner's broader user memberships cannot elevate a reader or grant
             # access to worlds absent from this credential's grants.
-            grant = db.execute(
-                "SELECT role FROM grants WHERE credential_id=? AND world_id=?",
-                (principal.credential_id, world_id),
-            ).fetchone()
+            grant = (
+                db.execute(
+                    text(
+                        f"SELECT role FROM {self._table(db, 'grants')} "
+                        f"WHERE credential_id=:p0 AND world_id=:p1"
+                    ),
+                    {"p0": principal.credential_id, "p1": world_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             roles = {grant["role"]} if grant is not None else set()
         if not roles or (write and not roles.intersection(_WRITERS)):
             raise Forbidden("World access denied")
-        context = db.execute(
-            "SELECT parent_credential_id FROM credential_contexts WHERE credential_id=?",
-            (principal.credential_id,),
-        ).fetchone()
+        context = (
+            db.execute(
+                text(
+                    f"SELECT parent_credential_id FROM "
+                    f"{self._table(db, 'credential_contexts')} "
+                    f"WHERE credential_id=:p0"
+                ),
+                {"p0": principal.credential_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         if context is not None:
-            parent = db.execute("SELECT * FROM credentials WHERE id=?", (context[0],)).fetchone()
+            parent = (
+                db.execute(
+                    text(f"SELECT * FROM {self._table(db, 'credentials')} WHERE id=:p0"),
+                    {"p0": context["parent_credential_id"]},
+                )
+                .mappings()
+                .fetchone()
+            )
             self._authorized(db, self._credential_principal(db, parent), world_id, write)
         return row
 
-    def _hydrate(self, row: sqlite3.Row, scope_id=None) -> World:
+    def _hydrate(self, row: RowMapping, scope_id=None) -> World:
         scope_id = UUID(scope_uuid(scope_id or world_shared_scope_id(self.authority_id, row["id"])))
         with self._world_db(row["id"], scope_id) as db:
-            projection = db.execute("SELECT generation,state FROM projection").fetchone()
+            projection = (
+                db.execute(text(f"SELECT generation,state FROM {self._table(db, 'projection')}"))
+                .mappings()
+                .fetchone()
+            )
         return World(
-            **dict(row), generation=projection[0], projection_state=projection[1], scope_id=scope_id
+            **dict(row),
+            generation=projection["generation"],
+            projection_state=projection["state"],
+            scope_id=scope_id,
         )
 
     def get_world(
@@ -630,7 +764,13 @@ class MemoryStore(ScopedStore):
     def list_worlds(self, principal: Principal) -> list[World]:
         with self._control() as db:
             self._principal(db, principal)
-            rows = db.execute("SELECT * FROM worlds ORDER BY created_at,id").fetchall()
+            rows = (
+                db.execute(
+                    text(f"SELECT * FROM {self._table(db, 'worlds')} ORDER BY created_at,id")
+                )
+                .mappings()
+                .fetchall()
+            )
             visible = []
             for row in rows:
                 try:
@@ -663,22 +803,31 @@ class MemoryStore(ScopedStore):
         with self._control() as db, self._transaction(db):
             self._principal(db, principal)
             if not principal.admin:
-                row = db.execute(
-                    "SELECT parent_credential_id FROM credential_contexts WHERE credential_id=?",
-                    (credential_id,),
-                ).fetchone()
-                if row is None or row[0] != principal.credential_id:
+                row = (
+                    db.execute(
+                        text(
+                            f"SELECT parent_credential_id FROM "
+                            f"{self._table(db, 'credential_contexts')} "
+                            f"WHERE credential_id=:p0"
+                        ),
+                        {"p0": credential_id},
+                    )
+                    .mappings()
+                    .fetchone()
+                )
+                if row is None or row["parent_credential_id"] != principal.credential_id:
                     raise Forbidden(
                         "Only administrators or the delegating parent may revoke a credential"
                     )
             changed = db.execute(
-                "UPDATE credentials SET revoked=1 WHERE id=?", (credential_id,)
+                text(f"UPDATE {self._table(db, 'credentials')} SET revoked=1 WHERE id=:p0"),
+                {"p0": credential_id},
             ).rowcount
             if not changed:
                 raise NotFound("Credential not found")
 
     @staticmethod
-    def _episode(row: sqlite3.Row, world_id: str) -> Episode:
+    def _episode(row: RowMapping, world_id: str) -> Episode:
         return Episode(
             **json.loads(row["payload"]),
             id=row["id"],
@@ -695,16 +844,22 @@ class MemoryStore(ScopedStore):
         )
 
     def _insert(
-        self, db: sqlite3.Connection, principal: Principal, world_id: str, episode: EpisodeInput
+        self, db: Connection, principal: Principal, world_id: str, episode: EpisodeInput
     ) -> Receipt:
         # Validate before Pydantic's JSON conversion can turn NaN into null and
         # make two distinct inputs acquire the same source identity digest.
+        lifecycle.assert_source_live(self, db, episode.source_id)
         _canonical(episode.metadata)
         payload = _canonical(episode.model_dump(mode="json"))
         digest = hashlib.sha256(payload.encode()).hexdigest()
-        old = db.execute(
-            "SELECT * FROM episodes WHERE source_id=?", (episode.source_id,)
-        ).fetchone()
+        old = (
+            db.execute(
+                text(f"SELECT * FROM {self._table(db, 'episodes')} WHERE source_id=:p0"),
+                {"p0": episode.source_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         if old:
             if old["digest"] != digest:
                 raise Conflict("Source identity already exists with different content or metadata")
@@ -712,34 +867,56 @@ class MemoryStore(ScopedStore):
         episode_id, received = uuid4().hex, _now()
         state = "pending" if episode.project else "disabled"
         db.execute(
-            "INSERT INTO episodes "
-            "(id,source_id,digest,payload,received_at,actor_id,agent_id,projection_state,"
-            "agent_uuid,invocation_id,parent_invocation_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                episode_id,
-                episode.source_id,
-                digest,
-                payload,
-                received,
-                principal.user_id,
-                principal.agent_id,
-                state,
-                str(principal.agent_uuid) if principal.agent_uuid else None,
-                str(principal.invocation_id) if principal.invocation_id else None,
-                str(principal.parent_invocation_id) if principal.parent_invocation_id else None,
+            text(
+                f"INSERT INTO {self._table(db, 'episodes')} "
+                f"(id,source_id,digest,payload,received_at,"
+                f"actor_id,agent_id,projection_state,"
+                f"agent_uuid,invocation_id,"
+                f"parent_invocation_id) VALUES (:p0,:p1,:p2,"
+                f":p3,:p4,:p5,:p6,:p7,:p8,:p9,:p10)"
             ),
+            {
+                "p0": episode_id,
+                "p1": episode.source_id,
+                "p2": digest,
+                "p3": payload,
+                "p4": received,
+                "p5": principal.user_id,
+                "p6": principal.agent_id,
+                "p7": state,
+                "p8": str(principal.agent_uuid) if principal.agent_uuid else None,
+                "p9": str(principal.invocation_id) if principal.invocation_id else None,
+                "p10": str(principal.parent_invocation_id)
+                if principal.parent_invocation_id
+                else None,
+            },
         )
         if episode.project:
             db.execute(
-                "INSERT INTO projection_jobs (episode_id,state,updated_at) VALUES (?,?,?)",
-                (episode_id, "pending", received),
+                text(
+                    f"INSERT INTO "
+                    f"{self._table(db, 'projection_jobs')} "
+                    f"(episode_id,state,updated_at) VALUES (:p0,"
+                    f":p1,:p2)"
+                ),
+                {"p0": episode_id, "p1": "pending", "p2": received},
             )
         db.execute(
-            "INSERT INTO audit (event,episode_id,actor_id,occurred_at) VALUES (?,?,?,?)",
-            ("capture", episode_id, principal.user_id, received),
+            text(
+                f"INSERT INTO {self._table(db, 'audit')} "
+                f"(event,episode_id,actor_id,occurred_at) "
+                f"VALUES (:p0,:p1,:p2,:p3)"
+            ),
+            {"p0": "capture", "p1": episode_id, "p2": principal.user_id, "p3": received},
         )
-        row = db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+        row = (
+            db.execute(
+                text(f"SELECT * FROM {self._table(db, 'episodes')} WHERE id=:p0"),
+                {"p0": episode_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         return Receipt(episode=self._episode(row, world_id))
 
     def capture(
@@ -771,7 +948,16 @@ class MemoryStore(ScopedStore):
     ) -> Episode:
         world = self.get_world(principal, world_id, scope_id=scope_id)
         with self._world_db(world_id, world.scope_id) as db:
-            row = db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+            table = self._table(db, "episodes")
+            row = (
+                db.execute(
+                    select(table).where(
+                        table.c.id == episode_id, lifecycle.visible_clause(self, db, table)
+                    )
+                )
+                .mappings()
+                .fetchone()
+            )
         if row is None:
             raise NotFound("Episode not found")
         return self._episode(row, world_id)
@@ -783,15 +969,14 @@ class MemoryStore(ScopedStore):
         if limit is not None and not 1 <= limit <= 1000:
             raise InvalidRequest("Episode limit must be between 1 and 1000")
         with self._world_db(world_id, world.scope_id) as db:
-            return [
-                self._episode(r, world_id)
-                for r in db.execute(
-                    "SELECT * FROM episodes ORDER BY sequence"
-                    if limit is None
-                    else "SELECT * FROM episodes ORDER BY sequence DESC LIMIT ?",
-                    () if limit is None else (limit,),
-                )
-            ]
+            table = self._table(db, "episodes")
+            statement = select(table).where(lifecycle.visible_clause(self, db, table))
+            statement = (
+                statement.order_by(table.c.sequence)
+                if limit is None
+                else statement.order_by(table.c.sequence.desc()).limit(limit)
+            )
+            return [self._episode(row, world_id) for row in db.execute(statement).mappings()]
 
     def search(
         self,
@@ -804,7 +989,6 @@ class MemoryStore(ScopedStore):
     ) -> list[Episode]:
         if not 1 <= limit <= 100:
             raise ValueError("Search limit must be between 1 and 100")
-        # Authorize the complete selection before touching any source database.
         selections = [(world_id, scope_id) for world_id in world_ids]
         selections.extend((selection.world_id, selection.scope_id) for selection in (scopes or []))
         selected = set()
@@ -819,7 +1003,9 @@ class MemoryStore(ScopedStore):
         matches = []
         for world_id, sid in selected:
             with self._world_db(world_id, sid) as db:
-                for row in db.execute("SELECT * FROM episodes ORDER BY sequence DESC"):
+                table = self._table(db, "episodes")
+                statement = select(table).where(lifecycle.visible_clause(self, db, table))
+                for row in db.execute(statement.order_by(table.c.sequence.desc())).mappings():
                     content = json.loads(row["payload"])["content"].casefold()
                     if all(word in content for word in words):
                         matches.append(self._episode(row, world_id))
@@ -827,35 +1013,38 @@ class MemoryStore(ScopedStore):
 
     def snapshot(self, principal: Principal, world_id: str, scope_id=None) -> dict:
         world = self.get_world(principal, world_id, scope_id=scope_id)
-        with self._world_db(world_id, world.scope_id) as db:
-            db.execute("BEGIN")
-            try:
-                projection = db.execute(
-                    "SELECT generation,state,configuration FROM projection"
-                ).fetchone()
-                world = world.model_copy(
-                    update={
-                        "generation": projection[0],
-                        "projection_state": projection[1],
-                    }
-                )
-                episodes = [
-                    self._episode(row, world_id).model_dump(mode="json")
-                    for row in db.execute("SELECT * FROM episodes ORDER BY sequence")
-                ]
-                audit = [dict(row) for row in db.execute("SELECT * FROM audit ORDER BY sequence")]
-            finally:
-                db.rollback()
-        result = {
+        with self._world_db(world_id, world.scope_id) as db, self._transaction(db):
+            projection = db.execute(select(self._table(db, "projection"))).mappings().one()
+            world = world.model_copy(
+                update={
+                    "generation": projection["generation"],
+                    "projection_state": projection["state"],
+                }
+            )
+            table = self._table(db, "episodes")
+            visible = lifecycle.visible_clause(self, db, table)
+            episodes = [
+                self._episode(row, world_id).model_dump(mode="json")
+                for row in db.execute(
+                    select(table).where(visible).order_by(table.c.sequence)
+                ).mappings()
+            ]
+            audit_table = self._table(db, "audit")
+            audit = [
+                dict(row)
+                for row in db.execute(
+                    select(audit_table)
+                    .where(audit_table.c.episode_id.in_(select(table.c.id).where(visible)))
+                    .order_by(audit_table.c.sequence)
+                ).mappings()
+            ]
+        return {
             "world": world.model_dump(mode="json"),
             "episodes": episodes,
             "audit": audit,
-            "projection_configuration": json.loads(projection[2]),
+            "projection_configuration": json.loads(projection["configuration"]),
+            "scope": self.get_scope(principal, world_id, world.scope_id).model_dump(mode="json"),
         }
-        result["scope"] = self.get_scope(principal, world_id, world.scope_id).model_dump(
-            mode="json"
-        )
-        return result
 
     def import_episodes(
         self,
@@ -879,12 +1068,21 @@ class MemoryStore(ScopedStore):
                 raise Forbidden("Imports require an agent-persistent or invocation-private scope")
             # Same-user agents may share private memory. A different user's live
             # explicit read grant makes this destination unsuitable for import.
-            readers = control.execute(
-                "SELECT c.* FROM credentials c JOIN scope_grants g ON g.credential_id=c.id "
-                "WHERE c.revoked=0 AND c.user_id<>? AND g.scope_id=? "
-                "AND g.operation='read' LIMIT 4097",
-                (principal.user_id, scope["id"]),
-            ).fetchall()
+            readers = (
+                control.execute(
+                    text(
+                        f"SELECT c.* FROM "
+                        f"{self._table(control, 'credentials')} c JOIN "
+                        f"{self._table(control, 'scope_grants')} g ON "
+                        f"g.credential_id=c.id WHERE c.revoked=0 AND "
+                        f"c.user_id<>:p0 AND g.scope_id=:p1 AND "
+                        f"g.operation='read' LIMIT 4097"
+                    ),
+                    {"p0": principal.user_id, "p1": scope["id"]},
+                )
+                .mappings()
+                .fetchall()
+            )
             if len(readers) > 4096:
                 raise Forbidden("Import destination reader audience cannot be verified")
             for row in readers:
@@ -961,94 +1159,319 @@ class MemoryStore(ScopedStore):
 
     def projection_worlds(self) -> list[World]:
         with self._control() as db:
-            rows = db.execute("SELECT * FROM worlds ORDER BY id").fetchall()
+            rows = (
+                db.execute(text(f"SELECT * FROM {self._table(db, 'worlds')} ORDER BY id"))
+                .mappings()
+                .fetchall()
+            )
         targets = [self._hydrate(row) for row in rows]
         with self._control() as db:
-            scopes = db.execute(
-                "SELECT * FROM scopes WHERE kind<>'world-shared' ORDER BY world_id,id"
-            ).fetchall()
+            scopes = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM {self._table(db, 'scopes')} "
+                        f"WHERE kind<>'world-shared' ORDER BY world_id,"
+                        f"id"
+                    )
+                )
+                .mappings()
+                .fetchall()
+            )
         worlds = {row["id"]: row for row in rows}
         targets.extend(self._hydrate(worlds[row["world_id"]], row["id"]) for row in scopes)
         return targets
 
+    def projection_resource(self, world_id: str, scope_id=None) -> str:
+        sid = (
+            scope_uuid(scope_id) if scope_id else world_shared_scope_id(self.authority_id, world_id)
+        )
+        return f"projection:{world_id}:{sid}"
+
+    def _projection_lease(self, lease: WorkerLease, world_id: str, scope_id=None):
+        if lease.resource != self.projection_resource(world_id, scope_id):
+            raise LeaseLost("Worker lease does not belong to the selected projection")
+        return self.persistence.fenced(lease)
+
+    def generation_inventory(self, world_id=None, scope_id=None) -> list[dict]:
+        with self._control() as db:
+            table = self._table(db, "projection_generations")
+            statement = select(table)
+            if world_id is not None:
+                statement = statement.where(table.c.world_id == world_id)
+            if scope_id is not None:
+                statement = statement.where(table.c.scope_id == scope_uuid(scope_id))
+            return [
+                dict(row)
+                for row in db.execute(
+                    statement.order_by(table.c.world_id, table.c.scope_id, table.c.created_at)
+                ).mappings()
+            ]
+
+    def register_generation(
+        self, world_id: str, generation: str, *, lease: WorkerLease, scope_id=None
+    ) -> None:
+        """Inventory a namespace before its first possible external write."""
+        sid = (
+            scope_uuid(scope_id) if scope_id else world_shared_scope_id(self.authority_id, world_id)
+        )
+        with self._projection_lease(lease, world_id, sid), self._control() as db:
+            table = self._table(db, "projection_generations")
+            self.persistence.insert_ignore(
+                db,
+                table,
+                dict(
+                    world_id=world_id,
+                    scope_id=sid,
+                    generation=generation,
+                    state="building",
+                    created_at=_now(),
+                    lease_fence=lease.fence,
+                ),
+                ["world_id", "scope_id", "generation"],
+            )
+            row = (
+                db.execute(
+                    select(table).where(
+                        table.c.world_id == world_id,
+                        table.c.scope_id == sid,
+                        table.c.generation == generation,
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            if row["state"] in {"failed", "retired", "purged"}:
+                raise Unavailable("Graph generation is quarantined; rebuild into a fresh namespace")
+            db.execute(
+                table.update()
+                .where(
+                    table.c.world_id == world_id,
+                    table.c.scope_id == sid,
+                    table.c.generation == generation,
+                )
+                .values(lease_fence=lease.fence)
+            )
+
+    def _catalog_state(self, db, world_id, scope_id, generation, state, lease):
+        table = self._table(db, "projection_generations")
+        sid = (
+            scope_uuid(scope_id) if scope_id else world_shared_scope_id(self.authority_id, world_id)
+        )
+        row = (
+            db.execute(
+                select(table).where(
+                    table.c.world_id == world_id,
+                    table.c.scope_id == sid,
+                    table.c.generation == generation,
+                )
+            )
+            .mappings()
+            .fetchone()
+        )
+        if row is None or row["lease_fence"] != lease.fence:
+            raise LeaseLost("Graph generation is not registered to the current worker")
+        if state == "active":
+            if row["state"] not in {"building", "active"}:
+                raise Unavailable("A quarantined graph namespace cannot be activated")
+            db.execute(
+                table.update()
+                .where(
+                    table.c.world_id == world_id,
+                    table.c.scope_id == sid,
+                    table.c.generation != generation,
+                    table.c.state == "active",
+                )
+                .values(state="retired", retired_at=_now())
+            )
+        db.execute(
+            table.update()
+            .where(
+                table.c.world_id == world_id,
+                table.c.scope_id == sid,
+                table.c.generation == generation,
+            )
+            .values(state=state, retired_at=_now() if state in {"failed", "retired"} else None)
+        )
+
+    def fail_generation(self, world_id, generation, *, lease: WorkerLease, scope_id=None):
+        with self._projection_lease(lease, world_id, scope_id), self._control() as db:
+            self._catalog_state(db, world_id, scope_id, generation, "failed", lease)
+
     def pending_jobs(self, world_id: str, scope_id=None) -> list[Episode]:
         with self._world_db(world_id, scope_id) as db:
+            episodes = self._table(db, "episodes")
             return [
                 self._episode(row, world_id)
                 for row in db.execute(
-                    "SELECT * FROM episodes WHERE projection_state='pending' ORDER BY sequence"
-                )
+                    select(episodes)
+                    .where(
+                        episodes.c.projection_state == "pending",
+                        lifecycle.visible_clause(self, db, episodes),
+                    )
+                    .order_by(episodes.c.sequence)
+                ).mappings()
             ]
 
-    def mark_processing(self, world_id: str, episode_id: str, scope_id=None) -> Episode | None:
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
-            if db.execute("SELECT state FROM projection").fetchone()[0] == "degraded":
+    def assert_projection_live(self, world_id, scope_id=None, *, lease: WorkerLease):
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            if lifecycle.has_pending_purges(self, world_id, scope_id):
+                raise Unavailable("Graph erasure is pending for the selected scope")
+
+    def mark_processing(
+        self, world_id: str, episode_id: str, scope_id=None, *, lease: WorkerLease
+    ) -> Episode | None:
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            if lifecycle.has_pending_purges(self, world_id, scope_id):
+                raise Unavailable("Graph erasure is pending for the selected scope")
+            jobs, episodes = self._table(db, "projection_jobs"), self._table(db, "episodes")
+            projection = self._table(db, "projection")
+            if db.execute(select(projection.c.state)).scalar_one() == "degraded":
                 raise Unavailable("World projection requires a rebuild")
             changed = db.execute(
-                "UPDATE projection_jobs SET state='processing', attempts=attempts+1, "
-                "updated_at=? WHERE episode_id=? AND state='pending'",
-                (_now(), episode_id),
+                jobs.update()
+                .where(jobs.c.episode_id == episode_id, jobs.c.state == "pending")
+                .values(
+                    state="processing",
+                    attempts=jobs.c.attempts + 1,
+                    updated_at=_now(),
+                    lease_owner=lease.owner,
+                    lease_fence=lease.fence,
+                    lease_expires_at=lease.expires_at,
+                )
             ).rowcount
             if not changed:
                 return None
             db.execute(
-                "UPDATE episodes SET projection_state='processing' WHERE id=?", (episode_id,)
+                episodes.update()
+                .where(episodes.c.id == episode_id)
+                .values(projection_state="processing")
             )
-            row = db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
+            row = db.execute(select(episodes).where(episodes.c.id == episode_id)).mappings().one()
             return self._episode(row, world_id)
 
     def mark_projected(
-        self, world_id: str, episode_id: str, generation: str, scope_id=None
+        self, world_id: str, episode_id: str, generation: str, scope_id=None, *, lease: WorkerLease
     ) -> None:
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
-            state = db.execute("SELECT state FROM projection").fetchone()[0]
-            if state == "degraded":
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._control() as control,
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            if lifecycle.has_pending_purges(self, world_id, scope_id):
+                raise Unavailable("Graph erasure is pending for the selected scope")
+            jobs, episodes = self._table(db, "projection_jobs"), self._table(db, "episodes")
+            projection = self._table(db, "projection")
+            if db.execute(select(projection.c.state)).scalar_one() == "degraded":
                 raise Unavailable("World projection requires a rebuild")
-            if not db.execute(
-                "UPDATE projection_jobs SET state='projected',generation=?,error=NULL,updated_at=? "
-                "WHERE episode_id=? AND state='processing'",
-                (generation, _now(), episode_id),
-            ).rowcount:
-                raise Conflict("Projection job is not processing")
-            db.execute("UPDATE episodes SET projection_state='projected' WHERE id=?", (episode_id,))
-            db.execute("UPDATE projection SET generation=?,state='ready'", (generation,))
-
-    def mark_unknown(self, world_id: str, episode_id: str, error: str, scope_id=None) -> None:
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
-            db.execute("UPDATE projection SET state='degraded'")
-            db.execute("UPDATE episodes SET projection_state='unknown' WHERE id=?", (episode_id,))
+            updated = db.execute(
+                jobs.update()
+                .where(
+                    jobs.c.episode_id == episode_id,
+                    jobs.c.state == "processing",
+                    jobs.c.lease_owner == lease.owner,
+                    jobs.c.lease_fence == lease.fence,
+                )
+                .values(state="projected", generation=generation, error=None, updated_at=_now())
+            )
+            if not updated.rowcount:
+                raise LeaseLost("Projection job is no longer owned by this worker")
+            self._catalog_state(control, world_id, scope_id, generation, "active", lease)
             db.execute(
-                "UPDATE projection_jobs SET state='unknown',error=?,updated_at=? "
-                "WHERE episode_id=?",
-                (error[:2000], _now(), episode_id),
+                episodes.update()
+                .where(episodes.c.id == episode_id)
+                .values(projection_state="projected")
+            )
+            db.execute(projection.update().values(generation=generation, state="ready"))
+
+    def mark_unknown(
+        self, world_id: str, episode_id: str, error: str, scope_id=None, *, lease: WorkerLease
+    ) -> None:
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            jobs, episodes = self._table(db, "projection_jobs"), self._table(db, "episodes")
+            changed = db.execute(
+                jobs.update()
+                .where(
+                    jobs.c.episode_id == episode_id,
+                    jobs.c.state == "processing",
+                    jobs.c.lease_owner == lease.owner,
+                    jobs.c.lease_fence == lease.fence,
+                )
+                .values(state="unknown", error=error[:2000], updated_at=_now())
+            ).rowcount
+            if not changed:
+                raise LeaseLost("Projection job is no longer owned by this worker")
+            db.execute(self._table(db, "projection").update().values(state="degraded"))
+            db.execute(
+                episodes.update()
+                .where(episodes.c.id == episode_id)
+                .values(projection_state="unknown")
             )
 
     def set_projection(
-        self, world_id: str, generation: str | None, state: str, scope_id=None
+        self,
+        world_id: str,
+        generation: str | None,
+        state: str,
+        scope_id=None,
+        *,
+        lease: WorkerLease | None = None,
     ) -> None:
         if state not in {"disabled", "ready", "degraded"}:
             raise ValueError("Invalid projection state")
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
-            db.execute("UPDATE projection SET generation=?,state=?", (generation, state))
+        from contextlib import nullcontext
+
+        with self._projection_lease(lease, world_id, scope_id) if lease else nullcontext():
+            with self._world_db(world_id, scope_id) as db, self._transaction(db):
+                db.execute(
+                    self._table(db, "projection")
+                    .update()
+                    .values(generation=generation, state=state)
+                )
 
     def set_projection_configuration(
-        self, world_id: str, configuration: dict, scope_id=None
+        self, world_id: str, configuration: dict, scope_id=None, *, lease: WorkerLease | None = None
     ) -> None:
-        """Persist public configuration metadata supplied by the trusted adapter."""
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
-            db.execute("UPDATE projection SET configuration=?", (_canonical(configuration),))
+        from contextlib import nullcontext
+
+        with self._projection_lease(lease, world_id, scope_id) if lease else nullcontext():
+            with self._world_db(world_id, scope_id) as db, self._transaction(db):
+                db.execute(
+                    self._table(db, "projection")
+                    .update()
+                    .values(configuration=_canonical(configuration))
+                )
 
     def projection_configuration(self, world_id: str, scope_id=None) -> dict:
         with self._world_db(world_id, scope_id) as db:
-            return json.loads(db.execute("SELECT configuration FROM projection").fetchone()[0])
+            return json.loads(
+                db.execute(select(self._table(db, "projection").c.configuration)).scalar_one()
+            )
 
     def projection_episodes(
         self, world_id: str, include_unprojected: bool = False, scope_id=None
     ) -> list[Episode]:
         with self._world_db(world_id, scope_id) as db:
+            table = self._table(db, "episodes")
             episodes = [
                 self._episode(row, world_id)
-                for row in db.execute("SELECT * FROM episodes ORDER BY sequence")
+                for row in db.execute(
+                    select(table)
+                    .where(lifecycle.visible_clause(self, db, table))
+                    .order_by(table.c.sequence)
+                ).mappings()
             ]
         return [
             episode
@@ -1063,45 +1486,121 @@ class MemoryStore(ScopedStore):
         episode_ids: list[str],
         configuration: dict | None = None,
         scope_id=None,
+        *,
+        lease: WorkerLease,
     ) -> None:
-        with self._world_db(world_id, scope_id) as db, self._transaction(db):
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._control() as control,
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            if lifecycle.has_pending_purges(self, world_id, scope_id):
+                raise Unavailable("Graph erasure is pending for the selected scope")
+            episodes, jobs = self._table(db, "episodes"), self._table(db, "projection_jobs")
             for episode_id in episode_ids:
-                row = db.execute("SELECT id FROM episodes WHERE id=?", (episode_id,)).fetchone()
-                if row is None:
+                if (
+                    db.execute(
+                        select(episodes.c.id).where(
+                            episodes.c.id == episode_id,
+                            lifecycle.visible_clause(self, db, episodes),
+                        )
+                    ).scalar_one_or_none()
+                    is None
+                ):
                     raise NotFound("Rebuild episode not found")
-                # Projection consent is not part of immutable source identity. Keep
-                # the original payload/digest so an ingestion replay stays stable.
                 db.execute(
-                    "UPDATE episodes SET projection_state='projected' WHERE id=?", (episode_id,)
+                    episodes.update()
+                    .where(episodes.c.id == episode_id)
+                    .values(projection_state="projected")
+                )
+                self.persistence.insert_ignore(
+                    db,
+                    jobs,
+                    dict(
+                        episode_id=episode_id,
+                        state="projected",
+                        generation=generation,
+                        updated_at=_now(),
+                    ),
+                    ["episode_id"],
                 )
                 db.execute(
-                    "INSERT INTO projection_jobs (episode_id,state,generation,updated_at) "
-                    "VALUES (?,'projected',?,?) ON CONFLICT(episode_id) DO UPDATE SET "
-                    "state='projected',generation=excluded.generation,error=NULL,"
-                    "updated_at=excluded.updated_at",
-                    (episode_id, generation, _now()),
+                    jobs.update()
+                    .where(jobs.c.episode_id == episode_id)
+                    .values(
+                        state="projected",
+                        generation=generation,
+                        error=None,
+                        updated_at=_now(),
+                        lease_owner=lease.owner,
+                        lease_fence=lease.fence,
+                        lease_expires_at=lease.expires_at,
+                    )
                 )
-            db.execute("UPDATE projection SET generation=?,state='ready'", (generation,))
+            self._catalog_state(control, world_id, scope_id, generation, "active", lease)
+            values = dict(generation=generation, state="ready")
             if configuration is not None:
-                db.execute("UPDATE projection SET configuration=?", (_canonical(configuration),))
+                values["configuration"] = _canonical(configuration)
+            db.execute(self._table(db, "projection").update().values(**values))
+
+    def recover_scope_projection(self, world_id: str, scope_id=None, *, lease: WorkerLease) -> int:
+        """Quarantine expired owner's unknown writes, never replay their namespace."""
+        with (
+            self._projection_lease(lease, world_id, scope_id),
+            self._control() as control,
+            self._world_db(world_id, scope_id) as db,
+            self._transaction(db),
+        ):
+            episodes, jobs = self._table(db, "episodes"), self._table(db, "projection_jobs")
+            changed = db.execute(
+                jobs.update()
+                .where(jobs.c.state == "processing")
+                .values(
+                    state="unknown",
+                    error="Previous worker lost its lease during graph delivery",
+                    updated_at=_now(),
+                )
+            ).rowcount
+            if changed:
+                db.execute(
+                    episodes.update()
+                    .where(episodes.c.projection_state == "processing")
+                    .values(projection_state="unknown")
+                )
+                db.execute(self._table(db, "projection").update().values(state="degraded"))
+            # A lost rebuild can leave an inventoried namespace without a
+            # processing source job. Retain it as failed for later exact purge.
+            catalog = self._table(control, "projection_generations")
+            sid = (
+                scope_uuid(scope_id)
+                if scope_id
+                else world_shared_scope_id(self.authority_id, world_id)
+            )
+            states = ["building", "active"] if changed else ["building"]
+            control.execute(
+                catalog.update()
+                .where(
+                    catalog.c.world_id == world_id,
+                    catalog.c.scope_id == sid,
+                    catalog.c.lease_fence < lease.fence,
+                    catalog.c.state.in_(states),
+                )
+                .values(state="failed", retired_at=_now())
+            )
+            return changed
 
     def recover_interrupted_projections(self) -> int:
+        """Recover expired ownership only; starting a replica never steals live work."""
         recovered = 0
         for world in self.projection_worlds():
-            with self._world_db(world.id, world.scope_id) as db, self._transaction(db):
-                count = db.execute(
-                    "SELECT COUNT(*) FROM episodes WHERE projection_state='processing'"
-                ).fetchone()[0]
-                if count:
-                    db.execute("UPDATE projection SET state='degraded'")
-                    db.execute(
-                        "UPDATE episodes SET projection_state='unknown' "
-                        "WHERE projection_state='processing'"
-                    )
-                    db.execute(
-                        "UPDATE projection_jobs SET state='unknown',error=?,updated_at=? "
-                        "WHERE state='processing'",
-                        ("Worker interrupted after claiming delivery", _now()),
-                    )
-                    recovered += count
+            lease = self.persistence.acquire_lease(
+                self.projection_resource(world.id, world.scope_id)
+            )
+            if lease is None:
+                continue
+            try:
+                recovered += self.recover_scope_projection(world.id, world.scope_id, lease=lease)
+            finally:
+                self.persistence.release_lease(lease)
         return recovered

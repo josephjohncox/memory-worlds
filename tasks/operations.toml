@@ -1,0 +1,5 @@
+["backup:sync"]
+description = "Verify and copy one encrypted authority artifact through pinned rclone"
+tools.rclone = "1.75.2"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- memory-worlds artifact-sync'

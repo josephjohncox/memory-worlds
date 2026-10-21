@@ -1,0 +1,7 @@
+image:
+  pullPolicy: IfNotPresent
+ipam:
+  mode: kubernetes
+operator:
+  replicas: 1
+kubeProxyReplacement: false

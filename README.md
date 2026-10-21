@@ -5,15 +5,15 @@ own credential, and share durable memory across sessions and machines through
 HTTP or SSH forwarding. Mount private and shared worlds independently from the
 world that receives new evidence.
 
-The service includes per-world SQLite source storage, authenticated HTTP,
+The service includes SQLite local journals and PostgreSQL shared journals, authenticated HTTP,
 a Python client, CLI, optional stdio MCP, native Pi tools and hooks, remote
 shared-space routing, an OIDC shared service, ChatGPT/Claude directory import, Pi import, portable export
 and restore, and Graphiti/FalkorDB extraction and recall by default. Explicit
 source retrieval remains available for recovery and inspection. Graph extraction has separate delivery state;
 a capture receipt establishes durable source storage.
 
-Run the same service locally, through SSH, or as a single-replica Kubernetes
-StatefulSet with retained volumes. The [router and identity guide](docs/sharing.md),
+Run the same service locally, through SSH, as a single-daemon Kubernetes
+StatefulSet with SQLite volumes, or as PostgreSQL-backed API replicas. The [router and identity guide](docs/sharing.md),
 [native Pi package](packages/pi/README.md), and [deployment guide](docs/deployments.md)
 cover those configurations. The optional Neptune/OpenSearch adapter is experimental;
 the local and Kubernetes graph backend is FalkorDB.
@@ -232,10 +232,13 @@ consume only finalized `.mworld` files. These archives are plaintext. Keep live
 SQLite/WAL/FalkorDB directories outside synced folders. Export is a snapshot,
 not bidirectional multi-writer database synchronization.
 
-`backup WORLD_ID /private/backups/source.sqlite3` creates a consistent native
-SQLite source backup while capture continues. It is an administrator recovery
-artifact; the `restore` command accepts portable `.mworld` archives. See
-[storage and recovery](docs/storage.md) for backend boundaries.
+`authority-backup /private/backups/authority.mwauthority` requests an encrypted
+cut of all private/shared source journals, identities, grants, tombstones, jobs,
+outbox and native FalkorDB namespaces. `authority-restore` installs it into an
+isolated fresh authority. An explicit `--graph-mode rebuild` instead queues
+fresh extraction after recovery. Optional `mise run backup:sync` copies a verified
+encrypted artifact through a named OneDrive/S3 rclone remote and checks downloaded
+bytes. See [authority recovery](docs/recovery.md).
 
 ## Graphiti runtime configuration
 
@@ -285,8 +288,10 @@ Rebuild normally includes every source. Use `--projected-only` to restrict a
 rebuild to sources already selected for extraction. A rebuild creates an isolated
 graph generation and
 activates it only after success. Changed model/embedding configuration requires
-a rebuild. Previous generations remain stored; automatic garbage collection
-and source erasure are not implemented in this release.
+a rebuild. Explicit bounded retention retires old generations and terminal
+delivery payloads. Lifecycle actions retract or erase source evidence, retain
+replay tombstones, and queue tracked namespace cleanup. Final graph purge
+requires drained writers. See [lifecycle and retention](docs/lifecycle.md).
 
 ## Container and checks
 

@@ -228,7 +228,7 @@ export class ChatSharing {
               const mount = (await client.mounts(signal)).find(item => item.id === parts[2]);
               if (!mount?.can_publish || !mount.world_ids.includes(parts[3]!)) throw new SharingError("Select an authorized publication mount and one of its world IDs.");
               destination = { kind: "mount", mountId: mount.id, worldId: parts[3]!, authorityId: mount.authority_id, url: mount.url };
-            } else if (parts.length === 3) destination = { kind: "local", scope: scopeSelection({ world_id: parts[1], scope_id: parts[2] }) };
+            } else if (parts.length === 3) destination = { kind: "local", scope: parts[1]!.startsWith("@") || parts[2]!.startsWith("@") ? await client.resolveSelection(parts[1]!, parts[2], signal) : scopeSelection({ world_id: parts[1], scope_id: parts[2] }) };
             else throw new SharingError("Use review|auto WORLD SCOPE, or review|auto mount MOUNT WORLD.");
             const rule: Rule = { id: randomUUID(), mode: command as Rule["mode"], destination, cursor: ctx.sessionManager.getLeafId(), binding: { sessionId: ctx.sessionManager.getSessionId(), contextId: context.id, source, serviceURL: client.url, authorityId: identity.authority_id, credentialId: identity.credential_id, settingsDigest: digest(settings) } };
             await this.preflight(ctx, client, rule, epoch, signal); this.assertEpoch(epoch);

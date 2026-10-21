@@ -12,6 +12,7 @@ dist/
 .coverage
 *.sqlite3*
 *.mworld
+*.mwauthority
 .memory-worlds/
 .aws/
 .agents/

@@ -1,5 +1,8 @@
 # Agent and subagent scopes
 
+Agent, run and invocation UUIDs can have owner-visible names and aliases. Names
+describe identities; live credentials and world/scope grants authorize access.
+
 A world is an ownership and organizational boundary. Its scopes identify
 audiences inside that boundary. The service checks both the world and the scope
 before accessing source evidence or a graph projection. Knowing a UUID does not
@@ -141,7 +144,7 @@ destination's audience.
 ## Graphiti extraction
 
 Graphiti is the graph engine for every projected scope, whether the service
-runs locally, through SSH, in kind, or on shared Kubernetes. SQLite stores the
+runs locally, through SSH, in kind, or on shared Kubernetes. SQLite locally and PostgreSQL on shared deployments store the
 authoritative source, authorization, contexts, and receipts. Source-only capture
 and search remain available independently of Graphiti.
 
@@ -189,3 +192,32 @@ does not automatically prune expired invocation journals. Use explicit
 coordinator inspection when an authorized reader must remain after child
 revocation. Whole-store operator backups include private journals and need the
 same protection as the data volume.
+
+## Named identities
+
+Register and discover persistent identities through the CLI:
+
+```sh
+mise run cli -- identity-create agent --input /private/research-agent.json
+mise run cli -- identities agent
+mise run cli -- identity-resolve agent @research
+mise run cli -- identity-update agent @research --input /private/renamed-agent.json
+```
+
+An input can be `{"name":"Researcher","alias":"research"}`. An optional `id`
+chooses an explicit UUID. Exact registration retries are idempotent; changed
+attributes conflict. Agents and runs can name an existing same-owner parent.
+Invocation registrations can reference an owned agent and run. These relations
+grant no access to another agent's memory. Alias resolution uses the live
+registry; persisted contexts use canonical UUIDs.
+
+Unrestricted users can reuse a named run across independent chats. Restricted
+credentials can see only their own registered agent/invocation. They cannot
+enumerate the run roster or register/rename independent identities, and their
+live delegated scope ceiling still applies.
+
+Native Pi accepts `agent: "@research"` or a canonical UUID. `/memory agent REF`
+and `/memory run REF|off` rebind the chat, disable automatic capture/sharing, and
+retain explicitly selected canonical read and write targets. A delegated
+credential's agent UUID is authoritative. See the
+[native extension guide](../packages/pi/README.md).

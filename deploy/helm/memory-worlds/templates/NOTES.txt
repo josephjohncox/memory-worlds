@@ -1,5 +1,11 @@
-Memory Worlds stores source, control, and router data on one retained API PVC.
-Keep replicaCount=1. PVC retention is not a backup. Graph projection is {{ .Values.graph.backend }}.
+{{- if eq .Values.storage.backend "postgres" }}
+Memory Worlds stores source, control, and outbox journals in PostgreSQL.
+All {{ .Values.replicaCount }} API replicas share authority {{ .Values.storage.postgres.authorityId }}.
+{{- else }}
+Memory Worlds stores source, control, and outbox journals on one retained API PVC.
+Keep replicaCount=1. PVC retention is not a backup.
+{{- end }}
+Graph projection is {{ .Values.graph.backend }}.
 
 {{- if .Values.falkordb.enabled }}
 Create Secret {{ .Values.falkordb.auth.existingSecret }} with key {{ .Values.falkordb.auth.passwordKey }} before the graph pod can start.
@@ -7,7 +13,7 @@ Create Secret {{ .Values.falkordb.auth.existingSecret }} with key {{ .Values.fal
 
 Initialize an empty authority once, keeping the one-time credential outside logs:
   umask 077
-  kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} exec {{ include "memory-worlds.fullname" . }}-0 -- memory-worlds init > /private/operator/bootstrap.json
+  kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} exec {{ if eq .Values.storage.backend "postgres" }}deployment/{{ include "memory-worlds.fullname" . }}{{ else }}{{ include "memory-worlds.fullname" . }}-0{{ end }} -- memory-worlds init > /private/operator/bootstrap.json
 
 Forward the authenticated API to loopback:
   kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} port-forward --address=127.0.0.1 service/{{ include "memory-worlds.fullname" . }} 8787:8787
@@ -17,3 +23,14 @@ Run read-only deployment checks:
 
 NetworkPolicy needs a policy-enforcing CNI. Model/OIDC/remote egress is denied
 unless explicitly permitted. Existing PVCs and Secrets are not deleted on uninstall.
+{{- if .Values.backup.enabled }}
+
+Encrypted backup artifacts use existing claim {{ .Values.backup.existingClaim }}.
+Multiple API replicas require shared RWX access to that artifact directory.
+Keep the encryption key separately and rotate subPath Secret mounts with a rollout.
+{{- end }}
+{{- if .Values.metrics.enabled }}
+
+/metrics requires a live administrative bearer credential. Monitoring selectors
+must match your actual scraper; no anonymous metrics endpoint is enabled.
+{{- end }}

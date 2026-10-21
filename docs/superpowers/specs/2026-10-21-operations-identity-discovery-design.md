@@ -12,9 +12,10 @@ graph query to source search.
 
 RDS PostgreSQL is not a supported Graphiti backend. Its vector extension alone
 cannot implement Graphiti's graph driver. Deployment guidance therefore uses
-FalkorDB on a StatefulSet/PVC for Kubernetes/EKS, documents actual RDS extension
-preflight, and identifies PostgreSQL source/control storage as unimplemented.
-It does not provide a misleading PostgreSQL connection setting.
+FalkorDB on a StatefulSet/PVC for Kubernetes/EKS. PostgreSQL/RDS supplies shared
+source/control/outbox journals with explicit authority identity, fenced workers
+and coordinated maintenance. PostgreSQL extensions do not replace the Graphiti
+driver. See the production completion design for the implemented SQL contract.
 
 Worlds and scopes retain canonical IDs and gain optional lowercase aliases.
 Aliases are labels, not authority. CLI `@alias` references resolve only among

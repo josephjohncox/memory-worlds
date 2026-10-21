@@ -7,10 +7,11 @@ import json
 import httpx
 from pydantic import ValidationError
 
-from .errors import Forbidden, MemoryError, NotFound
+from .errors import Forbidden, MemoryError, NotFound, Unavailable
 from .models import Episode, EpisodeInput, Principal, Receipt, World, WorldKind
 from .mounts import MountConfig, MountRole, MountView
 from .outbox import PublicationOutbox, RoutedPublication, RouterSearch
+from .persistence import LeaseLost
 from .scopes import world_shared_scope_id
 
 
@@ -23,9 +24,10 @@ class WorldRouter:
     def __init__(self, store, config: MountConfig, *, transport=None, timeout: float = 10):
         self.store = store
         self.mounts = {mount.id: mount for mount in config.validated().mounts}
-        self.outbox = PublicationOutbox(store.data_dir, store.authority_id)
+        self.outbox = PublicationOutbox(
+            store.data_dir, store.authority_id, persistence=store.persistence
+        )
         self.transport, self.timeout = transport, timeout
-        self._recovered = False
         self._worker_lock = asyncio.Lock()
 
     def mount(self, principal: Principal, mount_id: str, publish: bool = False):
@@ -169,9 +171,11 @@ class WorldRouter:
             raise Forbidden("publication destination is outside the mounted worlds")
         return self.outbox.enqueue(principal, mount, request)
 
-    async def _deliver(self, row):
+    async def _deliver_owned(self, row, assert_live):
         delivery_id = row["id"]
+        lease = self.outbox.lease(row)
         try:
+            assert_live()
             principal = Principal.model_validate_json(row["principal"])
             mount = self.mount(principal, row["mount_id"], publish=True)
             if (
@@ -184,6 +188,7 @@ class WorldRouter:
                 await self.worlds(client, mount, [row["world_id"]])
                 # Metadata IO may take time. Revocation before dispatch stops this POST.
                 self.mount(principal, mount.id, publish=True)
+                assert_live()
                 payload = json.loads(row["payload"])
                 data = await self.request(
                     client, "POST", f"/v1/worlds/{row['world_id']}/publications", json=payload
@@ -210,41 +215,59 @@ class WorldRouter:
                     or receipt.episode.digest != hashlib.sha256(canonical.encode()).hexdigest()
                 ):
                     raise RemoteFailure("remote_receipt_mismatch")
-            self.outbox.finish(delivery_id, "delivered", episode_id=receipt.episode.id)
+            self.outbox.finish(delivery_id, "delivered", episode_id=receipt.episode.id, lease=lease)
+        except LeaseLost:
+            return
         except RemoteFailure as error:
-            self.outbox.finish(delivery_id, "pending" if error.retryable else "blocked", error.code)
+            self.outbox.finish(
+                delivery_id, "pending" if error.retryable else "blocked", error.code, lease=lease
+            )
         except (httpx.HTTPError, OSError):
-            self.outbox.finish(delivery_id, "pending", "remote_unavailable")
+            self.outbox.finish(delivery_id, "pending", "remote_unavailable", lease=lease)
         except (ValueError, ValidationError, TypeError, KeyError):
-            self.outbox.finish(delivery_id, "blocked", "remote_protocol_error")
+            self.outbox.finish(delivery_id, "blocked", "remote_protocol_error", lease=lease)
         except MemoryError:
             self.outbox.finish(
-                delivery_id, "blocked", "local_authorization_or_configuration_changed"
+                delivery_id, "blocked", "local_authorization_or_configuration_changed", lease=lease
             )
 
+    async def _deliver(self, row):
+        lease = self.outbox.lease(row)
+        try:
+            with self.store.persistence.operation_guard():
+                async with self.store.persistence.maintain_lease(lease) as assert_live:
+                    await self._deliver_owned(row, assert_live)
+        except LeaseLost:
+            # An exact immutable envelope may be retried by the current owner.
+            # The previous owner cannot replace that worker's receipt.
+            return
+        finally:
+            self.store.persistence.release_lease(lease)
+
     async def run_once(self):
-        async with self._worker_lock:
-            if not self._recovered:
-                self.outbox.recover()
-                self._recovered = True
-            jobs = []
-            for _ in range(20):
-                row = self.outbox.claim()
-                if row is None:
-                    break
-                jobs.append(row)
-            semaphore = asyncio.Semaphore(4)
+        with self.store.persistence.operation_guard():
+            async with self._worker_lock:
+                jobs = []
+                for _ in range(4):
+                    row = self.outbox.claim()
+                    if row is None:
+                        break
+                    jobs.append(row)
+                semaphore = asyncio.Semaphore(4)
 
-            async def deliver(row):
-                async with semaphore:
-                    await self._deliver(row)
+                async def deliver(row):
+                    async with semaphore:
+                        await self._deliver(row)
 
-            await asyncio.gather(*(deliver(row) for row in jobs))
-            return len(jobs)
+                await asyncio.gather(*(deliver(row) for row in jobs))
+                return len(jobs)
 
     async def run(self):
         while True:
-            await self.run_once()
+            try:
+                await self.run_once()
+            except Unavailable:
+                pass
             await asyncio.sleep(1)
 
     def deliveries(self, principal):

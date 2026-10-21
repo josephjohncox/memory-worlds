@@ -10,6 +10,7 @@ import httpx
 import pytest
 import uvicorn
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from memory_worlds.api import create_app
 from memory_worlds.errors import Conflict, Forbidden, Unauthorized
@@ -217,8 +218,15 @@ async def test_lost_acknowledgment_retries_without_duplicate_remote_evidence(fed
 async def test_restarts_recover_interrupted_processing_jobs(federation):
     e = federation
     e.router.publish(e.alice, publication(e))
-    assert e.router.outbox.claim()["state"] == "pending"
+    claimed = e.router.outbox.claim()
+    assert claimed["state"] == "pending"
     restarted = WorldRouter(e.local, e.config, transport=e.transport)
+    assert await restarted.run_once() == 0  # live ownership is never stolen
+    lease = e.router.outbox.lease(claimed)
+    e.local.persistence.release_lease(lease)
+    with e.router.outbox.db() as db:
+        table = e.local._table(db, "deliveries")
+        db.execute(table.update().where(table.c.id == claimed["id"]).values(lease_expires_at=0))
     await restarted.run_once()
     final = restarted.deliveries(e.alice)[0]
     assert final.state == "delivered" and final.attempts == 2
@@ -257,7 +265,8 @@ async def test_owner_retry_rebinds_current_login_but_preserves_original_attribut
     resumed = e.router.retry(fresh, queued.id)
     assert resumed.user_id == e.alice.user_id and resumed.agent_id == e.alice.agent_id
     with e.router.outbox.db() as db:
-        row = db.execute("SELECT * FROM deliveries WHERE id=?", (queued.id,)).fetchone()
+        table = e.local._table(db, "deliveries")
+        row = db.execute(select(table).where(table.c.id == queued.id)).mappings().one()
     assert row["credential_id"] == fresh.credential_id
     assert json.loads(row["principal"])["agent_id"] == fresh.agent_id
     await e.router.run_once()
@@ -270,8 +279,9 @@ async def test_expired_oidc_job_requires_a_fresh_authorized_session(federation):
     e.mount.user_grants[old.user_id] = MountRole.PUBLISHER
     queued = e.router.publish(old, publication(e))
     with e.local._control() as db:
+        table = e.local._table(db, "identity_sessions")
         db.execute(
-            "UPDATE identity_sessions SET expires_at=0 WHERE credential_id=?", (old.credential_id,)
+            table.update().where(table.c.credential_id == old.credential_id).values(expires_at=0)
         )
     await e.router.run_once()
     assert e.router.deliveries(e.admin)[0].state == "blocked"

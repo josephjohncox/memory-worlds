@@ -18,7 +18,7 @@ import json, os, socket, sys
 from pathlib import Path
 import uvicorn
 from memory_worlds.api import create_app
-from memory_worlds.models import CreateToken, Role, CreateScope, ScopeKind
+from memory_worlds.models import CreateToken, Role, CreateScope, ScopeKind, UpdateAlias
 from uuid import uuid4
 from memory_worlds.mounts import MountConfig
 from memory_worlds.store import MemoryStore
@@ -26,10 +26,11 @@ folder = Path(sys.argv[1])
 store = MemoryStore(folder / "data")
 world, operator_token = store.bootstrap("fixture")
 operator = store.authenticate(operator_token)
+world = store.set_world_alias(operator, world.id, UpdateAlias(alias="personal"))
 token = store.issue_token(operator, CreateToken(user_id="fixture", agent_id="pi", grants={world.id: Role.WRITER}))
 shared_scope = next(scope for scope in store.list_scopes(operator, world.id) if scope.kind == ScopeKind.WORLD_SHARED)
 run_scope = store.create_scope(store.authenticate(token), world.id, CreateScope(kind=ScopeKind.RUN_SHARED, name="Pi run"))
-agent_scope = store.create_scope(store.authenticate(token), world.id, CreateScope(kind=ScopeKind.AGENT_PERSISTENT, name="Pi specialist", agent_id=uuid4()))
+agent_scope = store.create_scope(store.authenticate(token), world.id, CreateScope(kind=ScopeKind.AGENT_PERSISTENT, name="Pi specialist", alias="notes", agent_id=uuid4()))
 fd = os.open(folder / "agent.token", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, "w") as stream:
     stream.write(token)
@@ -73,7 +74,10 @@ try {
   assert.equal(identity.authority_id, metadata.world.authority_id);
   const configPath = join(dir, "memory-worlds.json");
   const selected = { world_id: metadata.world.id, scope_id: metadata.scope.id };
-  await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, writeScope: selected, readScopes: [selected], projectCaptured: false, graphAliases: { project: selected, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
+  const client = new MemoryWorldsClient(url, async () => token);
+  const namedAgent = await client.createIdentity("agent", { name: "Synthetic Pi specialist", alias: "specialist" });
+  const aliased = { world_id: "@personal", scope_id: "@notes" };
+  await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, agent: "@specialist", cliPath: join(dirname(python), "memory-worlds"), writeScope: aliased, readScopes: [aliased], projectCaptured: false, graphAliases: { project: aliased, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
   await mkdir(join(dir, "agent"));
   pi = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", root], {
     cwd: dir, env: { ...fixtureEnv, PI_CODING_AGENT_DIR: join(dir, "agent"), MEMORY_WORLDS_CONFIG: configPath, MEMORY_WORLDS_TOKEN_FILE: tokenPath, MEMORY_WORLDS_URL: url }, stdio: ["pipe", "pipe", "pipe"],
@@ -114,13 +118,13 @@ try {
   assert.equal(search.results[0].scope_id, selected.scope_id);
   assert.match(search.results[0].invocation_id, /^[0-9a-f-]{36}$/);
   assert.match(search.results[0].agent_uuid, /^[0-9a-f-]{36}$/);
+  assert.equal(search.results[0].agent_uuid, namedAgent.id);
   assert.equal(search.results[0].actor_id, "fixture");
   assert.equal(search.results[0].agent_id, "pi");
   assert.equal(search.results[0].projection_state, "disabled");
   for (const text of ["/graph add selected-graphiti-evidence", "/graph episodes"]) {
     assert.equal((await command({ type: "prompt", message: text })).success, true);
   }
-  const client = new MemoryWorldsClient(url, async () => token);
   const graphSource = (await client.searchScopes([selected], "selected-graphiti-evidence", "source", 5)).results;
   assert.equal(graphSource.length, 1); assert.equal(graphSource[0].scope_id, selected.scope_id);
   const globalScope = { world_id: metadata.world.id, scope_id: metadata.shared_scope_id };
@@ -152,6 +156,28 @@ try {
   await assert.rejects(client.episodes({ world_id: child.privateScope.world_id, scope_id: child.privateScope.id }), error => error.status === 403);
   await assert.rejects(childClient.identity(), /runtime has ended/);
   assert(!JSON.stringify(child).includes("unreturned private scratch"));
+  const archive = join(dir, "synthetic extracted chats");
+  await mkdir(archive);
+  const rendered = "# Synthetic Pi import\n\n**Created:** 2026-10-20 12:00  \n**Last updated:** 2026-10-20 12:01\n\n---\n\n🧑 **You** _2026-10-20 12:00_\n\nInspect fixture.\n\n---\n\n🤖 **ChatGPT** _2026-10-20 12:01_\n\n" + "Synthetic durable alignment-pin procedure. ".repeat(6000) + "\n\n---\n";
+  await writeFile(join(archive, "long.md"), rendered);
+  const beforeImport = (await client.episodes(selected, 100)).length;
+  for (const suffix of [" --preview", "", ""]) assert.equal((await command({ type: "prompt", message: `/memory import ${JSON.stringify(archive)} --source-timezone Etc/UTC${suffix}` })).success, true);
+  const imported = (await client.episodes(selected, 100)).filter(episode => episode.source_id.startsWith("richlow-md:"));
+  assert.equal(imported.length, 2);
+  imported.sort((left, right) => left.metadata.document_chunk.index - right.metadata.document_chunk.index);
+  assert.equal(imported.map(episode => episode.content).join(""), rendered);
+  assert(imported.every(episode => episode.project === true));
+  assert.equal((await client.episodes(selected, 100)).length, beforeImport + 2);
+  const importNotices = messages.filter(message => message.type === "extension_ui_request" && message.method === "notify" && message.message?.includes('"report"'));
+  assert(importNotices.some(message => message.message.includes('"replayed": 2')));
+  assert(!importNotices.some(message => message.message.includes(rendered.slice(-1000))), "Planner source text must not be rendered to Pi");
+  const previousInvocation = search.results[0].invocation_id;
+  assert.equal((await command({ type: "new_session" })).success, true);
+  assert.equal((await command({ type: "prompt", message: "/memory status" })).success, true);
+  const newStatus = messages.filter(message => message.type === "extension_ui_request" && message.method === "notify" && message.message?.includes('"agentContext"')).at(-1);
+  const newContext = JSON.parse(newStatus.message).agentContext;
+  assert.equal(newContext.agent_id, namedAgent.id);
+  assert.notEqual(newContext.invocation_id, previousInvocation);
   const entries = await command({ type: "get_entries" });
   assert.equal(entries.success, true);
   assert(!JSON.stringify(entries).includes(token));
@@ -160,7 +186,7 @@ try {
   assert(!errors.includes("Failed to load extension"), errors);
   pi.kill("SIGTERM"); await once(pi, "exit"); pi = undefined;
   service.kill("SIGTERM"); await once(service, "exit"); service = undefined;
-  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API -> SQLite, bound UUID attribution, private native graph capture/episodes, world-shared exclusion, delegated child scratch isolation, selected result, credential revocation, provenance and credential exclusion.");
+  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API, live aliases, stable named agent across independent chats, private long-directory preview/import/replay, exact chunks, bound UUID attribution, private graph capture, delegated child isolation and credential exclusion.");
 } finally {
   pi?.kill("SIGKILL"); service?.kill("SIGKILL");
   await rm(dir, { recursive: true, force: true });

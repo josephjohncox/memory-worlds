@@ -1,0 +1,78 @@
+{{- if .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "memory-worlds.fullname" . | quote }}
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  namespaceSelector:
+    matchNames: [{{ .Release.Namespace | quote }}]
+  selector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ .Values.metrics.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ .Values.metrics.serviceMonitor.scrapeTimeout | quote }}
+      authorization:
+        type: Bearer
+        credentials:
+          name: {{ .Values.metrics.serviceMonitor.existingSecret | quote }}
+          key: {{ .Values.metrics.serviceMonitor.tokenKey | quote }}
+{{- end }}
+{{- if .Values.metrics.prometheusRule.enabled }}
+{{- if .Values.metrics.serviceMonitor.enabled }}
+---
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "memory-worlds.fullname" . | quote }}
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+    {{- with .Values.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: {{ include "memory-worlds.fullname" . | quote }}
+      rules:
+        - alert: MemoryWorldsScrapeUnavailable
+          expr: up{namespace={{ .Release.Namespace | quote }},service={{ include "memory-worlds.fullname" . | quote }}} == 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Memory Worlds authenticated metrics scrape is unavailable
+        - alert: MemoryWorldsUnavailable
+          expr: memory_worlds_ready{namespace={{ .Release.Namespace | quote }},service={{ include "memory-worlds.fullname" . | quote }}} == 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Memory Worlds authority is not ready
+        - alert: MemoryWorldsGraphPurgeFailed
+          expr: memory_worlds_records{namespace={{ .Release.Namespace | quote }},service={{ include "memory-worlds.fullname" . | quote }},kind="purge",state="failed"} > 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: Memory Worlds graph erasure needs operator repair
+        - alert: MemoryWorldsProjectionOutcomeUnknown
+          expr: memory_worlds_records{namespace={{ .Release.Namespace | quote }},service={{ include "memory-worlds.fullname" . | quote }},kind="projection",state="unknown"} > 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: Memory Worlds extraction has an unknown external outcome
+        - alert: MemoryWorldsPublicationBlocked
+          expr: memory_worlds_records{namespace={{ .Release.Namespace | quote }},service={{ include "memory-worlds.fullname" . | quote }},kind="delivery",state="blocked"} > 0
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: Memory Worlds publication needs operator review
+{{- end }}

@@ -1,83 +1,70 @@
 # Validation
 
-## Current implementation, version 0.2.0
+## Memory Worlds 0.3.0
 
-Executed on 2026-10-20 local time (2026-10-21 UTC), Linux ARM64:
+Executed locally on Linux ARM64 with the locked mise toolchain. Hosted CI and
+release assets carry their own exact source commit and image digest receipts.
 
-| Check | Result |
+| Check | Executed result |
 | --- | --- |
-| Python 3.15.0 complete default suite | 294 passed, 4 infrastructure checks skipped |
-| Real Graphiti/FalkorDB check, enabled separately | 15 passed through mise, including extraction and entity/fact retrieval across worlds and private scopes |
-| Final built-image and authenticated Compose checks | 3 passed, including default Compose model-outage durability; all 17 service source modules match the built image byte for byte |
-| Node 26.12.0 / Pi 1.3.0 | 122 unit cases, TypeScript checks, and actual Pi runtime, scoped service, and classifier-sharing smokes passed |
-| Helm 4.3.1 / Kubernetes 1.37.0 | Six profile contracts and 22 invalid configurations checked; isolated kind and Helm lifecycle smokes passed |
+| Python 3.15.0 complete suite with local PostgreSQL, native graph recovery and rclone | 546 passed; 10 backend-specific or separately enabled infrastructure checks skipped |
+| Native PostgreSQL 18.6 and SQLite persistence | Competing claims, live heartbeats, process death, stale external completions, two HTTP replicas, pool exhaustion and maintenance cancellation/drain passed |
+| Encrypted recovery | Private credentials/grants/scopes, sequences, tombstones, extraction intent, malformed archives and fresh-target rollback passed; SQLite → PostgreSQL → SQLite round trip passed |
+| Native FalkorDB 6.0.0 recovery | Exact original namespaces, vector search, full-text indexes, edges and source provenance survived recovery into a fresh backend |
+| Node 26.12.0 / Pi 1.3.0 | 138 unit cases, TypeScript checks and all three actual Pi runtime/service/sharing smokes passed |
+| Helm 4.3.1 | Eight profile contracts passed; 40 unsafe configurations independently rejected |
+| Local OIDC | Actual Keycloak 26.8.1 in kind passed 12 access, device-login, group-removal, privacy and revocation checks |
+| Graphiti 0.31.2 | Actual extraction and retrieval against FalkorDB passed four contradictory scope fixtures with local HTTP chat/embedding emulators |
+| Sharing evaluation | Labeled local registry/provider corpus exercised private/review/auto controls with no external calls |
+| Network policy | Pinned Cilium 1.20.3 in an owned kind cluster passed allowed and denied ingress/egress checks with positive controls |
+| Artifact transport | Pinned rclone 1.75.2 local backend passed authenticated upload, exact replay, downloaded-byte comparison and conflicting-object preservation |
 
-Mise 2026.10.17 manages the locked tools and developer/CI tasks. Actual task
-execution covers dependency installation, full Python/Pi checks, CLI forwarding,
-packaging, real Graphiti/FalkorDB, and the isolated kind/Helm lifecycle.
+The final kind application qualification uses the current PostgreSQL Helm
+profile, two API replicas, real FalkorDB and local model HTTP emulators. Its
+receipt records pod replacement, fenced work, native backup, scheduled backup,
+source erasure and stopped-writer purge, followed by recovery into fresh source
+and graph volumes. Use the receipt's result and image identity when assessing
+that run; chart rendering alone is not disaster-recovery evidence.
 
-Scope tests cover restricted recursive delegation, ancestor revocation and
-expiry, default parent/sibling isolation, opt-in read-only coordinator access,
-actual audience inclusion, context-bound UUID attribution, canonical source identity,
-immutable source replay, scoped archive recovery, and graph extraction before
-retrieval. Independent adversarial review has 13 executable cases.
+See [local qualification](qualification.md), [recovery](recovery.md),
+[lifecycle](lifecycle.md), [agent scopes](scopes.md) and
+[Pi feature coverage](pi-graphiti-features.md) for reproducible contracts.
 
-The Helm smoke retains private invocation source and credentials through pod
-replacement, upgrade, and uninstall/reinstall, then verifies scope isolation and
-credential revocation. Native Pi tests exercise isolated SDK child construction,
-scope exposure through forks/branches/reload, credential rotation, immutable
-capture intents, bounded private spooling, and complete receipt validation.
-They exercise the curation proposal contract without a paid model call.
+## Evidence boundaries
 
-These are local results. Hosted CI and artifact builds retain their own exact
-source commit receipts. See [scope behavior](scopes.md) and the
-[Pi Graphiti feature matrix](pi-graphiti-features.md).
+Local model emulators exercise actual Graphiti/Pi transport, extraction schemas,
+namespace isolation, recall and publication controls. They do not measure a
+production model's extraction or classification accuracy. The user replaced live
+qualification with a local OIDC server and kind. No live Okta tenant, RDS service,
+Neptune/OpenSearch deployment or additional paid-model run is an acceptance
+requirement. Neptune remains experimental; scoped erasure rejects unsupported
+secondary-index cleanup rather than reporting completion.
 
-## Coverage and limits
+SQLite runs one owning daemon per data directory. PostgreSQL replicas share
+relational journals with server-clock leases, fencing and authority-wide
+maintenance. Local PostgreSQL concurrency tests establish those contracts;
+kind qualification exercises the rendered deployment. Neither is a measurement
+of a production RDS deployment's availability.
 
-Current-contract tests exercise concurrent multi-agent capture, duplicate delivery,
-conflicting identities, private-world and scope grants, read/write separation,
-revocation, durable restart, projection recovery and rebuild, source backup,
-branch-preserving import, checksummed exports, scoped restore, and malformed or
-oversized archives. OIDC checks cover signatures, issuer/audience/expiry, key
-rotation, live membership, and grant containment. Router tests exercise two real
-daemons, durable offline publication, restart, recovery, and validated receipts.
-SSH tests use a real temporary tunnel and still require API credentials.
-Discovery checks exercise visible-only aliases, ambiguity rejection, canonical
-IDs, and actual CLI capture/recall through named scope selections. OIDC checks
-include native device login against a signed loopback issuer, application/scope
-gates, policy-change revocation, and group/private-scope separation. No live Okta
-tenant was exercised.
+Independent adversarial review found and fixed lost-acknowledgment graph restore
+cleanup, omitted active graph inventory, PostgreSQL selector validation,
+database-aware readiness, and guard/DAL pool self-deadlock. Regression tests
+retain those current failure boundaries. The project has one current API,
+schema, archive format and Pi state contract, with no historical readers,
+automatic migrations or compatibility harnesses.
 
-Graph checks use the actual pinned Graphiti library and FalkorDB with synthetic
-LLM and embedding responses. They verify ingestion, namespace isolation, entity
-and fact retrieval, provenance, and graph rebuilds. They do not measure model
-quality. Neptune driver contracts are checked offline; no AWS deployment has
-been provisioned or live-tested.
+## Sharing and imports
 
-Container and Kubernetes checks verify authentication, retained source and graph
-storage, pod replacement, scoped source recovery, and credential revocation.
-These checks do not establish multi-node availability or recovery from lost
-storage. The supported SQLite deployment uses one authority process per data
-volume.
+Native Pi smokes execute the installed public extension APIs, SDK and actual
+HTTP service. They cover named agents across independent chats, live world/scope
+aliases, scope exposure through forks/reloads, credential attenuation/revocation,
+private spooling, source attribution and complete receipts. The credential-free
+Python planner is exercised through private process pipes; long rendered chat
+snapshots round-trip losslessly through native chunked import and exact replay.
 
-The project maintains one current contract. There are no historical Memory Worlds
-API/schema readers, migrations, or compatibility harnesses. See the repository
-[agent instructions](../AGENTS.md).
-
-## Chat sharing
-
-The native sharing implementation adds strict classifier decisions, deterministic
-source/excerpt exclusions, private/review/auto modes, rule-bound immutable retries,
-and the [sharing model-registry/service smoke](../packages/pi/test/sharing-service-smoke.mjs).
-The smoke uses a synthetic provider through the actual Pi registry and a real
-authenticated local service. It does not measure a paid model's classification
-accuracy. See [chat sharing behavior and limits](chat-sharing.md).
-
-Sharing validation also reran 45 scoped API, adversarial authorization, router,
-and real router-process cases. The sharing smoke verifies a real Pi session-file
-restart with a lost-acknowledgment intent, exact replay without reclassification,
+The sharing smoke uses a synthetic provider through the real Pi registry. It
+checks lost acknowledgments and immutable retry without reclassification,
 review approval, live revocation, whole-window sensitive-context exclusion,
-path-prefixed and malformed Unicode input, future-only mode activation, and
-omission of private pointers from publication requests. All 17 Python service
-modules are unchanged by the chat-mode feature.
+Unicode boundaries, future-only mode activation, and omission of private pointers
+from publication requests. Classifiers select excerpts inside a user-authorized
+rule; they never choose destinations or grant access.

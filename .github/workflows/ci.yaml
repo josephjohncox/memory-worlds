@@ -25,11 +25,35 @@ jobs:
       MEMORY_WORLDS_PYTHON: ${{ matrix.python }}
       MEMORY_WORLDS_RUN_FALKORDB_TEST: "1"
       MEMORY_WORLDS_TEST_FALKORDB_PORT: "16379"
+      MEMORY_WORLDS_TEST_POSTGRES_DSN_FILE: /tmp/memory-worlds-ci/postgres.dsn
+      MEMORY_WORLDS_TEST_FALKOR_RECOVERY_FILE: /tmp/memory-worlds-ci/falkor-recovery.json
     services:
+      postgres:
+        image: postgres:18.6-bookworm@sha256:ed9475dab2438f7a8ee063fa29a0740e7fbf7185e5549db1866eb722f12b49f8
+        env:
+          POSTGRES_USER: memory_worlds_test
+          POSTGRES_PASSWORD: isolated-ci-only
+          POSTGRES_DB: memory_worlds_test
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U memory_worlds_test -d memory_worlds_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
       falkordb:
         image: falkordb/falkordb-server:6.0.0@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
         ports:
           - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+      falkordb-recovery:
+        image: falkordb/falkordb-server:6.0.0@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
+        ports:
+          - 16380:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
@@ -47,7 +71,23 @@ jobs:
           cache: false
           install_args: "python uv"
       - name: Check Python with the real graph backend
-        run: mise run python:check
+        shell: bash
+        run: |
+          install -d -m 700 /tmp/memory-worlds-ci
+          mise exec -- python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path('/tmp/memory-worlds-ci')
+          fixtures = {
+              'postgres.dsn': 'postgresql+psycopg://memory_worlds_test:isolated-ci-only@127.0.0.1:15432/memory_worlds_test',
+              'falkor-recovery.json': json.dumps([{'host': '127.0.0.1', 'port': 16379}, {'host': '127.0.0.1', 'port': 16380}]),
+          }
+          for name, content in fixtures.items():
+              descriptor = os.open(root / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+              with os.fdopen(descriptor, 'w') as output:
+                  output.write(content)
+          PY
+          mise run python:check
       - name: Build source archive and wheel
         run: mise run python:build
       - name: Audit public distribution contents

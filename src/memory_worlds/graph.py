@@ -16,8 +16,9 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from .errors import Unavailable
+from .errors import Conflict, Unavailable
 from .models import Episode, World
+from .persistence import LeaseLost
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -189,6 +190,8 @@ class ProjectionAdapter(Protocol):
         limit: int,
         include_entities: bool = False,
     ) -> list[dict[str, Any]]: ...
+
+    async def purge_generation(self, world: World, generation: str) -> None: ...
 
     async def close(self) -> None: ...
 
@@ -479,6 +482,43 @@ class GraphitiAdapter:
         ]
         return facts + entities
 
+    async def purge_generation(self, world: World, generation: str) -> None:
+        """Delete one exact authority/scope namespace after a drained maintenance barrier."""
+        namespace = graph_namespace(world, generation)
+        if self.config.backend != "falkordb":
+            # Graphiti's scoped Neptune clear_data leaves OpenSearch documents.
+            # A partial backend deletion must never become an erasure receipt.
+            raise Unavailable("Complete graph erasure requires the FalkorDB backend")
+        cached = self._clients.pop(namespace, None)
+        if cached is not None:
+            backend = cached.driver.client
+        else:
+            from falkordb.asyncio import FalkorDB
+
+            c = self.config
+            backend = await asyncio.to_thread(
+                FalkorDB,
+                host=c.host,
+                port=c.port,
+                username=c.username,
+                password=c.password,
+                socket_connect_timeout=3,
+                socket_timeout=15,
+            )
+        try:
+            if namespace in await backend.list_graphs():
+                await backend.select_graph(namespace).delete()
+            if namespace in await backend.list_graphs():
+                raise Unavailable("Selected graph namespace was not removed")
+        finally:
+            if cached is not None:
+                await cached.close()
+            else:
+                await backend.connection.aclose()
+
+    async def delete_generation(self, world: World, generation: str) -> None:
+        await self.purge_generation(world, generation)
+
     async def close(self) -> None:
         if self._aws_loop is not None:
             loop, thread = self._aws_loop, self._aws_thread
@@ -509,7 +549,6 @@ class ProjectionWorker:
         self.store = store
         self.adapter = adapter
         self._locks: dict[str, asyncio.Lock] = {}
-        self._recovered = False
 
     @staticmethod
     def _scope(world: World) -> dict:
@@ -534,47 +573,106 @@ class ProjectionWorker:
 
     async def _process_world(self, world: World) -> int:
         async with self._lock(world):
-            world = self._world(world.id, world.scope_id)
-            if world.projection_state == "degraded":
-                return 0
             try:
-                self._check_configuration(world)
+                with self.store.persistence.operation_guard():
+                    lease = self.store.persistence.acquire_lease(
+                        self.store.projection_resource(world.id, world.scope_id)
+                    )
+                    if lease is None:
+                        return 0
+                    try:
+                        with self.store.persistence.operation_guard():
+                            async with self.store.persistence.maintain_lease(lease) as assert_live:
+                                self.store.recover_scope_projection(
+                                    world.id, world.scope_id, lease=lease
+                                )
+                                world = self._world(world.id, world.scope_id)
+                                if world.projection_state == "degraded":
+                                    return 0
+                                try:
+                                    self._check_configuration(world)
+                                except Unavailable:
+                                    self.store.set_projection(
+                                        world.id,
+                                        world.generation,
+                                        "degraded",
+                                        **self._scope(world),
+                                        lease=lease,
+                                    )
+                                    return 0
+                                pending = self.store.pending_jobs(world.id, **self._scope(world))[
+                                    :20
+                                ]
+                                if not pending:
+                                    return 0
+                                generation = world.generation or uuid4().hex
+                                self.store.register_generation(
+                                    world.id, generation, **self._scope(world), lease=lease
+                                )
+                                count = 0
+                                for item in pending:
+                                    assert_live()
+                                    episode = self.store.mark_processing(
+                                        world.id, item.id, **self._scope(world), lease=lease
+                                    )
+                                    if episode is None:
+                                        continue
+                                    try:
+                                        if not world.generation:
+                                            self.store.set_projection_configuration(
+                                                world.id,
+                                                self.adapter.configuration_metadata(),
+                                                **self._scope(world),
+                                                lease=lease,
+                                            )
+                                        self.store.assert_projection_live(
+                                            world.id, world.scope_id, lease=lease
+                                        )
+                                        await self.adapter.project(world, generation, episode)
+                                        assert_live()
+                                        self.store.mark_projected(
+                                            world.id,
+                                            episode.id,
+                                            generation,
+                                            **self._scope(world),
+                                            lease=lease,
+                                        )
+                                        count += 1
+                                    except BaseException as error:
+                                        # No remote failure proves that Graphiti did not write.
+                                        # A lost fence cannot alter the new owner's source state.
+                                        try:
+                                            self.store.mark_unknown(
+                                                world.id,
+                                                episode.id,
+                                                type(error).__name__,
+                                                **self._scope(world),
+                                                lease=lease,
+                                            )
+                                            self.store.fail_generation(
+                                                world.id,
+                                                generation,
+                                                **self._scope(world),
+                                                lease=lease,
+                                            )
+                                        except LeaseLost:
+                                            pass
+                                        if isinstance(
+                                            error,
+                                            (asyncio.CancelledError, KeyboardInterrupt, SystemExit),
+                                        ):
+                                            raise
+                                        return count
+                                return count
+                    except (LeaseLost, Unavailable):
+                        return 0
+                    finally:
+                        self.store.persistence.release_lease(lease)
+
             except Unavailable:
-                self.store.set_projection(
-                    world.id, world.generation, "degraded", **self._scope(world)
-                )
                 return 0
-            generation = world.generation or uuid4().hex
-            count = 0
-            for pending in self.store.pending_jobs(world.id, **self._scope(world))[:20]:
-                episode = self.store.mark_processing(world.id, pending.id, **self._scope(world))
-                if episode is None:
-                    continue
-                try:
-                    if not world.generation:
-                        self.store.set_projection_configuration(
-                            world.id, self.adapter.configuration_metadata(), **self._scope(world)
-                        )
-                    await self.adapter.project(world, generation, episode)
-                    self.store.mark_projected(
-                        world.id, episode.id, generation, **self._scope(world)
-                    )
-                    count += 1
-                except BaseException as exc:
-                    # Even cancellation can arrive after a remote write. Do not assume
-                    # a failed call is safe to retry, or expose a partially changed graph.
-                    self.store.mark_unknown(
-                        world.id, episode.id, type(exc).__name__, **self._scope(world)
-                    )
-                    if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
-                        raise
-                    return count
-            return count
 
     async def run_once(self) -> int:
-        if not self._recovered:
-            self.store.recover_interrupted_projections()
-            self._recovered = True
         semaphore = asyncio.Semaphore(4)
 
         async def process(world: World) -> int:
@@ -585,36 +683,70 @@ class ProjectionWorker:
 
     async def run(self, poll_interval: float = 1.0) -> None:
         while True:
-            await self.run_once()
+            try:
+                await self.run_once()
+            except Unavailable:
+                # Maintenance is a durable pause, not a worker crash or source loss.
+                pass
             await asyncio.sleep(poll_interval)
 
     async def rebuild(self, world: World, include_unprojected: bool = False) -> dict[str, Any]:
         async with self._lock(world):
-            episodes = self.store.projection_episodes(
-                world.id, include_unprojected, **self._scope(world)
-            )
-            generation = uuid4().hex
-            try:
-                for episode in episodes:
-                    await self.adapter.project(world, generation, episode)
-            except BaseException:
-                # Replacement namespaces are never activated on failure. An existing
-                # ready generation stays usable; an existing degraded one stays blocked.
-                raise
-            self.store.activate_generation(
-                world.id,
-                generation,
-                [episode.id for episode in episodes],
-                configuration=self.adapter.configuration_metadata(),
-                **self._scope(world),
-            )
-            return {
-                "world_id": world.id,
-                "scope_id": str(world.scope_id),
-                "generation": generation,
-                "episodes": len(episodes),
-                "source_sequence": max((ep.sequence for ep in episodes), default=0),
-            }
+            with self.store.persistence.operation_guard():
+                lease = self.store.persistence.acquire_lease(
+                    self.store.projection_resource(world.id, world.scope_id)
+                )
+                if lease is None:
+                    raise Conflict("Another worker owns the selected scope projection")
+                generation = uuid4().hex
+                registered = False
+                try:
+                    with self.store.persistence.operation_guard():
+                        async with self.store.persistence.maintain_lease(lease) as assert_live:
+                            self.store.recover_scope_projection(
+                                world.id, world.scope_id, lease=lease
+                            )
+                            episodes = self.store.projection_episodes(
+                                world.id, include_unprojected, **self._scope(world)
+                            )
+                            self.store.register_generation(
+                                world.id, generation, **self._scope(world), lease=lease
+                            )
+                            registered = True
+                            self.store.assert_projection_live(world.id, world.scope_id, lease=lease)
+                            for episode in episodes:
+                                assert_live()
+                                self.store.assert_projection_live(
+                                    world.id, world.scope_id, lease=lease
+                                )
+                                await self.adapter.project(world, generation, episode)
+                            assert_live()
+                            self.store.activate_generation(
+                                world.id,
+                                generation,
+                                [episode.id for episode in episodes],
+                                configuration=self.adapter.configuration_metadata(),
+                                **self._scope(world),
+                                lease=lease,
+                            )
+                            return {
+                                "world_id": world.id,
+                                "scope_id": str(world.scope_id),
+                                "generation": generation,
+                                "episodes": len(episodes),
+                                "source_sequence": max((ep.sequence for ep in episodes), default=0),
+                            }
+                except BaseException:
+                    if registered:
+                        try:
+                            self.store.fail_generation(
+                                world.id, generation, **self._scope(world), lease=lease
+                            )
+                        except LeaseLost:
+                            pass
+                    raise
+                finally:
+                    self.store.persistence.release_lease(lease)
 
     async def search(
         self,
@@ -623,66 +755,84 @@ class ProjectionWorker:
         limit: int = 10,
         include_entities: bool = False,
     ) -> list[dict[str, Any]]:
-        # The caller authorizes the complete selection before invoking this method.
-        # Validate every projection before querying any backend.
-        resolved = [self._world(world.id, world.scope_id) for world in worlds]
-        # A scope with no extraction-eligible evidence has an empty graph. This
-        # does not query source text or conceal pending/unknown graph delivery.
-        resolved = [
-            world
-            for world in resolved
-            if not (
-                world.projection_state == "disabled"
-                and world.generation is None
-                and not self.store.projection_episodes(world.id, **self._scope(world))
-            )
-        ]
-        if any(w.projection_state != "ready" or not w.generation for w in resolved):
-            raise Unavailable(
-                "selected graph projection is unavailable; source search remains usable"
-            )
-        for world in resolved:
-            self._check_configuration(world)
-        results: list[dict[str, Any]] = []
-        for world in resolved:
-            async with self._lock(world):
-                current = self._world(world.id, world.scope_id)
-                if current.projection_state != "ready" or not current.generation:
-                    raise Unavailable("selected graph projection is unavailable")
-                self._check_configuration(current)
-                projected_sources = self.store.projection_episodes(
-                    current.id, **self._scope(current)
+        with self.store.persistence.operation_guard():
+            # The caller authorizes the complete selection before invoking this method.
+            # Validate every projection before querying any backend.
+            resolved = [self._world(world.id, world.scope_id) for world in worlds]
+            # A scope with no extraction-eligible evidence has an empty graph. This
+            # does not query source text or conceal pending/unknown graph delivery.
+            resolved = [
+                world
+                for world in resolved
+                if not (
+                    world.projection_state == "disabled"
+                    and world.generation is None
+                    and not self.store.projection_episodes(world.id, **self._scope(world))
                 )
-                if not projected_sources:
-                    continue
-                try:
-                    options = {"include_entities": True} if include_entities else {}
-                    facts = await self.adapter.search(
-                        current, current.generation, query, limit, **options
+            ]
+            if any(w.projection_state != "ready" or not w.generation for w in resolved):
+                raise Unavailable(
+                    "selected graph projection is unavailable; source search remains usable"
+                )
+            for world in resolved:
+                self._check_configuration(world)
+            results: list[dict[str, Any]] = []
+            for world in resolved:
+                async with self._lock(world):
+                    lease = self.store.persistence.acquire_lease(
+                        self.store.projection_resource(world.id, world.scope_id)
                     )
-                except Exception as exc:
-                    raise Unavailable(
-                        "graph retrieval failed; source search remains usable"
-                    ) from exc
-                # Join graph provenance back to source IDs without exposing a raw UUID lookup.
-                source_ids = {
-                    graph_episode_id(current, current.generation, episode.id): episode.id
-                    for episode in projected_sources
-                }
-                for fact in facts:
-                    fact.update(
-                        world_id=current.id,
-                        authority_id=current.authority_id,
-                        scope_id=str(current.scope_id),
-                        generation=current.generation,
-                    )
-                    graph_ids = fact.pop("graph_episode_ids", [])
-                    fact["source_episode_ids"] = [
-                        source_ids[graph_id] for graph_id in graph_ids if graph_id in source_ids
-                    ]
-                results.extend(facts)
-        # Scores from independent worlds are not calibrated. Preserve per-world rank.
-        return results
+                    if lease is None:
+                        raise Unavailable("Selected graph projection is being updated")
+                    try:
+                        async with self.store.persistence.maintain_lease(lease) as assert_live:
+                            self.store.recover_scope_projection(
+                                world.id, world.scope_id, lease=lease
+                            )
+                            current = self._world(world.id, world.scope_id)
+                            if current.projection_state != "ready" or not current.generation:
+                                raise Unavailable("selected graph projection is unavailable")
+                            self._check_configuration(current)
+                            projected_sources = self.store.projection_episodes(
+                                current.id, **self._scope(current)
+                            )
+                            if not projected_sources:
+                                continue
+                            try:
+                                options = {"include_entities": True} if include_entities else {}
+                                facts = await self.adapter.search(
+                                    current, current.generation, query, limit, **options
+                                )
+                            except Exception as exc:
+                                raise Unavailable(
+                                    "graph retrieval failed; source search remains usable"
+                                ) from exc
+                            # Join graph provenance to source IDs without a raw UUID lookup.
+                            source_ids = {
+                                graph_episode_id(
+                                    current, current.generation, episode.id
+                                ): episode.id
+                                for episode in projected_sources
+                            }
+                            for fact in facts:
+                                fact.update(
+                                    world_id=current.id,
+                                    authority_id=current.authority_id,
+                                    scope_id=str(current.scope_id),
+                                    generation=current.generation,
+                                )
+                                graph_ids = fact.pop("graph_episode_ids", [])
+                                fact["source_episode_ids"] = [
+                                    source_ids[graph_id]
+                                    for graph_id in graph_ids
+                                    if graph_id in source_ids
+                                ]
+                            results.extend(facts)
+                            assert_live()
+                    finally:
+                        self.store.persistence.release_lease(lease)
+            # Scores from independent worlds are not calibrated. Preserve per-world rank.
+            return results
 
     async def close(self) -> None:
         await self.adapter.close()

@@ -1,19 +1,31 @@
 import asyncio
 import re
-from contextlib import asynccontextmanager
+import time
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import __version__
 from .auth import AuthConfig, OIDCAuthenticator
 from .errors import MemoryError, Unauthorized, Unavailable
+from .identity_names import (
+    CreateIdentity,
+    IdentityKind,
+    IdentityRegistry,
+    NamedIdentity,
+    UpdateIdentity,
+)
+from .lifecycle import EpisodeLifecycle, LifecycleRequest, RetentionEngine, RetentionRequest
 from .locking import DaemonLock
+from .metrics import Metrics
 from .models import (
     MAX_IMPORT_BYTES,
     AgentContext,
@@ -39,6 +51,7 @@ from .models import (
     World,
 )
 from .mounts import MountConfig, MountView
+from .operations import BackupRequest, BackupService
 from .outbox import Delivery, RoutedPublication, RouterSearch
 from .router import WorldRouter
 from .store import MemoryStore
@@ -51,8 +64,21 @@ _IMPORT_ROUTE = re.compile(
 )
 
 
-def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_config=None) -> FastAPI:
-    store = MemoryStore(data_dir)
+def create_app(
+    data_dir: Path,
+    graph=None,
+    *,
+    router=None,
+    auth=None,
+    mount_config=None,
+    store=None,
+    backups=None,
+) -> FastAPI:
+    store = store or MemoryStore.from_env(data_dir)
+    identities = IdentityRegistry(store)
+    lifecycle, retention = EpisodeLifecycle(store), RetentionEngine(store)
+    backups = backups or BackupService.from_env(store)
+    metrics = Metrics()
     if auth is None:
         config = AuthConfig.from_env()
         auth = OIDCAuthenticator(store, config) if config else None
@@ -60,7 +86,7 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        with DaemonLock(data_dir):
+        with nullcontext() if store.persistence.is_postgres else DaemonLock(data_dir):
             store.reconcile_oidc_issuer(auth.config.issuer if auth is not None else None)
             if auth is not None:
                 auth.reconcile()
@@ -86,6 +112,16 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     app.state.router = router
     app.state.started = False
     app.state.workers = []
+
+    @app.middleware("http")
+    async def measured_request(request: Request, call_next):
+        started, status = time.perf_counter(), 500
+        try:
+            response = await call_next(request)
+            status = response.status_code
+            return response
+        finally:
+            metrics.observe(request.method, status, time.perf_counter() - started)
 
     @app.middleware("http")
     async def bounded_body(request: Request, call_next):
@@ -137,13 +173,81 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
 
     User = Annotated[Principal, Depends(principal)]
 
+    def is_ready():
+        if not app.state.started or any(task.done() for task in app.state.workers):
+            return False
+        try:
+            with store._control() as db:
+                return db.execute(select(1)).scalar_one() == 1
+        except (MemoryError, SQLAlchemyError, OSError):
+            return False
+
+    @app.get("/metrics", include_in_schema=False)
+    def prometheus(user: User):
+        with store._control() as db:
+            store._admin(db, user)
+        ready = is_ready()
+        body = metrics.render(store, ready=ready, workers=len(app.state.workers))
+        return Response(body, media_type="text/plain; version=0.0.4; charset=utf-8")
+
+    @app.get("/v1/authority/backups")
+    def authority_backups(user: User):
+        return backups.list(user)
+
+    @app.post("/v1/authority/backups", status_code=201)
+    def create_authority_backup(body: BackupRequest, user: User):
+        return backups.create(user, body)
+
+    @app.get("/v1/authority/backups/{artifact_id}")
+    def download_authority_backup(artifact_id: UUID, user: User):
+        source, size = backups.open(user, artifact_id)
+
+        def chunks():
+            with source:
+                while chunk := source.read(65536):
+                    yield chunk
+
+        return StreamingResponse(
+            chunks(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Length": str(size),
+                "Content-Disposition": f'attachment; filename="{artifact_id}.mwauthority"',
+                "Cache-Control": "no-store",
+            },
+        )
+
+    @app.post("/v1/worlds/{world_id}/scopes/{scope_id}/lifecycle/preview")
+    def preview_lifecycle(world_id: str, scope_id: UUID, body: LifecycleRequest, user: User):
+        return lifecycle.preview(user, world_id, scope_id, body)
+
+    @app.post("/v1/worlds/{world_id}/scopes/{scope_id}/lifecycle")
+    def apply_lifecycle(world_id: str, scope_id: UUID, body: LifecycleRequest, user: User):
+        return lifecycle.apply(user, world_id, scope_id, body)
+
+    @app.get("/v1/worlds/{world_id}/scopes/{scope_id}/lifecycle/{operation_id}")
+    def lifecycle_receipt(world_id: str, scope_id: UUID, operation_id: UUID, user: User):
+        return lifecycle.receipt(user, world_id, scope_id, operation_id)
+
+    @app.post("/v1/retention/preview")
+    def preview_retention(body: RetentionRequest, user: User):
+        return retention.preview(user, body)
+
+    @app.post("/v1/retention")
+    def apply_retention(body: RetentionRequest, user: User):
+        return retention.apply(user, body)
+
+    @app.get("/v1/retention/{operation_id}")
+    def retention_receipt(operation_id: UUID, user: User):
+        return retention.receipt(user, operation_id)
+
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
 
     @app.get("/readyz")
     def ready():
-        if not app.state.started or any(task.done() for task in app.state.workers):
+        if not is_ready():
             raise Unavailable("service workers are not ready")
         return {"status": "ready"}
 
@@ -158,6 +262,26 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     @app.get("/v1/worlds", response_model=list[World])
     def worlds(user: User):
         return store.list_worlds(user)
+
+    @app.get("/v1/identities/{kind}", response_model=list[NamedIdentity])
+    def named_identities(kind: IdentityKind, user: User):
+        return identities.list(user, kind)
+
+    @app.post("/v1/identities/{kind}", response_model=NamedIdentity, status_code=201)
+    def register_identity(kind: IdentityKind, body: CreateIdentity, user: User):
+        return identities.create(user, kind, body)
+
+    @app.get("/v1/identities/{kind}/resolve", response_model=NamedIdentity)
+    def resolve_named_identity(kind: IdentityKind, reference: str, user: User):
+        return identities.resolve(user, kind, reference)
+
+    @app.get("/v1/identities/{kind}/{identity_id}", response_model=NamedIdentity)
+    def named_identity(kind: IdentityKind, identity_id: UUID, user: User):
+        return identities.get(user, kind, identity_id)
+
+    @app.patch("/v1/identities/{kind}/{identity_id}", response_model=NamedIdentity)
+    def rename_identity(kind: IdentityKind, identity_id: UUID, body: UpdateIdentity, user: User):
+        return identities.update(user, kind, identity_id, body)
 
     @app.post("/v1/worlds", response_model=World, status_code=201)
     def create_world(body: CreateWorld, user: User):

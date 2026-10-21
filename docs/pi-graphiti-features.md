@@ -1,7 +1,7 @@
 # Pi Graphiti feature coverage
 
 Memory Worlds uses the real Graphiti library for graph extraction and graph
-retrieval. Its SQLite journal owns durable source evidence, credentials, scope
+retrieval. Its SQLite/PostgreSQL journals own durable source evidence, credentials, scope
 grants, and delivery receipts. Source search remains available without a graph
 backend. A source-only capture is not silently sent to an extraction model.
 
@@ -60,11 +60,11 @@ grant access by itself.
 
 ## Feature comparison
 
-This table describes the native Memory Worlds 0.2.0 graph features. They use
+This table describes the native Memory Worlds 0.3.0 graph features. They use
 server authorization and explicit publication. Transport and administration
 contracts are described separately.
 
-| Capability in upstream 0.6.0 | Memory Worlds 0.2.0 | Verification |
+| Capability in upstream 0.6.0 | Memory Worlds 0.3.0 | Verification |
 | --- | --- | --- |
 | `graph add` | Same action and content/name/source inputs; writes only to the configured agent-persistent or invocation-private target, and explicitly requests Graphiti extraction | [Tool and alias tests](../packages/pi/test/scoping.test.mjs), [actual-service Pi smoke](../packages/pi/test/real-service-smoke.mjs) |
 | `graph search` | Scoped entity and relationship fact retrieval with IDs, source evidence, and projection provenance | [Graph tool tests](../packages/pi/test/scoping.test.mjs), [real graph tests](../tests/test_graph.py) |
@@ -77,9 +77,10 @@ contracts are described separately.
 | Correction-triggered review | Correction/preference hints are enabled by default. Optional `reviewCorrections` uses a supplied review callback, at most once per three user turns. It produces proposals without saving or publication | [Curation implementation](../packages/pi/src/curation.ts), [extension hooks](../packages/pi/src/extension.ts) |
 | Offline local spool | Opt-in `spoolDirectory`; private immutable envelopes pinned to service, authority, credential, target, source, and exposure guard. Defaults: 10,000 envelopes and 64 MiB aggregate capacity; no automatic age-based deletion | [Queue tests](../packages/pi/test/spool.test.mjs) |
 | Document ingestion | `/graph ingest PATH` accepts one user-selected UTF-8 text file up to 200,000 bytes as one episode, with a stable retry identity. Paragraph/sentence chunking is not implemented | [Native command implementation](../packages/pi/src/extension.ts) |
+| Extracted chat directories | Native preview/import commands reuse the credential-free Python planner, preserve ChatGPT/Claude message provenance and split oversized document snapshots losslessly into private batches | [Planner bridge](../packages/pi/src/imports.ts), [actual service smoke](../packages/pi/test/real-service-smoke.mjs) |
 | Export and restore | Scope-aware `.mworld` source/audit archives and explicit imports; the CLI rejects restoring a private archive into a broader scope kind | [Scoped projection/portability tests](../tests/test_scope_graph.py), [adversarial review](../tests/test_scope_adversarial_review.py) |
 | Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph` does not provide `setup`, `uninstall`, or `teardown` | [Deployment guide](deployments.md), [Helm guide](helm.md) |
-| Graph clearing | No unrestricted agent wipe tool or `/graph clear`; administrators rebuild isolated projections from durable evidence | [Storage and recovery](storage.md) |
+| Retraction and erasure | Scoped manager operations block recall and retain tombstones; operator-only drained namespace purge and bounded retention keep durable receipts | [Lifecycle](lifecycle.md) |
 
 Memory Worlds already adds multi-agent authenticated service access, SSH
 tunnels, organizational worlds, explicit publications, OIDC memberships,
@@ -205,8 +206,8 @@ memory-worlds search QUERY --world WORLD --scope SCOPE_UUID --entities
 
 `capture`, `publish`, `status`, `graph-rebuild`, `export`, `restore`,
 `import-chatgpt`, and `import-pi` also accept `--scope SCOPE_UUID`. Native database
-backup remains an administrator operation over the world-shared source database;
-it is not a substitute for exporting selected scopes.
+backup is an encrypted administrator operation covering the whole authority,
+including private scopes, credentials and jobs. See [recovery](recovery.md).
 
 `capture` and `publish` accept `--context CONTEXT_UUID` for a live, caller-owned
 context whose write destination matches the selected target. Stored agent and

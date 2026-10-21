@@ -1,0 +1,16 @@
+{
+  "realm": "memory-worlds",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "accessTokenLifespan": 180,
+  "groups": [{"name": "mw-company"}, {"name": "mw-data-team"}],
+  "clientScopes": [{
+    "name": "memory-worlds",
+    "protocol": "openid-connect",
+    "attributes": {"include.in.token.scope": "true", "display.on.consent.screen": "false"}
+  }],
+  "clients": [],
+  "users": []
+}

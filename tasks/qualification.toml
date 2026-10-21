@@ -1,0 +1,37 @@
+["qualify:cluster"]
+description = "Create an isolated kind cluster with pinned Cilium and a private kubeconfig"
+tools.kind = "0.33.0"
+tools.kubectl = "1.37.1"
+tools.helm = "4.3.1"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/qualify-cluster.py'
+
+["qualify:sharing"]
+description = "Evaluate sharing controls with synthetic labels and a local Pi provider"
+depends = ["pi:build"]
+raw_args = true
+run = 'node scripts/qualify-sharing.mjs'
+
+["qualify:graph"]
+description = "Exercise real Graphiti extraction and recall with a deterministic local provider"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/qualify-graph.py'
+
+["qualify:oidc"]
+description = "Exercise a disposable Keycloak OIDC emulator in an isolated kind cluster"
+tools.kubectl = "1.37.1"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/qualify-oidc.py'
+
+["qualify:network"]
+description = "Prove local Cilium ingress and egress policies with allow and deny controls"
+tools.kubectl = "1.37.1"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/qualify-network.py'
+
+["qualify:deployment"]
+description = "Qualify two PostgreSQL API replicas, native backup, lost PVCs, recovery and deletion"
+tools.kubectl = "1.37.1"
+tools.helm = "4.3.1"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/qualify-deployment.py'

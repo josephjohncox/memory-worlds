@@ -1,0 +1,81 @@
+{{- if .Values.backup.cronJob.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-backup"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.cronJob.schedule | quote }}
+  timeZone: {{ .Values.backup.cronJob.timeZone | quote }}
+  suspend: {{ .Values.backup.cronJob.suspend }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.cronJob.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.cronJob.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ .Values.backup.cronJob.activeDeadlineSeconds }}
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            {{- include "memory-worlds.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "memory-worlds.serviceAccountName" . | quote }}
+          automountServiceAccountToken: false
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: backup
+              image: {{ include "memory-worlds.image" .Values.image | quote }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              command: [python, -c]
+              args:
+                - |
+                  import os, subprocess, uuid
+                  os.umask(0o077)
+                  target = "/archives/authority-" + uuid.uuid4().hex + ".mwa"
+                  subprocess.run([
+                      "memory-worlds", "--url",
+                      "http://{{ include "memory-worlds.fullname" . }}:8787",
+                      "--token-file", "/secrets/backup/token",
+                      "authority-backup", target, "--graph-mode",
+                      {{ .Values.backup.cronJob.graphMode | quote }},
+                  ], check=True, stdout=subprocess.DEVNULL)
+                  print("Encrypted authority backup downloaded.")
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+              volumeMounts:
+                - {name: archives, mountPath: /archives}
+                - {name: admin-token, mountPath: /secrets/backup/token, subPath: token, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: archives
+              persistentVolumeClaim:
+                claimName: {{ .Values.backup.cronJob.outputExistingClaim | quote }}
+            - name: admin-token
+              secret:
+                secretName: {{ .Values.backup.cronJob.adminTokenExistingSecret | quote }}
+                defaultMode: 288
+                items:
+                  - key: {{ .Values.backup.cronJob.adminTokenKey | quote }}
+                    path: token
+            - name: tmp
+              emptyDir: {sizeLimit: 128Mi}
+{{- end }}

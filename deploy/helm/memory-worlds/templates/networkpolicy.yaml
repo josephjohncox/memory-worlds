@@ -38,6 +38,22 @@ spec:
               app.kubernetes.io/component: test
       ports: [{protocol: TCP, port: 8787}]
     {{- end }}
+    {{- if .Values.backup.cronJob.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: backup
+      ports: [{protocol: TCP, port: 8787}]
+    {{- end }}
+    {{- if .Values.metrics.enabled }}
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.metricsNamespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.metricsPodSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: 8787}]
+    {{- end }}
   egress:
     - to:
         - namespaceSelector:
@@ -62,6 +78,11 @@ spec:
     {{- end }}
     {{- with .Values.networkPolicy.extraAPIEgress }}
     {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if eq .Values.storage.backend "postgres" }}
+    {{- with .Values.networkPolicy.postgresEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
     {{- end }}
 {{- if .Values.falkordb.enabled }}
 ---
@@ -102,6 +123,34 @@ spec:
     matchLabels:
       {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
       app.kubernetes.io/component: test
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports: [{protocol: TCP, port: 8787}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+{{- end }}
+{{- if .Values.backup.cronJob.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-backup"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backup
   policyTypes: [Ingress, Egress]
   egress:
     - to:

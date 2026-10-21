@@ -1,6 +1,6 @@
 {
   "name": "memory-worlds-pi",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "Apache-2.0",
   "description": "Native Pi tools, commands and session memory for Memory Worlds",
   "type": "module",
@@ -37,6 +37,10 @@
     "./sharing": {
       "types": "./dist/sharing-session.d.ts",
       "import": "./dist/sharing-session.js"
+    },
+    "./imports": {
+      "types": "./dist/imports.d.ts",
+      "import": "./dist/imports.js"
     }
   },
   "pi": {

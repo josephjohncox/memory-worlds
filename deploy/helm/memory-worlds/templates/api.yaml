@@ -17,18 +17,24 @@ spec:
       targetPort: http
 ---
 apiVersion: apps/v1
+{{- if eq .Values.storage.backend "postgres" }}
+kind: Deployment
+{{- else }}
 kind: StatefulSet
+{{- end }}
 metadata:
   name: {{ include "memory-worlds.fullname" . | quote }}
   labels:
     {{- include "memory-worlds.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
 spec:
+  {{- if eq .Values.storage.backend "sqlite" }}
   serviceName: {{ include "memory-worlds.fullname" . | quote }}
-  replicas: {{ .Values.replicaCount }}
   persistentVolumeClaimRetentionPolicy:
     whenDeleted: Retain
     whenScaled: Retain
+  {{- end }}
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
@@ -72,6 +78,27 @@ spec:
               value: "false"
             - name: MEMORY_WORLDS_GRAPH_BACKEND
               value: {{ .Values.graph.backend | quote }}
+            - name: MEMORY_WORLDS_STORAGE_BACKEND
+              value: {{ .Values.storage.backend | quote }}
+            - name: MEMORY_WORLDS_DATABASE_URL
+              {{- if eq .Values.storage.backend "postgres" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.postgres.existingSecret | quote }}
+                  key: {{ .Values.storage.postgres.urlKey | quote }}
+              {{- else }}
+              value: ""
+              {{- end }}
+            - name: MEMORY_WORLDS_AUTHORITY_ID
+              value: {{ if eq .Values.storage.backend "postgres" }}{{ .Values.storage.postgres.authorityId | quote }}{{ else }}""{{ end }}
+            {{- if and (eq .Values.storage.backend "postgres") .Values.storage.postgres.caExistingSecret }}
+            - name: PGSSLROOTCERT
+              value: /secrets/postgres/ca.pem
+            {{- end }}
+            - name: MEMORY_WORLDS_BACKUP_DIRECTORY
+              value: {{ if .Values.backup.enabled }}"/backups"{{ else }}""{{ end }}
+            - name: MEMORY_WORLDS_BACKUP_KEY_FILE
+              value: {{ if .Values.backup.enabled }}"/secrets/backup/key"{{ else }}""{{ end }}
             {{- if eq .Values.graph.backend "falkordb" }}
             - name: MEMORY_WORLDS_FALKORDB_HOST
               value: {{ include "memory-worlds.fullname" . }}-falkordb
@@ -109,6 +136,13 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
+            {{- if and (eq .Values.storage.backend "postgres") .Values.storage.postgres.caExistingSecret }}
+            - {name: postgres-ca, mountPath: /secrets/postgres/ca.pem, subPath: ca.pem, readOnly: true}
+            {{- end }}
+            {{- if .Values.backup.enabled }}
+            - {name: backups, mountPath: /backups}
+            - {name: backup-key, mountPath: /secrets/backup/key, subPath: key, readOnly: true}
+            {{- end }}
             {{- if .Values.router.enabled }}
             - {name: mounts, mountPath: /config, readOnly: true}
             - {name: remote-tokens, mountPath: /secrets/remotes, readOnly: true}
@@ -116,10 +150,34 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 128Mi}
-        {{- if .Values.persistence.existingClaim }}
+        {{- if and (eq .Values.storage.backend "postgres") .Values.storage.postgres.caExistingSecret }}
+        - name: postgres-ca
+          secret:
+            secretName: {{ .Values.storage.postgres.caExistingSecret | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ .Values.storage.postgres.caKey | quote }}
+                path: ca.pem
+        {{- end }}
+        {{- if eq .Values.storage.backend "postgres" }}
+        - name: data
+          emptyDir: {sizeLimit: 128Mi}
+        {{- else if .Values.persistence.existingClaim }}
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | quote }}
+        {{- end }}
+        {{- if .Values.backup.enabled }}
+        - name: backups
+          persistentVolumeClaim:
+            claimName: {{ .Values.backup.existingClaim | quote }}
+        - name: backup-key
+          secret:
+            secretName: {{ .Values.backup.keyExistingSecret | quote }}
+            defaultMode: 288
+            items:
+              - key: {{ .Values.backup.keyKey | quote }}
+                path: key
         {{- end }}
         {{- if .Values.router.enabled }}
         - name: mounts
@@ -143,7 +201,7 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-  {{- if not .Values.persistence.existingClaim }}
+  {{- if and (eq .Values.storage.backend "sqlite") (not .Values.persistence.existingClaim) }}
   volumeClaimTemplates:
     - metadata:
         name: data

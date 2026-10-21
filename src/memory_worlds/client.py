@@ -9,6 +9,8 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from .errors import Conflict, NotFound
+from .identity_names import CreateIdentity, IdentityKind, NamedIdentity, UpdateIdentity
+from .lifecycle import LifecycleRequest, RetentionRequest
 from .models import (
     AgentContext,
     BindContext,
@@ -28,6 +30,7 @@ from .models import (
     World,
 )
 from .mounts import MountView
+from .operations import BackupRequest
 from .outbox import Delivery, RoutedPublication, RouterSearch
 
 
@@ -70,6 +73,82 @@ class Client:
 
     def worlds(self) -> list[World]:
         return [World.model_validate(w) for w in self.request("GET", "/v1/worlds")]
+
+    def lifecycle(self, world_id: str, scope_id: UUID, body: LifecycleRequest, *, preview=False):
+        path = f"{scope_path(world_id, scope_id)}/lifecycle"
+        return self.request(
+            "POST", path + ("/preview" if preview else ""), json=body.model_dump(mode="json")
+        )
+
+    def lifecycle_receipt(self, world_id: str, scope_id: UUID, operation_id: UUID):
+        return self.request("GET", f"{scope_path(world_id, scope_id)}/lifecycle/{operation_id}")
+
+    def retention(self, body: RetentionRequest, *, preview=False):
+        return self.request(
+            "POST",
+            "/v1/retention" + ("/preview" if preview else ""),
+            json=body.model_dump(mode="json"),
+        )
+
+    def retention_receipt(self, operation_id: UUID):
+        return self.request("GET", f"/v1/retention/{operation_id}")
+
+    def create_backup(self, body: BackupRequest, *, timeout: float = 1200):
+        return self.request(
+            "POST", "/v1/authority/backups", json=body.model_dump(mode="json"), timeout=timeout
+        )
+
+    def backups(self):
+        return self.request("GET", "/v1/authority/backups")
+
+    def identities(self, kind: IdentityKind) -> list[NamedIdentity]:
+        return [
+            NamedIdentity.model_validate(item)
+            for item in self.request(
+                "GET",
+                f"/v1/identities/{kind}",
+            )
+        ]
+
+    def create_identity(self, kind: IdentityKind, body: CreateIdentity) -> NamedIdentity:
+        return NamedIdentity.model_validate(
+            self.request(
+                "POST",
+                f"/v1/identities/{kind}",
+                json=body.model_dump(mode="json"),
+            )
+        )
+
+    def identity(self, kind: IdentityKind, identity_id: UUID | str) -> NamedIdentity:
+        return NamedIdentity.model_validate(
+            self.request(
+                "GET",
+                f"/v1/identities/{kind}/{UUID(str(identity_id))}",
+            )
+        )
+
+    def update_identity(
+        self,
+        kind: IdentityKind,
+        identity_id: UUID | str,
+        body: UpdateIdentity,
+    ) -> NamedIdentity:
+        return NamedIdentity.model_validate(
+            self.request(
+                "PATCH",
+                f"/v1/identities/{kind}/{UUID(str(identity_id))}",
+                json=body.model_dump(mode="json", exclude_unset=True),
+            )
+        )
+
+    def resolve_identity(self, kind: IdentityKind, reference: str) -> NamedIdentity:
+        return NamedIdentity.model_validate(
+            self.request(
+                "GET",
+                f"/v1/identities/{kind}/resolve",
+                params={"reference": reference},
+            )
+        )
 
     def import_episodes(
         self, world_id: str, scope_id: UUID | str, episodes: list[EpisodeInput]

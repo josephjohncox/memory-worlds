@@ -25,7 +25,7 @@ cleans its owned `dist` directory before compilation.
 
 ## Configure
 
-Create `~/.pi/agent/memory-worlds.json` with explicit world and scope UUID bindings:
+Create `~/.pi/agent/memory-worlds.json` with explicit world/scope UUIDs or `@alias` references:
 
 ```json
 {
@@ -50,9 +50,12 @@ Create `~/.pi/agent/memory-worlds.json` with explicit world and scope UUID bindi
 }
 ```
 
-Replace each example with an authorized identifier. A scope UUID identifies an
-actual service scope. `project` and `global` are explicit aliases; the extension
-never derives authority from a directory, repository path or database group name.
+Replace each example with an authorized identifier. References such as
+`{"world_id":"@personal","scope_id":"@notes"}` resolve against live visible
+service objects when a session starts. The session stores canonical IDs; renaming
+an alias cannot silently retarget existing chat state. Missing or ambiguous aliases
+fail explicitly. `project` and `global` remain explicit graph bindings; the
+extension never derives authority from a directory or repository name.
 
 Store the agent credential in a private regular file (`chmod 600`). Tokens are read
 from that file for each ordinary operation. Multi-request delegation and spool
@@ -81,6 +84,33 @@ creates a fresh context while retaining the stable agent identity. An ordinary
 credential receives a fresh invocation UUID; a restricted child retains the
 invocation UUID fixed by its delegation.
 
+Name a stable agent and select it through the live identity registry:
+
+```text
+/memory identity agent create architect Design architect
+/memory agent @architect
+/memory identities agent
+/memory identity agent name @architect Primary architect
+/memory identity run create investigation Bearing investigation
+/memory run @investigation
+/memory identity invocation current first-pass Initial inspection
+```
+
+To reuse that agent across independent chats, add `"agent":"@architect"` to the
+configuration. Each chat still binds a fresh invocation. A UUID can replace the
+alias and must also identify a registered visible agent. Without this setting,
+new chats receive independent agent UUIDs; forks retain their agent identity.
+`/memory agent` and `/memory run` select attribution within the current chat and
+disable capture and sharing before rebinding its context. They preserve reads and
+the private write destination. `run off` clears run attribution. A delegated child
+retains its credential's fixed agent/invocation identities.
+
+Registry entries have an owner, UUID, display name and optional per-kind alias.
+They label agents, runs and invocations; they do not grant scope access. Use
+`/memory identity KIND alias REF ALIAS|none` to change an alias. `current` names an
+already bound UUID, while `create` creates a named identity. The typed client
+provides `identities`, `resolveIdentity`, `createIdentity`, and `updateIdentity`.
+
 Read scopes and the private capture target are independent. Capture requires an
 `agent-persistent` or `invocation-private` target. World membership never implicitly
 grants access to another invocation's private notes. Shared writes use explicit
@@ -103,6 +133,12 @@ inspect authority/world/scope/source attribution.
 | `/memory status` | Current context, selections, capture policy and deliveries |
 | `/memory worlds` | Discover authorized worlds |
 | `/memory scopes WORLD` | Discover authorized scopes in a world |
+| `/memory world-alias WORLD NAME\|none` | Set or clear an authorized world alias |
+| `/memory scope-alias WORLD SCOPE NAME\|none` | Set or clear an authorized scope alias |
+| `/memory identities KIND` | List visible agent, run or invocation names and UUIDs |
+| `/memory agent REF`, `/memory run REF` | Select registered attribution without selecting memory scopes |
+| `/memory import DIRECTORY --preview` | Validate local extracted files and show a content-free report |
+| `/memory import DIRECTORY` | Atomically import into the current private target |
 | `/memory read WORLD SCOPE` | Add an explicit read scope; `none` clears local reads |
 | `/memory read WORLD` | Resolve and add that world's actual shared scope |
 | `/memory mounts` | Discover configured remote mounts |
@@ -131,6 +167,64 @@ Publication requires a user command or a user-enabled sharing rule. A model tool
 cannot enable a rule or choose its destination. An explicit selected note remains
 available when automatic capture is off. See [chat sharing modes](../../docs/chat-sharing.md)
 for classifier configuration, category/topic exclusions, review, and retry behavior.
+
+World and scope arguments accept canonical IDs or explicit `@aliases`, including
+read/target selections, graph bindings, selected publication and local sharing
+destinations. Remote mount worlds retain their remote IDs. The typed client offers
+`resolveWorld`, `resolveScope`, `resolveSelection`, `setWorldAlias`, and
+`setScopeAlias`; alias lookup never grants permission.
+
+## Import extracted directories
+
+Install the matching Memory Worlds Python CLI on the machine running Pi. The
+configuration's `cliPath` defaults to `memory-worlds`; for a source checkout, set
+it to the absolute `CHECKOUT/.venv/bin/memory-worlds` after `mise run python:deps`.
+The executable is trusted local configuration and is never selected by a model.
+
+```text
+/memory target @personal @history
+/memory import "/private/chat exports" --preview --source-timezone America/Los_Angeles
+/memory import "/private/chat exports" --source-timezone America/Los_Angeles
+/memory import /private/documents --format documents --fallback-timestamp 2026-10-20T12:00:00Z
+```
+
+The target must be an `agent-persistent` or `invocation-private` scope in your own
+personal or private-work world. Imports leave chat reads, capture mode, and graph
+bindings unchanged. No model tool can select a directory or initiate this command.
+Graphiti extraction is queued by default; `--source-only` explicitly skips it.
+Other options are `--format auto|chatgpt|claude|richlow-md|documents` and
+`--all-branches`. The interactive `/memory` menu offers preview and apply choices.
+
+The native bridge runs `plan-directory --emit-records` with fixed argument arrays,
+no shell and no credential environment. It bounds private subprocess output,
+validates the resulting records, then sends one typed `/imports` request under a
+pinned memory credential. Source records stay in private pipes and memory; only
+the report and imported/replayed counts reach the user interface. Token rotation
+before dispatch stops the operation. Preview performs no import request.
+
+Native JSON retains source identities. Rendered Markdown remains an opaque
+snapshot: long files become lossless consecutive chunks rather than invented
+turns. Reimporting unchanged files replays; edited rendered bytes create a new
+snapshot. Richlow local dates require an explicit timezone, and document mode
+requires an aware fallback timestamp. See the [directory import guide](../../docs/chat-import.md)
+for filesystem limits, format selection and fidelity boundaries.
+
+```ts
+import {MemoryWorldsClient, readTokenFile} from "memory-worlds-pi/client";
+import {planDirectory, importDirectory} from "memory-worlds-pi/imports";
+
+const client = new MemoryWorldsClient(url, () => readTokenFile(tokenFile));
+const destination = await client.resolveSelection("@personal", "@history");
+const options = {cliPath: "/absolute/path/memory-worlds", sourceTimezone: "Etc/UTC"};
+const preview = await planDirectory(directory, options);
+console.log(preview.report); // The plan's episodes contain private source text.
+const receipt = await importDirectory(client, destination, directory, options);
+console.log(receipt.report, receipt.imported, receipt.replayed);
+```
+
+`client.importEpisodes(destination, episodes)` is the lower-level atomic batch
+operation for already parsed records. It fixes the explicit scope, bounds the
+request, rejects context bindings/publications, and validates receipt counts.
 
 ## Graph actions
 
@@ -206,8 +300,8 @@ unauthorized local scope selections reject the request.
 
 ## Native subagents and review
 
-Public SDK entry points are `memory-worlds-pi/client`, `/graph`, `/orchestrator`,
-`/curation`, and `/spool`.
+Public SDK entry points are `memory-worlds-pi/client`, `/imports`, `/graph`,
+`/orchestrator`, `/curation`, `/sharing`, and `/spool`.
 
 ```ts
 import {MemoryWorldsClient, readTokenFile} from "memory-worlds-pi/client";

@@ -1,15 +1,17 @@
 import { readFile, stat } from "node:fs/promises";
+export { DirectoryImportError, planDirectory, importDirectory, type DirectoryFormat, type DirectoryOptions, type DirectoryPlan, type DirectoryReport } from "./imports.js";
 
 export type WorldKind = "personal" | "private-work" | "team" | "company" | "ad-hoc";
 export interface World {
   id: string; authority_id: string; name: string; kind: WorldKind; owner_id: string;
+  alias?: string | null;
   created_at: string; generation?: string | null; projection_state: string; scope_id: string;
 }
 export interface EpisodeInput {
-  context_id?: string; scope_id?: string; source_id: string; content: string; occurred_at: string;
+  context_id?: string | null; scope_id?: string | null; source_id: string; content: string; occurred_at: string;
   source_type?: "text" | "chatgpt" | "claude" | "pi" | "publication";
-  session_id?: string; source_entry_id?: string; parent_entry_id?: string | null;
-  role?: string; metadata?: Record<string, unknown>; project?: boolean;
+  session_id?: string | null; source_entry_id?: string | null; parent_entry_id?: string | null;
+  source_ref?: string | null; role?: string | null; metadata?: Record<string, unknown>; project?: boolean;
 }
 export interface Episode extends EpisodeInput {
   scope_id: string; id: string; world_id: string; sequence: number; digest: string;
@@ -43,10 +45,18 @@ export type ScopeOperation = "read" | "write" | "publish" | "delegate" | "manage
 export interface ScopeSelection { world_id: string; scope_id: string }
 export interface Scope extends ScopeSelection {
   id: string; kind: ScopeKind; name: string; created_at: string;
+  alias?: string | null;
   run_id?: string | null; agent_id?: string | null; invocation_id?: string | null;
   parent_invocation_id?: string | null; coordinator_credential_id?: string | null; generation?: string | null; projection_state: string;
 }
 export interface ScopeGrant extends ScopeSelection { operations: ScopeOperation[] }
+export type IdentityKind = "agent" | "run" | "invocation";
+export interface NamedIdentity {
+  id: string; kind: IdentityKind; owner_id: string; name: string; alias: string | null; created_at: string;
+  parent_id?: string | null; agent_id?: string | null; run_id?: string | null;
+}
+export interface IdentityInput { id?: string; name: string; alias?: string | null; parent_id?: string; agent_id?: string; run_id?: string }
+export interface ImportResult { imported: number; replayed: number }
 export interface ContextInput { read_scopes: ScopeSelection[]; write_scope?: ScopeSelection | null; agent_id?: string; run_id?: string }
 export interface AgentContext extends ContextInput {
   id: string; credential_id: string; invocation_id: string; parent_invocation_id?: string | null; created_at: string;
@@ -61,17 +71,51 @@ export interface ScopedPublication extends Omit<EpisodeInput, "source_type" | "s
   source_scope?: ScopeSelection; source_episode_id?: string;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ALIAS = /^[a-z][a-z0-9_-]{0,63}$/;
+export class MemoryWorldsReferenceError extends Error { constructor(message: string) { super(message); this.name = "MemoryWorldsReferenceError"; } }
+export function aliasReference(value: string): boolean { return value.startsWith("@"); }
+function checkedAlias(value: string | null): string | null {
+  if (value !== null && !ALIAS.test(value)) throw new MemoryWorldsReferenceError("Alias must be lowercase letters, digits, underscores or hyphens, starting with a letter");
+  return value;
+}
+function aliasMatch<T extends { alias?: string | null }>(items: T[], reference: string): T {
+  checkedAlias(reference.slice(1));
+  const matches = items.filter(item => item.alias === reference.slice(1));
+  if (matches.length !== 1) throw new MemoryWorldsReferenceError(matches.length ? "Alias is ambiguous; select a canonical ID" : "No visible object matches that alias");
+  return matches[0]!;
+}
+function identityKind(value: string): IdentityKind {
+  if (!["agent", "run", "invocation"].includes(value)) throw new Error("Invalid identity kind");
+  return value as IdentityKind;
+}
+function namedIdentity(value: unknown, kind: IdentityKind): NamedIdentity {
+  const item = object(value);
+  if (!UUID.test(string(item.id)) || item.kind !== kind || !string(item.name).trim() || !string(item.owner_id) || !Number.isFinite(Date.parse(string(item.created_at)))) throw new Error("Invalid named identity response");
+  if (item.alias !== undefined && item.alias !== null) checkedAlias(string(item.alias));
+  for (const key of ["parent_id", "agent_id", "run_id"]) if (item[key] !== undefined && item[key] !== null && !UUID.test(string(item[key]))) throw new Error("Invalid linked identity");
+  return item as unknown as NamedIdentity;
+}
 export function scopeSelection(value: unknown): ScopeSelection {
   const item = object(value);
   const worldId = string(item.world_id), scopeId = string(item.scope_id);
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(worldId) || !UUID.test(scopeId)) throw new Error("Invalid scope selection");
   return { world_id: worldId, scope_id: scopeId.toLowerCase() };
 }
+/** User references are resolved live before becoming persisted scope selections. */
+export function scopeReferenceSelection(value: unknown): ScopeSelection {
+  const item = object(value), worldId = string(item.world_id), scopeId = string(item.scope_id);
+  if (aliasReference(worldId)) checkedAlias(worldId.slice(1));
+  else if (!/^[a-zA-Z0-9_-]{1,100}$/.test(worldId)) throw new Error("Invalid world reference");
+  if (aliasReference(scopeId)) checkedAlias(scopeId.slice(1));
+  else if (!UUID.test(scopeId)) throw new Error("Invalid scope reference");
+  return { world_id: worldId, scope_id: aliasReference(scopeId) ? scopeId : scopeId.toLowerCase() };
+}
 export function scopeKey(scope: ScopeSelection): string { return `${scope.world_id}/${scope.scope_id}`; }
 function scope(value: unknown): Scope {
   const item = object(value); const id = string(item.id);
   scopeSelection({ world_id: item.world_id, scope_id: id });
   if (!["world-shared", "run-shared", "agent-persistent", "invocation-private"].includes(String(item.kind))) throw new Error("Invalid scope kind");
+  if (item.alias !== undefined && item.alias !== null) checkedAlias(string(item.alias));
   return { ...item, scope_id: id } as unknown as Scope;
 }
 function context(value: unknown): AgentContext {
@@ -126,6 +170,7 @@ function world(value: unknown): World {
   for (const key of ["id", "authority_id", "name", "kind", "owner_id"]) string(item[key]);
   scopeSelection({ world_id: item.id, scope_id: item.scope_id });
   if (!["personal", "private-work", "team", "company", "ad-hoc"].includes(item.kind as string)) throw new Error("Invalid world kind");
+  if (item.alias !== undefined && item.alias !== null) checkedAlias(string(item.alias));
   return item as unknown as World;
 }
 
@@ -139,8 +184,8 @@ export class MemoryWorldsClient {
     readonly timeoutMs = 5000,
   ) { this.url = serviceURL(url); }
 
-  private async request(path: string, body?: unknown, signal?: AbortSignal, method?: "DELETE"): Promise<unknown> {
-    const deadline = AbortSignal.timeout(this.timeoutMs);
+  private async request(path: string, body?: unknown, signal?: AbortSignal, method?: "DELETE" | "PUT" | "PATCH", timeoutMs = this.timeoutMs): Promise<unknown> {
+    const deadline = AbortSignal.timeout(timeoutMs);
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     combined.throwIfAborted();
     const token = await this.token();
@@ -184,6 +229,61 @@ export class MemoryWorldsClient {
   }
   async worlds(signal?: AbortSignal): Promise<World[]> {
     return array(await this.request("/v1/worlds", undefined, signal)).map(world);
+  }
+  async resolveWorld(reference: string, signal?: AbortSignal): Promise<string> {
+    if (aliasReference(reference)) return aliasMatch(await this.worlds(signal), reference).id;
+    if (!/^[a-zA-Z0-9_-]{1,100}$/.test(reference)) throw new MemoryWorldsReferenceError("Invalid world reference");
+    return reference;
+  }
+  async resolveScope(worldId: string, reference: string, signal?: AbortSignal): Promise<string> {
+    if (aliasReference(reference)) return aliasMatch(await this.scopes(worldId, signal), reference).id;
+    if (!UUID.test(reference)) throw new MemoryWorldsReferenceError("Scope reference requires a UUID or @alias");
+    return reference.toLowerCase();
+  }
+  async resolveSelection(worldReference: string, scopeReference?: string, signal?: AbortSignal): Promise<ScopeSelection> {
+    return this.withCredentialSession(async client => {
+      const worldId = await client.resolveWorld(worldReference, signal);
+      const scopeId = scopeReference === undefined ? (await client.scopes(worldId, signal)).find(item => item.kind === "world-shared")?.id : await client.resolveScope(worldId, scopeReference, signal);
+      if (!scopeId) throw new Error("No visible world-shared scope exists");
+      const selected = scopeSelection({ world_id: worldId, scope_id: scopeId });
+      await client.scope(selected, signal);
+      return selected;
+    }, signal);
+  }
+  async setWorldAlias(worldId: string, alias: string | null, signal?: AbortSignal): Promise<World> {
+    const result = world(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/alias`, { alias: checkedAlias(alias) }, signal, "PUT"));
+    if (result.id !== worldId) throw new Error("Alias response does not match world");
+    return result;
+  }
+  async setScopeAlias(selection: ScopeSelection, alias: string | null, signal?: AbortSignal): Promise<Scope> {
+    const result = scope(await this.request(`${this.scopePath(selection)}/alias`, { alias: checkedAlias(alias) }, signal, "PUT"));
+    if (scopeKey(result) !== scopeKey(scopeSelection(selection))) throw new Error("Alias response does not match scope");
+    return result;
+  }
+  async identities(kind: IdentityKind, signal?: AbortSignal): Promise<NamedIdentity[]> {
+    return array(await this.request(`/v1/identities/${identityKind(kind)}`, undefined, signal)).map(item => namedIdentity(item, kind));
+  }
+  async namedIdentity(kind: IdentityKind, id: string, signal?: AbortSignal): Promise<NamedIdentity> {
+    if (!UUID.test(id)) throw new Error("Identity requires a UUID");
+    const result = namedIdentity(await this.request(`/v1/identities/${identityKind(kind)}/${id}`, undefined, signal), kind);
+    if (result.id !== id.toLowerCase()) throw new Error("Identity response does not match selection");
+    return result;
+  }
+  async resolveIdentity(kind: IdentityKind, reference: string, signal?: AbortSignal): Promise<NamedIdentity> {
+    if (aliasReference(reference)) checkedAlias(reference.slice(1));
+    else if (!UUID.test(reference)) throw new MemoryWorldsReferenceError("Identity reference requires a registered UUID or @alias");
+    const result = namedIdentity(await this.request(`/v1/identities/${identityKind(kind)}/resolve?reference=${encodeURIComponent(reference)}`, undefined, signal), kind);
+    if (aliasReference(reference) ? result.alias !== reference.slice(1) : result.id !== reference.toLowerCase()) throw new Error("Identity resolution did not match reference");
+    return result;
+  }
+  async createIdentity(kind: IdentityKind, input: IdentityInput, signal?: AbortSignal): Promise<NamedIdentity> {
+    return namedIdentity(await this.request(`/v1/identities/${identityKind(kind)}`, structuredClone(input), signal), kind);
+  }
+  async updateIdentity(kind: IdentityKind, id: string, input: { name?: string; alias?: string | null }, signal?: AbortSignal): Promise<NamedIdentity> {
+    if (!UUID.test(id)) throw new Error("Identity requires a UUID");
+    const result = namedIdentity(await this.request(`/v1/identities/${identityKind(kind)}/${id}`, structuredClone(input), signal, "PATCH"), kind);
+    if (result.id !== id.toLowerCase()) throw new Error("Identity response does not match selection");
+    return result;
   }
   async identity(signal?: AbortSignal): Promise<Identity> {
     const value = object(await this.request("/v1/me", undefined, signal));
@@ -233,7 +333,7 @@ export class MemoryWorldsClient {
     const selected = scopeSelection(selection);
     return `/v1/worlds/${encodeURIComponent(selected.world_id)}/scopes/${selected.scope_id}`;
   }
-  async createScope(worldId: string, input: { kind: ScopeKind; name: string; run_id?: string; agent_id?: string; invocation_id?: string }, signal?: AbortSignal): Promise<Scope> {
+  async createScope(worldId: string, input: { kind: ScopeKind; name: string; alias?: string; run_id?: string; agent_id?: string; invocation_id?: string }, signal?: AbortSignal): Promise<Scope> {
     return scope(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/scopes`, input, signal));
   }
   async canFlow(readScopes: ScopeSelection[], writeScope: ScopeSelection, signal?: AbortSignal): Promise<boolean> {
@@ -270,6 +370,19 @@ export class MemoryWorldsClient {
     if (item.world_id !== selection.world_id || item.scope_id !== selection.scope_id) throw new Error("Capture receipt does not match selected scope");
     string(item.id);
     return response as unknown as Receipt;
+  }
+  /** One atomic private-scope import. Inputs never select another destination or context. */
+  async importEpisodes(selection: ScopeSelection, episodes: readonly EpisodeInput[], signal?: AbortSignal): Promise<ImportResult> {
+    const selected = scopeSelection(selection);
+    if (!episodes.length || episodes.length > 10_000) throw new Error("An import requires 1..10000 episodes");
+    const inputs = structuredClone(episodes).map(item => {
+      if (item.context_id || item.scope_id && item.scope_id !== selected.scope_id || item.source_type === "publication") throw new Error("Import source cannot select a context, publication or another scope");
+      return { ...item, scope_id: selected.scope_id };
+    });
+    if (Buffer.byteLength(JSON.stringify({ episodes: inputs }), "utf8") > 32 * 1024 * 1024) throw new Error("Import request exceeds 32 MiB");
+    const response = object(await this.request(`${this.scopePath(selected)}/imports`, { episodes: inputs }, signal, undefined, Math.max(this.timeoutMs, 30_000)));
+    if (!Number.isInteger(response.imported) || !Number.isInteger(response.replayed) || Number(response.imported) < 0 || Number(response.replayed) < 0 || Number(response.imported) + Number(response.replayed) !== inputs.length) throw new Error("Invalid import receipt");
+    return { imported: Number(response.imported), replayed: Number(response.replayed) };
   }
   async episodes(selection: ScopeSelection, limit = 5, signal?: AbortSignal): Promise<Episode[]> {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid episode limit");

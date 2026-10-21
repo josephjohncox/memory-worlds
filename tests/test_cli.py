@@ -3,7 +3,6 @@
 import json
 import os
 import socket
-import sqlite3
 import subprocess
 import sys
 import time
@@ -56,6 +55,16 @@ def _invoke(data_dir, *arguments, url=None, token=None, input_text=None, success
 
 @contextmanager
 def _daemon(data_dir):
+    from memory_worlds.recovery_archive import generate_key
+
+    key_file = data_dir.parent / "backup.key"
+    if not key_file.exists():
+        generate_key(key_file)
+    environment = {
+        **_environment(),
+        "MEMORY_WORLDS_BACKUP_DIRECTORY": str(data_dir.parent / "backups"),
+        "MEMORY_WORLDS_BACKUP_KEY_FILE": str(key_file),
+    }
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -63,7 +72,7 @@ def _daemon(data_dir):
     process = subprocess.Popen(
         _command(data_dir, "serve", "--port", str(port)),
         cwd=ROOT,
-        env=_environment(),
+        env=environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -174,7 +183,7 @@ def test_cli_agents_capture_search_idempotency_and_revocation(running_authority)
     assert "HTTP 401" in revoked.stderr
 
 
-def test_cli_export_restore_and_online_source_backup(running_authority, tmp_path):
+def test_cli_export_restore_and_online_authority_backup(running_authority, tmp_path):
     data_dir, url, administrator, world = running_authority
     captured = _invoke(
         data_dir,
@@ -192,12 +201,34 @@ def test_cli_export_restore_and_online_source_backup(running_authority, tmp_path
     archive = tmp_path / "sync" / "world.mworld"
     result = _invoke(data_dir, "export", world, str(archive), token=administrator)
     assert Path(result["path"]).is_file()
-    backup = tmp_path / "source.sqlite3"
-    result = _invoke(data_dir, "backup", world, str(backup), token=administrator)
-    assert result["format"] == "sqlite-source-backup"
-    with sqlite3.connect(backup) as snapshot:
-        assert snapshot.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
-        assert snapshot.execute("SELECT COUNT(*) FROM episodes").fetchone()[0] == 1
+    backup = tmp_path / "authority.mwauthority"
+    result = _invoke(
+        data_dir,
+        "authority-backup",
+        str(backup),
+        "--graph-mode",
+        "rebuild",
+        url=url,
+        token=administrator,
+    )
+    assert result["graph_mode"] == "rebuild" and result["bytes"] == backup.stat().st_size
+    recovered = tmp_path / "authority-recovered"
+    restored_authority = _invoke(
+        recovered, "authority-restore", str(backup), "--key-file", str(tmp_path / "backup.key")
+    )
+    assert restored_authority["graph_mode"] == "rebuild"
+    with _daemon(recovered) as recovered_url:
+        found = _invoke(
+            recovered,
+            "search",
+            "Synthetic portable",
+            "--source",
+            "--world",
+            world,
+            url=recovered_url,
+            token=administrator,
+        )
+        assert found["results"][0]["id"] == captured["episode"]["id"]
 
     destination_dir = tmp_path / "destination"
     destination = _invoke(destination_dir, "init", "--user", "bob")

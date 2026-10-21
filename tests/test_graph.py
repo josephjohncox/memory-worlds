@@ -210,9 +210,13 @@ async def test_ambiguous_failure_blocks_graph_but_preserves_sources_and_new_capt
 async def test_restart_does_not_blindly_retry_an_interrupted_delivery(local):
     store, world, principal = local
     episode = capture(store, world, principal)
-    store.mark_processing(world.id, episode.id)
+    lease = store.persistence.acquire_lease(store.projection_resource(world.id))
+    store.mark_processing(world.id, episode.id, lease=lease)
     adapter = RecordingAdapter()
     restarted = ProjectionWorker(MemoryStore(store.data_dir), adapter)
+    assert await restarted.run_once() == 0
+    assert store.get_episode(principal, world.id, episode.id).projection_state == "processing"
+    store.persistence.release_lease(lease)
     assert await restarted.run_once() == 0
     assert adapter.deliveries == []
     assert store.get_episode(principal, world.id, episode.id).projection_state == "unknown"

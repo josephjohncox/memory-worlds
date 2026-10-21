@@ -2,6 +2,7 @@ import json
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from memory_worlds.api import create_app
 from memory_worlds.store import MemoryStore
@@ -250,8 +251,9 @@ def test_http_default_and_explicit_world_shared_views_use_same_canonical_scope(t
             == default
         )
     with store._world_db(world.id) as db:
+        table = store._table(db, "episodes")
         payload = json.loads(
-            db.execute("SELECT payload FROM episodes WHERE id=?", (default["id"],)).fetchone()[0]
+            db.execute(select(table.c.payload).where(table.c.id == default["id"])).scalar_one()
         )
     assert payload["scope_id"] == sid
     assert payload["context_id"] is None

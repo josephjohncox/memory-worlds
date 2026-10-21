@@ -5,6 +5,7 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { registerMemoryWorlds } from "memory-worlds-pi";
+import { MemoryWorldsClient } from "memory-worlds-pi/client";
 import { parseConfig } from "../dist/config.js";
 import { CONTEXT_TYPE, entryEpisode, expose, initialState, EXPOSURE_TYPE, memoryContext, RECEIPT_TYPE, restoreState, STATE_TYPE } from "../dist/state.js";
 
@@ -49,6 +50,88 @@ function fixture(configOverrides = {}, dependencies = {}) {
   registerMemoryWorlds(pi, { config: async () => config, client: () => client, ...dependencies });
   return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
 }
+
+function usabilityClient(f) {
+  f.client.worlds = async () => [{ ...world, alias: "personal" }];
+  f.client.scopes = async () => [
+    { id: rootScope, world_id: "private", scope_id: rootScope, alias: "published", kind: "world-shared" },
+    { id: privateScope, world_id: "private", scope_id: privateScope, alias: "notes", kind: "agent-persistent" },
+  ];
+  f.client.identity = async () => ({ authority_id: "a", credential_id: "fixture", user_id: "alice", agent_id: "editor", worlds: [{ ...world, alias: "personal" }] });
+  for (const name of ["resolveWorld", "resolveScope", "resolveSelection"]) f.client[name] = MemoryWorldsClient.prototype[name];
+  f.client.identities = async kind => [{ id: rootScope, kind, name: "Named specialist", alias: "architect", owner_id: "alice", created_at: timestamp }];
+  f.client.resolveIdentity = async (kind, reference) => {
+    const selected = (await f.client.identities(kind)).find(item => item.id === reference || `@${item.alias}` === reference);
+    if (!selected) throw new Error("Identity not visible");
+    return selected;
+  };
+  return f;
+}
+
+test("configured and command aliases resolve live and persist only canonical scope selections", async () => {
+  const f = usabilityClient(fixture({ readScopes: [{ world_id: "@personal", scope_id: "@notes" }], writeScope: { world_id: "@personal", scope_id: "@notes" } }));
+  await f.run("session_start", { reason: "startup" });
+  await f.command("read @personal @published");
+  await f.command("target @personal @notes");
+  await f.command("alias project @personal @notes");
+  const saved = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
+  assert.deepEqual(saved.writeScope, { world_id: "private", scope_id: privateScope });
+  assert(saved.readScopes.some(item => item.scope_id === rootScope));
+  assert.deepEqual(saved.graphAliases.project, saved.writeScope);
+  assert(!JSON.stringify(saved).includes("@personal"));
+  assert(!f.notices.some(notice => notice.type === "error"));
+});
+
+test("named agent configuration remains stable across independent chats with fresh invocations", async () => {
+  const first = usabilityClient(fixture({ agent: "@architect" })), second = usabilityClient(fixture({ agent: "@architect" }));
+  await first.run("session_start", { reason: "startup" });
+  await second.run("session_start", { reason: "startup" });
+  const a = first.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
+  const b = second.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
+  assert.equal(a.agentUuid, rootScope); assert.equal(b.agentUuid, rootScope);
+  assert.equal(a.boundContext.agent_id, rootScope); assert.equal(b.boundContext.agent_id, rootScope);
+  assert.notEqual(a.boundContext.invocation_id, b.boundContext.invocation_id);
+});
+
+test("configured identities cannot override delegated credential agent UUIDs", async () => {
+  const f = usabilityClient(fixture({ agent: "@architect", automaticCapture: true }));
+  f.client.identity = async () => ({ authority_id: "a", credential_id: "fixture", user_id: "alice", agent_uuid: siblingScope, restricted: true });
+  await f.run("session_start", { reason: "startup" });
+  assert(f.notices.some(notice => notice.type === "error" && notice.text.includes("does not belong")));
+  assert.equal(f.captures.length, 0);
+  assert.equal(f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data.captureEnabled, false);
+});
+
+test("agent and run selection rebind attribution without changing reads or private destination", async () => {
+  const f = usabilityClient(fixture());
+  await f.run("session_start", { reason: "startup" });
+  await f.command("capture on");
+  await f.command("agent @architect");
+  await f.command("run @architect");
+  const saved = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
+  assert.equal(saved.agentUuid, rootScope); assert.equal(saved.runUuid, rootScope);
+  assert.equal(saved.boundContext.agent_id, rootScope); assert.equal(saved.boundContext.run_id, rootScope);
+  assert.equal(saved.captureEnabled, false);
+  assert.deepEqual(saved.writeScope, { world_id: "private", scope_id: privateScope });
+  assert.deepEqual(saved.readScopes, [{ world_id: "private", scope_id: privateScope }]);
+  assert(![...f.tools.keys()].some(name => /identity|import/.test(name)));
+});
+
+test("identity metadata and server aliases change only through explicit native user commands", async () => {
+  const f = usabilityClient(fixture()), changes = [];
+  f.client.setWorldAlias = async (...args) => { changes.push(["world", ...args.slice(0, 2)]); return world; };
+  f.client.setScopeAlias = async (...args) => { changes.push(["scope", ...args.slice(0, 2)]); return {}; };
+  f.client.createIdentity = async (kind, input) => { changes.push(["identity", kind, input]); return { ...input, id: rootScope }; };
+  await f.run("session_start", { reason: "startup" });
+  const previous = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
+  await f.command("world-alias @personal renamed");
+  await f.command("scope-alias @personal @notes archive");
+  await f.command("identity agent create specialist Named specialist");
+  assert.equal(changes.length, 3);
+  assert.deepEqual(changes[1], ["scope", { world_id: "private", scope_id: privateScope }, "archive"]);
+  assert.deepEqual(changes[2], ["identity", "agent", { id: undefined, name: "Named specialist", alias: "specialist" }]);
+  assert.equal(f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data.agentUuid, previous.agentUuid);
+});
 
 
 test("graph extraction and retrieval are the normal configuration with explicit source opt-outs", () => {

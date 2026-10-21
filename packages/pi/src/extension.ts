@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { MemoryWorldsClient, readTokenFile, scopeKey, scopeSelection, type EpisodeInput, type SearchResult, type ScopeSelection, type World } from "./client.js";
+import { MemoryWorldsClient, readTokenFile, scopeKey, scopeSelection, type EpisodeInput, type IdentityKind, type SearchResult, type ScopeSelection, type World } from "./client.js";
+import { importDirectory, planDirectory, type DirectoryFormat, type DirectoryOptions } from "./imports.js";
 import { MemorySpool, type SpoolFlow } from "./spool.js";
 import { proposeMemories, reviewMemories, type MemoryProposal } from "./curation.js";
 import { executeGraph, graphSelections, type GraphArguments } from "./graph.js";
@@ -18,10 +21,42 @@ export interface ExtensionDependencies {
   review?: (selected: readonly MemoryProposal[], signal: AbortSignal) => Promise<unknown>;
   classifySharing?: (ctx: ExtensionContext, selected: readonly SharingCandidate[], settings: SharingSettings, signal: AbortSignal) => Promise<SharingDecision[]>;
 }
-const HELP = "/memory status | worlds | read WORLD [SCOPE]|none | mounts | mount MOUNT,...|none | target WORLD SCOPE|off | scopes WORLD | alias project|global WORLD SCOPE | share WORLD SCOPE TEXT | sharing private|review WORLD SCOPE|auto WORLD SCOPE|pending|approve ID|dismiss ID|retry | capture on|off|TEXT | search QUERY | source QUERY | publish MOUNT WORLD TEXT | deliveries";
+const HELP = "/memory status | worlds | read WORLD [SCOPE]|none | target WORLD SCOPE|off | scopes WORLD | world-alias WORLD NAME|none | scope-alias WORLD SCOPE NAME|none | alias project|global WORLD SCOPE | agent UUID|@alias | run UUID|@alias|off | identities agent|run|invocation | identity KIND create ALIAS NAME | identity KIND name REF NAME | identity KIND alias REF ALIAS|none | import DIRECTORY [--preview] [--format FORMAT] [--source-timezone ZONE] [--fallback-timestamp ISO] [--all-branches] [--source-only] | share WORLD SCOPE TEXT | sharing private|review WORLD SCOPE|auto WORLD SCOPE|pending|approve ID|dismiss ID|retry | capture on|off|TEXT | search QUERY | source QUERY | mounts | mount MOUNT,...|none | publish MOUNT WORLD TEXT | deliveries";
 const CAPTURE_INTENT_TYPE = "memory-worlds:capture-intent:v1";
 const PUBLICATION_INTENT_TYPE = "memory-worlds:publication-intent:v1";
 class CommandError extends Error {}
+/** Quoted command arguments only; no shell expansion or command execution. */
+function commandWords(value: string): string[] {
+  const words: string[] = []; let word = "", quote = "", started = false;
+  for (let index = 0; index < value.length; index++) {
+    const char = value[index]!;
+    if (quote) { if (char === quote) quote = ""; else if (char === "\\" && quote === '"' && ['"', "\\"].includes(value[index + 1] ?? "")) word += value[++index]; else word += char; started = true; }
+    else if (char === '"' || char === "'") { quote = char; started = true; }
+    else if (/\s/.test(char)) { if (started) { words.push(word); word = ""; started = false; } }
+    else { word += char; started = true; }
+  }
+  if (quote) throw new CommandError("Close the quoted command argument");
+  if (started) words.push(word);
+  return words;
+}
+function directoryArguments(argument: string, cliPath: string, cwd: string): { directory: string; preview: boolean; options: DirectoryOptions } {
+  const args = commandWords(argument), path = args.shift();
+  if (!path || path.startsWith("--")) throw new CommandError("import requires a local directory path; quote paths containing spaces");
+  const options: DirectoryOptions = { cliPath }; let preview = false;
+  while (args.length) {
+    const flag = args.shift()!;
+    if (flag === "--preview") preview = true;
+    else if (flag === "--source-only") options.sourceOnly = true;
+    else if (flag === "--all-branches") options.allBranches = true;
+    else if (["--format", "--source-timezone", "--fallback-timestamp"].includes(flag)) {
+      const value = args.shift(); if (!value || value.startsWith("--")) throw new CommandError(`Missing value for ${flag}`);
+      if (flag === "--format") { if (!["auto", "chatgpt", "claude", "richlow-md", "documents"].includes(value)) throw new CommandError("Unknown directory format"); options.format = value as DirectoryFormat; }
+      else if (flag === "--source-timezone") options.sourceTimezone = value;
+      else options.fallbackTimestamp = value;
+    } else throw new CommandError("Unknown directory import option");
+  }
+  return { directory: resolve(cwd, path.startsWith("~/") ? resolve(homedir(), path.slice(2)) : path), preview, options };
+}
 
 function hasUnknownExposure(entries: SessionEntry[]): boolean {
   return entries.some(entry => entry.type === "custom" && [STATE_TYPE, EXPOSURE_TYPE].includes(entry.customType) && entry.data && typeof entry.data === "object" && (entry.data as { exposureUnknown?: boolean }).exposureUnknown === true);
@@ -69,6 +104,14 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
   const ready = () => {
     if (!client || !state || !config || lifecycle.signal.aborted) throw new CommandError("Memory Worlds is unavailable; check configuration and /reload");
     return { client, state, config };
+  };
+  const userSelection = async (world: string, scope: string | undefined, ctx: ExtensionContext): Promise<ScopeSelection> => {
+    const client = ready().client;
+    if (world.startsWith("@") || scope?.startsWith("@")) return client.resolveSelection(world, scope, signal(ctx));
+    const scopeId = scope ?? (await client.scopes(world, signal(ctx))).find(item => item.kind === "world-shared")?.id;
+    if (!scopeId) throw new CommandError("No authorized shared scope exists for this world");
+    const selected = scopeSelection({ world_id: world, scope_id: scopeId });
+    await client.scope(selected, signal(ctx)); return selected;
   };
   const save = () => { if (state) pi.appendEntry(STATE_TYPE, { ...structuredClone(state), exposureUnknown }); };
   const paint = (ctx: ExtensionContext) => {
@@ -139,7 +182,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     const reads = state.readScopes;
     const unique = [...new Map(reads.map(selected => [scopeKey(selected), selected])).values()];
     if (unique.length > 50) throw new CommandError("At most 50 total local read scopes can be bound");
-    state.boundContext = await client.bindContext({ read_scopes: unique, write_scope: state.writeScope, agent_id: state.agentUuid }, signal(ctx));
+    state.boundContext = await client.bindContext({ read_scopes: unique, write_scope: state.writeScope, agent_id: state.agentUuid, run_id: state.runUuid }, signal(ctx));
   };
   const privateTarget = async (ctx: ExtensionContext): Promise<World & { selectedScope: ScopeSelection }> => {
     const { client, state } = ready();
@@ -167,7 +210,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     try { pending = (await client.deliveries(signal(ctx))).filter(item => item.state === "pending").length; }
     catch { pending = undefined; }
     paint(ctx);
-    return { connectivity, worlds, agentContext: state.boundContext, readMountIds: state.readMountIds, readScopes: state.readScopes, writeScope: state.writeScope, graphAliases: state.graphAliases, graphSelection: state.graphSelection ?? "project", privateScopeExposure: scopeUnsafe(), automaticCapture: state.captureEnabled, sharing: chatSharing?.summary(), mixedAuthorities: state.exposedAuthorities.length > 1, exposureUnknown, pendingDeliveries: pending };
+    return { connectivity, worlds, agentUuid: state.agentUuid, runUuid: state.runUuid, agentContext: state.boundContext, readMountIds: state.readMountIds, readScopes: state.readScopes, writeScope: state.writeScope, graphAliases: state.graphAliases, graphSelection: state.graphSelection ?? "project", privateScopeExposure: scopeUnsafe(), automaticCapture: state.captureEnabled, sharing: chatSharing?.summary(), mixedAuthorities: state.exposedAuthorities.length > 1, exposureUnknown, pendingDeliveries: pending };
   };
   const search = async (ctx: ExtensionContext, query: string, mode: "source" | "graph", extra?: AbortSignal): Promise<SearchResult> => {
     const { client, state, config } = ready();
@@ -185,7 +228,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     if (!(error instanceof Error && error.name === "MemoryWorldsSharingError")) connectivity = "offline";
     paint(ctx);
     // Fetch implementations can include a URL or request body in their exception.
-    const message = error instanceof Error && (error instanceof CommandError || ["MemoryWorldsError", "MemoryWorldsSharingError"].includes(error.name)) ? error.message : "Memory Worlds operation failed; verify service, selections, private token file and configuration.";
+    const message = error instanceof Error && (error instanceof CommandError || ["MemoryWorldsError", "MemoryWorldsSharingError", "MemoryWorldsImportError", "MemoryWorldsReferenceError"].includes(error.name)) ? error.message : "Memory Worlds operation failed; verify service, selections, private token file and configuration.";
     ctx.ui.notify(message, "error");
   };
 
@@ -216,6 +259,8 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       spool = config.spoolDirectory ? new MemorySpool(config.spoolDirectory) : undefined;
       lastReviewTurn = -3;
       client = dependencies.client?.(config) ?? new MemoryWorldsClient(config.url, () => readTokenFile(config!.tokenFile));
+      const resolveConfigured = async (selected: ScopeSelection | undefined) => selected && (selected.world_id.startsWith("@") || selected.scope_id.startsWith("@")) ? client!.resolveSelection(selected.world_id, selected.scope_id, signal(ctx)) : selected;
+      config = { ...config, readScopes: await Promise.all(config.readScopes.map(async selected => (await resolveConfigured(selected))!)), writeScope: await resolveConfigured(config.writeScope), graphAliases: { project: await resolveConfigured(config.graphAliases.project), global: await resolveConfigured(config.graphAliases.global) } };
       const parent = event.reason === "fork" ? event.previousSessionFile : ctx.sessionManager.getHeader()?.parentSession;
       try { const parentState = await parentExposure(parent); inherited = parentState.authorities; inheritedScopes = parentState.scopes; } catch { exposureUnknown = true; }
       if (event.reason === "fork") {
@@ -232,9 +277,16 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       // capture window at the fork leaf, so copied ancestors are not re-ingested
       // under the new session's source IDs.
       if (event.reason === "fork") { state.captureAfterId = ctx.sessionManager.getLeafId(); state.boundContext = undefined; state.captureBinding = undefined; }
-      if (state.boundContext || spool || state.readScopes?.length || state.writeScope) {
+      if (state.boundContext || spool || state.readScopes?.length || state.writeScope || config.agent) {
         const identity = await client.identity(signal(ctx));
-        if (identity.agent_uuid) state.agentUuid = identity.agent_uuid;
+        const named = config.agent ? await client.resolveIdentity("agent", config.agent, signal(ctx)) : undefined;
+        if (named && (named.owner_id !== identity.user_id || identity.agent_uuid && named.id !== identity.agent_uuid)) throw new CommandError("Configured agent identity does not belong to this credential");
+        const selectedAgent = identity.agent_uuid ?? named?.id;
+        if (selectedAgent && selectedAgent !== state.agentUuid) {
+          const changedBinding = Boolean(state.boundContext || state.captureBinding);
+          state.agentUuid = selectedAgent; state.boundContext = undefined; state.captureBinding = undefined;
+          if (changedBinding) { state.captureEnabled = false; state.captureAfterId = ctx.sessionManager.getLeafId(); }
+        }
         const bindingChanged = state.boundContext && state.boundContext.credential_id !== identity.credential_id || state.captureBinding && (state.captureBinding.credentialId !== identity.credential_id || state.captureBinding.authorityId !== identity.authority_id || state.captureBinding.serviceUrl !== client.url);
         if (bindingChanged) { state.captureEnabled = false; state.captureAfterId = ctx.sessionManager.getLeafId(); state.boundContext = undefined; ctx.ui.notify("Memory credential or authority changed. Automatic capture is off; explicitly enable future capture after reviewing the new binding.", "warning"); }
         if (state.boundContext) state.boundContext = await client.context(state.boundContext.id, signal(ctx));
@@ -364,11 +416,26 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         let argument = parsed?.[2] ?? "";
         let rest = argument.trim().split(/\s+/).filter(Boolean);
         if (!command && ctx.hasUI) {
-          command = await ctx.ui.select("Memory Worlds", ["status", "worlds", "mounts", "search", "capture", "sharing", "deliveries"]) ?? "";
+          command = await ctx.ui.select("Memory Worlds", ["status", "worlds", "mounts", "search", "capture", "sharing", "agent", "run", "identities", "import", "deliveries"]) ?? "";
           if (["search", "capture"].includes(command)) {
             const text = await ctx.ui.editor(command === "capture" ? "Capture selected text to private memory" : "Search memory evidence");
             if (!text?.trim()) return;
             argument = text; rest = [text];
+          }
+          if (["agent", "run"].includes(command)) {
+            const kind = command as "agent" | "run", items = await client.identities(kind, signal(ctx));
+            const labels = items.map(item => cleanTerminal(`${item.name} ${item.alias ? `(@${item.alias}) ` : ""}· ${item.id}`));
+            const selected = await ctx.ui.select(`Select named ${kind}`, [...(kind === "run" ? ["off"] : []), ...labels]);
+            if (!selected) return;
+            argument = selected === "off" ? "off" : items[labels.indexOf(selected)]!.id; rest = [argument];
+          }
+          if (command === "identities") { argument = await ctx.ui.select("Identity kind", ["agent", "run", "invocation"]) ?? ""; if (!argument) return; rest = [argument]; }
+          if (command === "import") {
+            const text = await ctx.ui.editor("Local directory and import options (quote paths with spaces)");
+            if (!text?.trim()) return;
+            const mode = await ctx.ui.select("Directory import", ["preview", "import into current private target"]);
+            if (!mode) return;
+            argument = text + (mode === "preview" ? " --preview" : ""); rest = [];
           }
           if (command === "sharing") {
             const mode = await ctx.ui.select("Chat sharing", ["status", "private", "review", "auto", "pending", "retry"]);
@@ -395,10 +462,60 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         }
         if (!command || command === "help") { ctx.ui.notify(HELP, "info"); return; }
         if (command === "status") { ctx.ui.notify(cleanTerminal(JSON.stringify(await status(ctx), null, 2)), "info"); return; }
+        if (command === "import") {
+          const parsed = directoryArguments(argument, config.cliPath, ctx.cwd);
+          const options = { ...parsed.options, signal: signal(ctx) };
+          const result = parsed.preview ? { report: (await planDirectory(parsed.directory, options)).report } : await importDirectory(client, (await privateTarget(ctx)).selectedScope, parsed.directory, options);
+          ctx.ui.notify(cleanTerminal(JSON.stringify(result, null, 2)), "info"); return;
+        }
+        if (command === "identities") {
+          if (rest.length !== 1 || !["agent", "run", "invocation"].includes(rest[0]!)) throw new CommandError("identities requires agent, run or invocation");
+          const items = await client.identities(rest[0] as IdentityKind, signal(ctx));
+          ctx.ui.notify(cleanTerminal(items.map(item => `${item.id} · ${item.alias ? `@${item.alias} · ` : ""}${item.name}`).join("\n") || "No visible named identities"), "info"); return;
+        }
+        if (command === "identity") {
+          const [kind, operation, reference, ...name] = commandWords(argument);
+          if (!kind || !["agent", "run", "invocation"].includes(kind) || !operation || !reference) throw new CommandError("identity requires KIND create|name|alias|current ALIAS_OR_ID NAME");
+          let result;
+          if (["create", "current"].includes(operation)) {
+            if (!name.length) throw new CommandError("Provide an identity display name");
+            const id = operation !== "current" ? undefined : kind === "agent" ? state.agentUuid : kind === "run" ? state.runUuid : state.boundContext?.invocation_id;
+            if (operation === "current" && !id) throw new CommandError("No current identity is bound");
+            result = await client.createIdentity(kind as IdentityKind, { id, name: name.join(" "), alias: reference === "none" ? null : reference.replace(/^@/, "") }, signal(ctx));
+          } else {
+            const selected = await client.resolveIdentity(kind as IdentityKind, reference, signal(ctx));
+            if (operation === "name" && name.length) result = await client.updateIdentity(kind as IdentityKind, selected.id, { name: name.join(" ") }, signal(ctx));
+            else if (operation === "alias" && name.length === 1) result = await client.updateIdentity(kind as IdentityKind, selected.id, { alias: name[0] === "none" ? null : name[0]!.replace(/^@/, "") }, signal(ctx));
+            else throw new CommandError("identity supports create/current ALIAS NAME, name REF NAME, or alias REF ALIAS|none");
+          }
+          ctx.ui.notify(cleanTerminal(JSON.stringify(result, null, 2)), "info"); return;
+        }
+        if (command === "agent" || command === "run") {
+          if (rest.length !== 1) throw new CommandError(`${command} requires a registered UUID or @alias${command === "run" ? ", or off" : ""}`);
+          const identity = await client.identity(signal(ctx));
+          if (identity.restricted) throw new CommandError("A delegated invocation cannot select another agent or run identity");
+          const selected = command === "run" && rest[0] === "off" ? undefined : await client.resolveIdentity(command, rest[0]!, signal(ctx));
+          if (selected && selected.owner_id !== identity.user_id) throw new CommandError("Identity belongs to another user");
+          chatSharing!.stop(ctx); state.captureEnabled = false; state.captureBinding = undefined; state.boundContext = undefined;
+          if (command === "agent") state.agentUuid = selected!.id; else state.runUuid = selected?.id;
+          await rebindSelections(ctx); save(); paint(ctx);
+          ctx.ui.notify("Named identity selected. Reads and write target are unchanged; enable future capture explicitly.", "info"); return;
+        }
+        if (command === "world-alias") {
+          if (rest.length !== 2) throw new CommandError("world-alias requires WORLD ALIAS|none");
+          const world = await client.resolveWorld(rest[0]!, signal(ctx));
+          await client.setWorldAlias(world, rest[1] === "none" ? null : rest[1]!.replace(/^@/, ""), signal(ctx));
+          ctx.ui.notify("World alias updated; existing selections retain canonical IDs.", "info"); return;
+        }
+        if (command === "scope-alias") {
+          if (rest.length !== 3) throw new CommandError("scope-alias requires WORLD SCOPE ALIAS|none");
+          await client.setScopeAlias(await userSelection(rest[0]!, rest[1], ctx), rest[2] === "none" ? null : rest[2]!.replace(/^@/, ""), signal(ctx));
+          ctx.ui.notify("Scope alias updated; existing selections retain canonical IDs.", "info"); return;
+        }
         if (command === "sharing") { await chatSharing!.command(argument, ctx); paint(ctx); return; }
         if (command === "worlds") {
           const worlds = await client.worlds(signal(ctx));
-          ctx.ui.notify(cleanTerminal(worlds.map(world => `${world.id} · ${world.name} · ${world.kind} · ${world.authority_id}`).join("\n") || "No authorized worlds"), "info"); return;
+          ctx.ui.notify(cleanTerminal(worlds.map(world => `${world.id} · ${world.alias ? `@${world.alias} · ` : ""}${world.name} · ${world.kind} · ${world.authority_id}`).join("\n") || "No authorized worlds"), "info"); return;
         }
         if (command === "mounts") {
           const mounts = await client.mounts(signal(ctx));
@@ -415,17 +532,15 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         }
         if (command === "scopes") {
           if (rest.length !== 1) throw new CommandError("scopes requires WORLD");
-          const scopes = await client.scopes(rest[0]!, signal(ctx));
-          ctx.ui.notify(cleanTerminal(scopes.map(scope => `${scope.id} · ${scope.kind} · ${scope.name}`).join("\n") || "No authorized scopes"), "info"); return;
+          const worldId = rest[0]!.startsWith("@") ? await client.resolveWorld(rest[0]!, signal(ctx)) : rest[0]!;
+          const scopes = await client.scopes(worldId, signal(ctx));
+          ctx.ui.notify(cleanTerminal(scopes.map(scope => `${scope.id} · ${scope.alias ? `@${scope.alias} · ` : ""}${scope.kind} · ${scope.name}`).join("\n") || "No authorized scopes"), "info"); return;
         }
         if (command === "read") {
           if (argument === "none") state.readScopes = [];
           else {
             if (rest.length < 1 || rest.length > 2) throw new CommandError("read requires WORLD [SCOPE], or none");
-            const scopeId = rest[1] ?? (await client.scopes(rest[0]!, signal(ctx))).find(scope => scope.kind === "world-shared")?.id;
-            if (!scopeId) throw new CommandError("No authorized shared scope exists for this world");
-            const selected = scopeSelection({ world_id: rest[0], scope_id: scopeId });
-            await client.scope(selected, signal(ctx));
+            const selected = await userSelection(rest[0]!, rest[1], ctx);
             const next = [...new Map([...(state.readScopes ?? []), selected].map(item => [scopeKey(item), item])).values()];
             if (next.length > 50) throw new CommandError("At most 50 read scopes can be selected");
             state.readScopes = next;
@@ -434,15 +549,14 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         }
         if (command === "alias") {
           if (rest.length !== 3 || !["project", "global"].includes(rest[0]!)) throw new CommandError("alias requires project|global WORLD SCOPE");
-          const selected = scopeSelection({ world_id: rest[1], scope_id: rest[2] });
-          await client.scope(selected, signal(ctx));
+          const selected = await userSelection(rest[1]!, rest[2], ctx);
           state.graphAliases ??= {}; state.graphAliases[rest[0] as "project" | "global"] = selected;
           save(); paint(ctx); return;
         }
         if (command === "share") {
           const selected = argument.match(/^(\S+)\s+(\S+)[ \t]([\s\S]+)$/);
           if (!selected?.[3]?.trim()) throw new CommandError("share requires WORLD SCOPE selected text");
-          const destination = scopeSelection({ world_id: selected[1], scope_id: selected[2] });
+          const destination = selected[1]!.startsWith("@") || selected[2]!.startsWith("@") ? await userSelection(selected[1]!, selected[2], ctx) : scopeSelection({ world_id: selected[1], scope_id: selected[2] });
           const key = createHash("sha256").update(JSON.stringify([destination, selected[3]])).digest("hex");
           const previous = ctx.sessionManager.getEntries().find(entry => entry.type === "custom" && entry.customType === PUBLICATION_INTENT_TYPE && (entry.data as { key?: string } | undefined)?.key === key);
           const intent = previous?.type === "custom" ? previous.data as { key: string; sourceId: string; occurredAt: string } : { key, sourceId: `pi:scoped-publication:${randomUUID()}`, occurredAt: new Date().toISOString() };
@@ -460,7 +574,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         if (command === "target") {
           if (argument !== "off" && rest.length !== 2) throw new CommandError("target requires WORLD SCOPE, or off");
           const previous = state.writeScope;
-          state.writeScope = argument === "off" ? undefined : scopeSelection({ world_id: rest[0], scope_id: rest[1] });
+          state.writeScope = argument === "off" ? undefined : await userSelection(rest[0]!, rest[1], ctx);
           try { if (state.writeScope) await privateTarget(ctx); } catch (error) { state.writeScope = previous; throw error; }
           state.captureEnabled = false; save(); paint(ctx);
           ctx.ui.notify("Capture target selected. Use /memory capture on to enable future conversation capture.", "info"); return;

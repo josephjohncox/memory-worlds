@@ -176,6 +176,7 @@ in-memory forks and subsequent reloads. No Pi fork is needed for the implemented
 
 The [Kubernetes guide](deployments.md) uses the same in-process router and outbox,
 mounting operator configuration and token files read-only. SQLite source/control/
-outbox storage requires one owning pod and a retained local/block-backed volume.
-FalkorDB uses a separate StatefulSet and PVC. Neptune replaces graph storage only;
-it does not turn SQLite into a multi-replica shared database.
+outbox storage uses one owning pod and a retained local/block-backed volume in
+the local profile. The PostgreSQL profile shares these journals across API
+replicas with fenced workers and authority maintenance locks. FalkorDB uses a
+separate StatefulSet and PVC. Neptune replaces graph storage only.

@@ -1,0 +1,25 @@
+replicaCount: 2
+storage:
+  backend: postgres
+  postgres:
+    existingSecret: synthetic-postgres
+    authorityId: 7cfebda9-5ac1-4292-8242-06a0b605b700
+backup:
+  enabled: true
+  existingClaim: synthetic-backup-artifacts
+  keyExistingSecret: synthetic-backup-key
+  cronJob:
+    enabled: true
+    outputExistingClaim: synthetic-downloaded-archives
+    adminTokenExistingSecret: synthetic-backup-admin
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    existingSecret: synthetic-metrics-admin
+  prometheusRule:
+    enabled: true
+networkPolicy:
+  postgresEgress:
+    - to: [{ipBlock: {cidr: 192.0.2.10/32}}]
+      ports: [{protocol: TCP, port: 5432}]

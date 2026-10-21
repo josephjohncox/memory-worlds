@@ -284,7 +284,8 @@ def test_ancestor_world_permission_removal_blocks_child_immediately(local):
     parent = store.authenticate(token)
     child, private, _ = delegate(store, parent, world)
     with store._control() as db:
-        db.execute("DELETE FROM grants WHERE credential_id=?", (parent.credential_id,))
+        table = store._table(db, "grants")
+        db.execute(table.delete().where(table.c.credential_id == parent.credential_id))
     with pytest.raises(Forbidden):
         store.capture(child, world.id, note(scope_id=private.id))
 
@@ -294,9 +295,13 @@ def test_expired_child_preserves_notes_without_live_access(local):
     child, private, issued = delegate(store, owner, world)
     store.capture(child, world.id, note(scope_id=private.id))
     with store._control() as db:
+        table = store._table(db, "credential_contexts")
         db.execute(
-            "UPDATE credential_contexts SET expires_at=? WHERE credential_id=?",
-            (time.time() - 1, child.credential_id),
+            table.update()
+            .where(table.c.credential_id == child.credential_id)
+            .values(
+                expires_at=time.time() - 1,
+            )
         )
     with pytest.raises(Unauthorized):
         store.authenticate(issued["token"])
@@ -356,7 +361,10 @@ def test_scope_graph_journals_jobs_generations_and_recovery_are_isolated(local):
     receipt = store.capture(child, world.id, note(scope_id=private.id, project=True))
     assert store.pending_jobs(world.id) == []
     assert store.pending_jobs(world.id, scope_id=private.id)[0].id == receipt.episode.id
-    store.mark_processing(world.id, receipt.episode.id, scope_id=private.id)
+    lease = store.persistence.acquire_lease(store.projection_resource(world.id, private.id))
+    store.mark_processing(world.id, receipt.episode.id, scope_id=private.id, lease=lease)
+    assert store.recover_interrupted_projections() == 0
+    store.persistence.release_lease(lease)
     assert store.recover_interrupted_projections() == 1
     assert store.get_world(owner, world.id).projection_state == "disabled"
     assert store.get_world(child, world.id, scope_id=private.id).projection_state == "degraded"
@@ -697,9 +705,13 @@ def test_scope_flow_ignores_revoked_and_expired_readers(local):
     )
     assert not store.scope_flow(owner, check)
     with store._control() as db:
+        table = store._table(db, "credential_contexts")
         db.execute(
-            "UPDATE credential_contexts SET expires_at=? WHERE credential_id=?",
-            (time.time() - 1, issued["credential_id"]),
+            table.update()
+            .where(table.c.credential_id == issued["credential_id"])
+            .values(
+                expires_at=time.time() - 1,
+            )
         )
     assert store.scope_flow(owner, check)
 

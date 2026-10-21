@@ -13,6 +13,8 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from sqlalchemy import text
+
 from .errors import Forbidden, NotFound, Unauthorized
 from .errors import MemoryError as InvalidRequest
 from .models import (
@@ -57,68 +59,52 @@ def _expiry_ceiling(timestamp: float) -> datetime:
 
 
 class ScopedStore:
-    def _initialize_scopes(self, db) -> None:
-        db.executescript("""
-            CREATE TABLE IF NOT EXISTS scopes (
-                id TEXT PRIMARY KEY, world_id TEXT NOT NULL REFERENCES worlds(id),
-                kind TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL,
-                creator_credential_id TEXT REFERENCES credentials(id),
-                run_id TEXT, agent_id TEXT, invocation_id TEXT, parent_invocation_id TEXT,
-                alias TEXT
-            );
-            CREATE UNIQUE INDEX IF NOT EXISTS world_shared_scope
-                ON scopes(world_id) WHERE kind='world-shared';
-            CREATE TABLE IF NOT EXISTS scope_grants (
-                credential_id TEXT NOT NULL REFERENCES credentials(id),
-                scope_id TEXT NOT NULL REFERENCES scopes(id), operation TEXT NOT NULL,
-                PRIMARY KEY (credential_id,scope_id,operation)
-            );
-            CREATE TABLE IF NOT EXISTS scope_grant_anchors (
-                credential_id TEXT NOT NULL REFERENCES credentials(id),
-                scope_id TEXT NOT NULL REFERENCES scopes(id), operation TEXT NOT NULL,
-                PRIMARY KEY (credential_id,scope_id,operation)
-            );
-            CREATE TABLE IF NOT EXISTS credential_contexts (
-                credential_id TEXT PRIMARY KEY REFERENCES credentials(id),
-                parent_credential_id TEXT NOT NULL REFERENCES credentials(id),
-                expires_at REAL NOT NULL, agent_uuid TEXT NOT NULL,
-                invocation_id TEXT NOT NULL UNIQUE, parent_invocation_id TEXT,
-                allow_delegation INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS agent_contexts (
-                id TEXT PRIMARY KEY, credential_id TEXT NOT NULL REFERENCES credentials(id),
-                invocation_id TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL
-            );
-        """)
-
     def _create_shared_scope(self, db, world):
         sid = world_shared_scope_id(self.authority_id, world.id)
         db.execute(
-            "INSERT INTO scopes (id,world_id,kind,name,created_at,alias) VALUES (?,?,?,?,?,?)",
-            (
-                sid,
-                world.id,
-                ScopeKind.WORLD_SHARED.value,
-                "World shared",
-                world.created_at.isoformat(),
-                "shared",
+            text(
+                f"INSERT INTO {self._table(db, 'scopes')} (id,"
+                f"world_id,kind,name,created_at,alias) VALUES "
+                f"(:p0,:p1,:p2,:p3,:p4,:p5)"
             ),
+            {
+                "p0": sid,
+                "p1": world.id,
+                "p2": ScopeKind.WORLD_SHARED.value,
+                "p3": "World shared",
+                "p4": world.created_at.isoformat(),
+                "p5": "shared",
+            },
         )
 
     def _scope_row(self, db, world_id: str, scope_id: str | UUID | None):
         if scope_id is None:
             scope_id = world_shared_scope_id(self.authority_id, world_id)
-        row = db.execute(
-            "SELECT * FROM scopes WHERE id=? AND world_id=?", (scope_uuid(scope_id), world_id)
-        ).fetchone()
+        row = (
+            db.execute(
+                text(f"SELECT * FROM {self._table(db, 'scopes')} WHERE id=:p0 AND world_id=:p1"),
+                {"p0": scope_uuid(scope_id), "p1": world_id},
+            )
+            .mappings()
+            .fetchone()
+        )
         if row is None:
             raise NotFound("Scope not found")
         return row
 
     def _credential_principal(self, db, row) -> Principal:
-        context = db.execute(
-            "SELECT * FROM credential_contexts WHERE credential_id=?", (row["id"],)
-        ).fetchone()
+        context = (
+            db.execute(
+                text(
+                    f"SELECT * FROM "
+                    f"{self._table(db, 'credential_contexts')} "
+                    f"WHERE credential_id=:p0"
+                ),
+                {"p0": row["id"]},
+            )
+            .mappings()
+            .fetchone()
+        )
         return Principal(
             credential_id=row["id"],
             user_id=row["user_id"],
@@ -137,24 +123,54 @@ class ScopedStore:
             if current_id in seen or len(seen) >= 32:
                 raise Unauthorized("Credential delegation chain is invalid")
             seen.add(current_id)
-            credential = db.execute(
-                "SELECT * FROM credentials WHERE id=? AND revoked=0", (current_id,)
-            ).fetchone()
+            credential = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM {self._table(db, 'credentials')} WHERE id=:p0 AND revoked=0"
+                    ),
+                    {"p0": current_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if credential is None:
                 raise Unauthorized("An ancestor credential is revoked")
-            identity = db.execute(
-                "SELECT enabled FROM identities WHERE user_id=?", (credential["user_id"],)
-            ).fetchone()
-            session = db.execute(
-                "SELECT expires_at FROM identity_sessions WHERE credential_id=?", (current_id,)
-            ).fetchone()
+            identity = (
+                db.execute(
+                    text(f"SELECT enabled FROM {self._table(db, 'identities')} WHERE user_id=:p0"),
+                    {"p0": credential["user_id"]},
+                )
+                .mappings()
+                .fetchone()
+            )
+            session = (
+                db.execute(
+                    text(
+                        f"SELECT expires_at FROM "
+                        f"{self._table(db, 'identity_sessions')} WHERE "
+                        f"credential_id=:p0"
+                    ),
+                    {"p0": current_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if identity is not None and not identity["enabled"]:
                 raise Unauthorized("Identity is disabled")
             if session is not None and session["expires_at"] <= time.time():
                 raise Unauthorized("An ancestor identity session is expired")
-            context = db.execute(
-                "SELECT * FROM credential_contexts WHERE credential_id=?", (current_id,)
-            ).fetchone()
+            context = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM "
+                        f"{self._table(db, 'credential_contexts')} "
+                        f"WHERE credential_id=:p0"
+                    ),
+                    {"p0": current_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if context is None:
                 return
             if context["expires_at"] <= time.time():
@@ -170,30 +186,60 @@ class ScopedStore:
             if current.credential_id in seen or len(seen) >= 32:
                 raise Forbidden("Scope delegation chain is invalid")
             seen.add(current.credential_id)
-            context = db.execute(
-                "SELECT * FROM credential_contexts WHERE credential_id=?",
-                (current.credential_id,),
-            ).fetchone()
+            context = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM "
+                        f"{self._table(db, 'credential_contexts')} "
+                        f"WHERE credential_id=:p0"
+                    ),
+                    {"p0": current.credential_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if row["kind"] == ScopeKind.WORLD_SHARED.value and context is None:
                 return row
-            grant = db.execute(
-                "SELECT 1 FROM scope_grants WHERE credential_id=? AND scope_id=? AND operation=?",
-                (current.credential_id, row["id"], operation),
-            ).fetchone()
+            grant = (
+                db.execute(
+                    text(
+                        f"SELECT 1 FROM "
+                        f"{self._table(db, 'scope_grants')} WHERE "
+                        f"credential_id=:p0 AND scope_id=:p1 AND "
+                        f"operation=:p2"
+                    ),
+                    {"p0": current.credential_id, "p1": row["id"], "p2": operation},
+                )
+                .mappings()
+                .fetchone()
+            )
             if grant is None:
                 raise Forbidden("Scope operation denied")
             # The explicit creator grant anchors a new private audience. Its
             # ancestor created the invocation but does not acquire its contents.
-            anchor = db.execute(
-                "SELECT 1 FROM scope_grant_anchors WHERE credential_id=? AND scope_id=? "
-                "AND operation=?",
-                (current.credential_id, row["id"], operation),
-            ).fetchone()
+            anchor = (
+                db.execute(
+                    text(
+                        f"SELECT 1 FROM "
+                        f"{self._table(db, 'scope_grant_anchors')} "
+                        f"WHERE credential_id=:p0 AND scope_id=:p1 AND "
+                        f"operation=:p2"
+                    ),
+                    {"p0": current.credential_id, "p1": row["id"], "p2": operation},
+                )
+                .mappings()
+                .fetchone()
+            )
             if context is None or row["creator_credential_id"] == current.credential_id or anchor:
                 return row
-            parent_row = db.execute(
-                "SELECT * FROM credentials WHERE id=?", (context["parent_credential_id"],)
-            ).fetchone()
+            parent_row = (
+                db.execute(
+                    text(f"SELECT * FROM {self._table(db, 'credentials')} WHERE id=:p0"),
+                    {"p0": context["parent_credential_id"]},
+                )
+                .mappings()
+                .fetchone()
+            )
             current = self._credential_principal(db, parent_row)
             self._scope_authorized_delegate(db, current, world_id, row)
 
@@ -201,27 +247,46 @@ class ScopedStore:
         self._authorized(db, principal, world_id, write=True)
         if scope["kind"] == ScopeKind.WORLD_SHARED.value and not principal.restricted:
             return
-        if not db.execute(
-            "SELECT 1 FROM scope_grants WHERE credential_id=? AND scope_id=? "
-            "AND operation='delegate'",
-            (principal.credential_id, scope["id"]),
-        ).fetchone():
+        if (
+            not db.execute(
+                text(
+                    f"SELECT 1 FROM "
+                    f"{self._table(db, 'scope_grants')} WHERE "
+                    f"credential_id=:p0 AND scope_id=:p1 AND "
+                    f"operation='delegate'"
+                ),
+                {"p0": principal.credential_id, "p1": scope["id"]},
+            )
+            .mappings()
+            .fetchone()
+        ):
             raise Forbidden("An ancestor no longer permits delegation")
 
     def _hydrate_scope(self, row, control=None) -> Scope:
         with self._world_db(row["world_id"], row["id"]) as db:
-            projection = db.execute("SELECT generation,state FROM projection").fetchone()
+            projection = (
+                db.execute(text(f"SELECT generation,state FROM {self._table(db, 'projection')}"))
+                .mappings()
+                .fetchone()
+            )
         with nullcontext(control) if control is not None else self._control() as db:
-            coordinator = db.execute(
-                "SELECT credential_id FROM scope_grant_anchors WHERE scope_id=? "
-                "AND operation='read'",
-                (row["id"],),
-            ).fetchone()
+            coordinator = (
+                db.execute(
+                    text(
+                        f"SELECT credential_id FROM "
+                        f"{self._table(db, 'scope_grant_anchors')} "
+                        f"WHERE scope_id=:p0 AND operation='read'"
+                    ),
+                    {"p0": row["id"]},
+                )
+                .mappings()
+                .fetchone()
+            )
         return Scope(
             **dict(row),
-            generation=projection[0],
-            projection_state=projection[1],
-            coordinator_credential_id=coordinator[0] if coordinator else None,
+            generation=projection["generation"],
+            projection_state=projection["state"],
+            coordinator_credential_id=coordinator["credential_id"] if coordinator else None,
         )
 
     def create_scope(self, principal: Principal, world_id: str, request: CreateScope) -> Scope:
@@ -243,10 +308,18 @@ class ScopedStore:
                 if run_id is None:
                     run_id = uuid4()
                 else:
-                    known = db.execute(
-                        "SELECT * FROM scopes WHERE world_id=? AND run_id=? AND kind='run-shared'",
-                        (world_id, str(run_id)),
-                    ).fetchone()
+                    known = (
+                        db.execute(
+                            text(
+                                f"SELECT * FROM {self._table(db, 'scopes')} "
+                                f"WHERE world_id=:p0 AND run_id=:p1 AND "
+                                f"kind='run-shared'"
+                            ),
+                            {"p0": world_id, "p1": str(run_id)},
+                        )
+                        .mappings()
+                        .fetchone()
+                    )
                     if known is None:
                         raise InvalidRequest(
                             "Use a server-issued run UUID or omit it to create a run"
@@ -257,31 +330,44 @@ class ScopedStore:
             if request.kind == ScopeKind.INVOCATION_PRIVATE:
                 if invocation_id is None:
                     invocation_id = uuid4()
-                elif not db.execute(
-                    "SELECT 1 FROM agent_contexts WHERE credential_id=? AND invocation_id=?",
-                    (principal.credential_id, str(invocation_id)),
-                ).fetchone():
+                elif (
+                    not db.execute(
+                        text(
+                            f"SELECT 1 FROM "
+                            f"{self._table(db, 'agent_contexts')} WHERE "
+                            f"credential_id=:p0 AND invocation_id=:p1"
+                        ),
+                        {"p0": principal.credential_id, "p1": str(invocation_id)},
+                    )
+                    .mappings()
+                    .fetchone()
+                ):
                     raise Forbidden("Invocation identity must belong to an existing agent context")
             sid = str(uuid4())
             db.execute(
-                "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    sid,
-                    world_id,
-                    request.kind.value,
-                    request.name,
-                    datetime.now(UTC).isoformat(),
-                    principal.credential_id,
-                    str(run_id) if run_id else None,
-                    str(agent_id) if agent_id else None,
-                    str(invocation_id) if invocation_id else None,
-                    str(principal.invocation_id) if principal.invocation_id else None,
-                    request.alias,
+                text(
+                    f"INSERT INTO {self._table(db, 'scopes')} "
+                    f"VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6,:p7,:p8,"
+                    f":p9,:p10)"
                 ),
+                {
+                    "p0": sid,
+                    "p1": world_id,
+                    "p2": request.kind.value,
+                    "p3": request.name,
+                    "p4": datetime.now(UTC).isoformat(),
+                    "p5": principal.credential_id,
+                    "p6": str(run_id) if run_id else None,
+                    "p7": str(agent_id) if agent_id else None,
+                    "p8": str(invocation_id) if invocation_id else None,
+                    "p9": str(principal.invocation_id) if principal.invocation_id else None,
+                    "p10": request.alias,
+                },
             )
             for op in ALL_OPERATIONS:
                 db.execute(
-                    "INSERT INTO scope_grants VALUES (?,?,?)", (principal.credential_id, sid, op)
+                    text(f"INSERT INTO {self._table(db, 'scope_grants')} VALUES (:p0,:p1,:p2)"),
+                    {"p0": principal.credential_id, "p1": sid, "p2": op},
                 )
             self._initialize_world(world_id, sid)
             return self._hydrate_scope(self._scope_row(db, world_id, sid))
@@ -294,7 +380,10 @@ class ScopedStore:
     def set_scope_alias(self, principal, world_id: str, scope_id, request: UpdateAlias) -> Scope:
         with self._control() as db, self._transaction(db):
             row = self._scope_authorized(db, principal, world_id, scope_id, "manage")
-            db.execute("UPDATE scopes SET alias=? WHERE id=?", (request.alias, row["id"]))
+            db.execute(
+                text(f"UPDATE {self._table(db, 'scopes')} SET alias=:p0 WHERE id=:p1"),
+                {"p0": request.alias, "p1": row["id"]},
+            )
             row = self._scope_row(db, world_id, scope_id)
         return self._hydrate_scope(row)
 
@@ -321,15 +410,34 @@ class ScopedStore:
             # than turn every capture into an unbounded control-database scan.
             maximum = 4096
             if target["kind"] == ScopeKind.WORLD_SHARED.value:
-                candidates = db.execute(
-                    "SELECT * FROM credentials WHERE revoked=0 LIMIT ?", (maximum + 1,)
-                ).fetchall()
+                candidates = (
+                    db.execute(
+                        text(
+                            f"SELECT * FROM "
+                            f"{self._table(db, 'credentials')} WHERE "
+                            f"revoked=0 LIMIT :p0"
+                        ),
+                        {"p0": maximum + 1},
+                    )
+                    .mappings()
+                    .fetchall()
+                )
             else:
-                candidates = db.execute(
-                    "SELECT c.* FROM credentials c JOIN scope_grants g ON g.credential_id=c.id "
-                    "WHERE c.revoked=0 AND g.scope_id=? AND g.operation='read' LIMIT ?",
-                    (target["id"], maximum + 1),
-                ).fetchall()
+                candidates = (
+                    db.execute(
+                        text(
+                            f"SELECT c.* FROM "
+                            f"{self._table(db, 'credentials')} c JOIN "
+                            f"{self._table(db, 'scope_grants')} g ON "
+                            f"g.credential_id=c.id WHERE c.revoked=0 AND "
+                            f"g.scope_id=:p0 AND g.operation='read' LIMIT "
+                            f":p1"
+                        ),
+                        {"p0": target["id"], "p1": maximum + 1},
+                    )
+                    .mappings()
+                    .fetchall()
+                )
             if len(candidates) > maximum:
                 return False
             for credential in candidates:
@@ -353,8 +461,12 @@ class ScopedStore:
             self._authorized(db, principal, world_id)
             visible = []
             for row in db.execute(
-                "SELECT * FROM scopes WHERE world_id=? ORDER BY created_at,id", (world_id,)
-            ):
+                text(
+                    f"SELECT * FROM {self._table(db, 'scopes')} "
+                    f"WHERE world_id=:p0 ORDER BY created_at,id"
+                ),
+                {"p0": world_id},
+            ).mappings():
                 try:
                     self._scope_authorized(db, principal, world_id, row["id"])
                     visible.append(row)
@@ -370,9 +482,14 @@ class ScopedStore:
                     "Delegated invocations grant access only through attenuated delegation"
                 )
             scope = self._scope_authorized(db, principal, world_id, scope_id, "manage")
-            target = db.execute(
-                "SELECT * FROM credentials WHERE id=?", (request.credential_id,)
-            ).fetchone()
+            target = (
+                db.execute(
+                    text(f"SELECT * FROM {self._table(db, 'credentials')} WHERE id=:p0"),
+                    {"p0": request.credential_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if target is None:
                 raise NotFound("Credential not found")
             target_principal = self._credential_principal(db, target)
@@ -384,17 +501,24 @@ class ScopedStore:
             for op in request.operations:
                 self._scope_authorized(db, principal, world_id, scope_id, op.value)
             db.execute(
-                "DELETE FROM scope_grants WHERE credential_id=? AND scope_id=?",
-                (request.credential_id, scope["id"]),
+                text(
+                    f"DELETE FROM {self._table(db, 'scope_grants')}"
+                    f" WHERE credential_id=:p0 AND scope_id=:p1"
+                ),
+                {"p0": request.credential_id, "p1": scope["id"]},
             )
             db.execute(
-                "DELETE FROM scope_grant_anchors WHERE credential_id=? AND scope_id=?",
-                (request.credential_id, scope["id"]),
+                text(
+                    f"DELETE FROM "
+                    f"{self._table(db, 'scope_grant_anchors')} "
+                    f"WHERE credential_id=:p0 AND scope_id=:p1"
+                ),
+                {"p0": request.credential_id, "p1": scope["id"]},
             )
             for op in set(request.operations):
                 db.execute(
-                    "INSERT INTO scope_grants VALUES (?,?,?)",
-                    (request.credential_id, scope["id"], op.value),
+                    text(f"INSERT INTO {self._table(db, 'scope_grants')} VALUES (:p0,:p1,:p2)"),
+                    {"p0": request.credential_id, "p1": scope["id"], "p2": op.value},
                 )
 
     def bind_context(self, principal: Principal, request: BindContext) -> AgentContext:
@@ -423,23 +547,38 @@ class ScopedStore:
                 created_at=datetime.now(UTC),
             )
             db.execute(
-                "INSERT INTO agent_contexts VALUES (?,?,?,?,?)",
-                (
-                    str(context.id),
-                    principal.credential_id,
-                    str(context.invocation_id),
-                    context.model_dump_json(),
-                    context.created_at.isoformat(),
+                text(
+                    f"INSERT INTO {self._table(db, 'agent_contexts')} VALUES (:p0,:p1,:p2,:p3,:p4)"
                 ),
+                {
+                    "p0": str(context.id),
+                    "p1": principal.credential_id,
+                    "p2": str(context.invocation_id),
+                    "p3": context.model_dump_json(),
+                    "p4": context.created_at.isoformat(),
+                },
             )
             return context
 
     def _validate_run(self, db, principal, run_id):
         if run_id is None:
             return
-        rows = db.execute(
-            "SELECT * FROM scopes WHERE kind='run-shared' AND run_id=?", (str(run_id),)
-        ).fetchall()
+        if not principal.restricted:
+            from .identity_names import validate_run
+
+            if validate_run(self, db, principal, run_id):
+                return
+        rows = (
+            db.execute(
+                text(
+                    f"SELECT * FROM {self._table(db, 'scopes')} "
+                    f"WHERE kind='run-shared' AND run_id=:p0"
+                ),
+                {"p0": str(run_id)},
+            )
+            .mappings()
+            .fetchall()
+        )
         for row in rows:
             try:
                 self._scope_authorized(db, principal, row["world_id"], row["id"])
@@ -451,10 +590,18 @@ class ScopedStore:
     def get_context(self, principal: Principal, context_id: str | UUID) -> AgentContext:
         with self._control() as db:
             self._principal(db, principal)
-            row = db.execute(
-                "SELECT * FROM agent_contexts WHERE id=? AND credential_id=?",
-                (scope_uuid(context_id), principal.credential_id),
-            ).fetchone()
+            row = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM "
+                        f"{self._table(db, 'agent_contexts')} WHERE "
+                        f"id=:p0 AND credential_id=:p1"
+                    ),
+                    {"p0": scope_uuid(context_id), "p1": principal.credential_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if row is None:
                 raise NotFound("Context not found")
             context = AgentContext.model_validate_json(row["payload"])
@@ -507,17 +654,35 @@ class ScopedStore:
             self._validate_run(db, principal, request.run_id)
             parent_invocation = principal.invocation_id
             if request.parent_context_id is not None:
-                context_row = db.execute(
-                    "SELECT payload FROM agent_contexts WHERE id=? AND credential_id=?",
-                    (str(request.parent_context_id), principal.credential_id),
-                ).fetchone()
+                context_row = (
+                    db.execute(
+                        text(
+                            f"SELECT payload FROM "
+                            f"{self._table(db, 'agent_contexts')} WHERE "
+                            f"id=:p0 AND credential_id=:p1"
+                        ),
+                        {"p0": str(request.parent_context_id), "p1": principal.credential_id},
+                    )
+                    .mappings()
+                    .fetchone()
+                )
                 if context_row is None:
                     raise NotFound("Parent context not found")
-                parent_invocation = AgentContext.model_validate_json(context_row[0]).invocation_id
-            parent_context = db.execute(
-                "SELECT * FROM credential_contexts WHERE credential_id=?",
-                (principal.credential_id,),
-            ).fetchone()
+                parent_invocation = AgentContext.model_validate_json(
+                    context_row["payload"]
+                ).invocation_id
+            parent_context = (
+                db.execute(
+                    text(
+                        f"SELECT * FROM "
+                        f"{self._table(db, 'credential_contexts')} "
+                        f"WHERE credential_id=:p0"
+                    ),
+                    {"p0": principal.credential_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if parent_context is not None:
                 if not parent_context["allow_delegation"]:
                     raise Forbidden("This invocation cannot delegate")
@@ -528,10 +693,18 @@ class ScopedStore:
                     expires = min(expires, _expiry_ceiling(parent_context["expires_at"]))
                 if expires.timestamp() > parent_context["expires_at"]:
                     raise Forbidden("A child cannot outlive its parent")
-            identity_session = db.execute(
-                "SELECT expires_at FROM identity_sessions WHERE credential_id=?",
-                (principal.credential_id,),
-            ).fetchone()
+            identity_session = (
+                db.execute(
+                    text(
+                        f"SELECT expires_at FROM "
+                        f"{self._table(db, 'identity_sessions')} WHERE "
+                        f"credential_id=:p0"
+                    ),
+                    {"p0": principal.credential_id},
+                )
+                .mappings()
+                .fetchone()
+            )
             if (
                 identity_session is not None
                 and request.expires_at is None
@@ -562,11 +735,20 @@ class ScopedStore:
             if request.private_world_id:
                 self._authorized(db, principal, request.private_world_id, write=True)
                 if principal.restricted:
-                    candidates = db.execute(
-                        "SELECT s.id FROM scope_grants g JOIN scopes s ON s.id=g.scope_id "
-                        "WHERE g.credential_id=? AND g.operation='delegate' AND s.world_id=?",
-                        (principal.credential_id, request.private_world_id),
-                    ).fetchall()
+                    candidates = (
+                        db.execute(
+                            text(
+                                f"SELECT s.id FROM "
+                                f"{self._table(db, 'scope_grants')} g JOIN "
+                                f"{self._table(db, 'scopes')} s ON "
+                                f"s.id=g.scope_id WHERE g.credential_id=:p0 "
+                                f"AND g.operation='delegate' AND s.world_id=:p1"
+                            ),
+                            {"p0": principal.credential_id, "p1": request.private_world_id},
+                        )
+                        .mappings()
+                        .fetchall()
+                    )
                     permitted = False
                     for candidate in candidates:
                         try:
@@ -591,25 +773,33 @@ class ScopedStore:
             agent_uuid, invocation_id = request.agent_id or uuid4(), uuid4()
             token = f"mw_{credential_id}.{secrets.token_urlsafe(32)}"
             db.execute(
-                "INSERT INTO credentials (id,token_hash,user_id,agent_id,admin) VALUES (?,?,?,?,0)",
-                (
-                    credential_id,
-                    hashlib.sha256(token.encode()).hexdigest(),
-                    principal.user_id,
-                    str(agent_uuid),
+                text(
+                    f"INSERT INTO {self._table(db, 'credentials')} "
+                    f"(id,token_hash,user_id,agent_id,admin) "
+                    f"VALUES (:p0,:p1,:p2,:p3,0)"
                 ),
+                {
+                    "p0": credential_id,
+                    "p1": hashlib.sha256(token.encode()).hexdigest(),
+                    "p2": principal.user_id,
+                    "p3": str(agent_uuid),
+                },
             )
             db.execute(
-                "INSERT INTO credential_contexts VALUES (?,?,?,?,?,?,?)",
-                (
-                    credential_id,
-                    principal.credential_id,
-                    expires.timestamp(),
-                    str(agent_uuid),
-                    str(invocation_id),
-                    str(parent_invocation) if parent_invocation else None,
-                    int(request.allow_delegation),
+                text(
+                    f"INSERT INTO "
+                    f"{self._table(db, 'credential_contexts')} "
+                    f"VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6)"
                 ),
+                {
+                    "p0": credential_id,
+                    "p1": principal.credential_id,
+                    "p2": expires.timestamp(),
+                    "p3": str(agent_uuid),
+                    "p4": str(invocation_id),
+                    "p5": str(parent_invocation) if parent_invocation else None,
+                    "p6": int(request.allow_delegation),
+                },
             )
             self._validate_ancestors(db, credential_id)
             for wid in world_ids:
@@ -618,48 +808,64 @@ class ScopedStore:
                     for (world, _sid), ops in selected.items()
                 )
                 db.execute(
-                    "INSERT INTO grants VALUES (?,?,?)",
-                    (credential_id, wid, Role.WRITER.value if writes else Role.READER.value),
+                    text(f"INSERT INTO {self._table(db, 'grants')} VALUES (:p0,:p1,:p2)"),
+                    {
+                        "p0": credential_id,
+                        "p1": wid,
+                        "p2": Role.WRITER.value if writes else Role.READER.value,
+                    },
                 )
             for (_wid, sid), operations in selected.items():
                 for operation in operations:
                     db.execute(
-                        "INSERT INTO scope_grants VALUES (?,?,?)", (credential_id, sid, operation)
+                        text(f"INSERT INTO {self._table(db, 'scope_grants')} VALUES (:p0,:p1,:p2)"),
+                        {"p0": credential_id, "p1": sid, "p2": operation},
                     )
             private_scope = None
             if request.private_world_id:
                 sid = str(uuid4())
                 db.execute(
-                    "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        sid,
-                        request.private_world_id,
-                        ScopeKind.INVOCATION_PRIVATE.value,
-                        "Invocation private",
-                        now.isoformat(),
-                        credential_id,
-                        str(request.run_id) if request.run_id else None,
-                        str(agent_uuid),
-                        str(invocation_id),
-                        str(parent_invocation) if parent_invocation else None,
-                        None,
+                    text(
+                        f"INSERT INTO {self._table(db, 'scopes')} "
+                        f"VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6,:p7,:p8,"
+                        f":p9,:p10)"
                     ),
+                    {
+                        "p0": sid,
+                        "p1": request.private_world_id,
+                        "p2": ScopeKind.INVOCATION_PRIVATE.value,
+                        "p3": "Invocation private",
+                        "p4": now.isoformat(),
+                        "p5": credential_id,
+                        "p6": str(request.run_id) if request.run_id else None,
+                        "p7": str(agent_uuid),
+                        "p8": str(invocation_id),
+                        "p9": str(parent_invocation) if parent_invocation else None,
+                        "p10": None,
+                    },
                 )
                 operations = {"read", "write"}
                 if request.allow_delegation:
                     operations.add("delegate")
                 for operation in operations:
                     db.execute(
-                        "INSERT INTO scope_grants VALUES (?,?,?)", (credential_id, sid, operation)
+                        text(f"INSERT INTO {self._table(db, 'scope_grants')} VALUES (:p0,:p1,:p2)"),
+                        {"p0": credential_id, "p1": sid, "p2": operation},
                     )
                 if request.coordinator_read:
                     db.execute(
-                        "INSERT INTO scope_grants VALUES (?,?,'read')",
-                        (principal.credential_id, sid),
+                        text(
+                            f"INSERT INTO {self._table(db, 'scope_grants')} VALUES (:p0,:p1,'read')"
+                        ),
+                        {"p0": principal.credential_id, "p1": sid},
                     )
                     db.execute(
-                        "INSERT INTO scope_grant_anchors VALUES (?,?,'read')",
-                        (principal.credential_id, sid),
+                        text(
+                            f"INSERT INTO "
+                            f"{self._table(db, 'scope_grant_anchors')} "
+                            f"VALUES (:p0,:p1,'read')"
+                        ),
+                        {"p0": principal.credential_id, "p1": sid},
                     )
                 self._initialize_world(request.private_world_id, sid)
                 private_scope = self._hydrate_scope(
@@ -690,14 +896,16 @@ class ScopedStore:
                 created_at=now,
             )
             db.execute(
-                "INSERT INTO agent_contexts VALUES (?,?,?,?,?)",
-                (
-                    str(context.id),
-                    credential_id,
-                    str(invocation_id),
-                    context.model_dump_json(),
-                    now.isoformat(),
+                text(
+                    f"INSERT INTO {self._table(db, 'agent_contexts')} VALUES (:p0,:p1,:p2,:p3,:p4)"
                 ),
+                {
+                    "p0": str(context.id),
+                    "p1": credential_id,
+                    "p2": str(invocation_id),
+                    "p3": context.model_dump_json(),
+                    "p4": now.isoformat(),
+                },
             )
             return {
                 "token": token,

@@ -9,7 +9,7 @@ export const EXPOSURE_TYPE = "memory-worlds:exposure:v1";
 export const RECEIPT_TYPE = "memory-worlds:receipt:v1";
 export const CONTEXT_TYPE = "memory-worlds:context:v1";
 export interface MemoryState {
-  version: 1; agentUuid: string; boundContext?: AgentContext; captureBinding?: SpoolBinding; readMountIds: string[];
+  version: 1; agentUuid: string; runUuid?: string; boundContext?: AgentContext; captureBinding?: SpoolBinding; readMountIds: string[];
   captureEnabled: boolean; captureAfterId: string | null; captureAuthority?: string;
   exposedAuthorities: string[]; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
   exposedScopes: string[]; captureScopeKey?: string; captureSafeScopeKeys?: string[]; captureTargetScope?: ScopeSelection; captureFlowReadScopes?: ScopeSelection[]; graphAliases?: { project?: ScopeSelection; global?: ScopeSelection }; graphSelection?: "project" | "global" | "both";
@@ -41,7 +41,7 @@ export function restoreState(branch: SessionEntry[], all: SessionEntry[], fallba
       if (saved.version !== 1 || typeof saved.captureEnabled !== "boolean" || (saved.captureAfterId !== null && typeof saved.captureAfterId !== "string") || !Array.isArray(saved.readScopes) || !Array.isArray(saved.readMountIds) || !Array.isArray(saved.exposedAuthorities) || !Array.isArray(saved.exposedScopes)) throw new Error("Invalid Memory Worlds session state");
       const agentUuid = scopeSelection({ world_id: "agent", scope_id: saved.agentUuid }).scope_id;
       state = {
-        version: 1, agentUuid, boundContext: saved.boundContext, captureBinding: saved.captureBinding, readMountIds: strings(saved.readMountIds),
+        version: 1, agentUuid, runUuid: saved.runUuid === undefined ? undefined : scopeSelection({ world_id: "run", scope_id: saved.runUuid }).scope_id, boundContext: saved.boundContext, captureBinding: saved.captureBinding, readMountIds: strings(saved.readMountIds),
         captureEnabled: saved.captureEnabled === true,
         captureAfterId: typeof saved.captureAfterId === "string" ? saved.captureAfterId : null,
         captureAuthority: typeof saved.captureAuthority === "string" ? saved.captureAuthority : undefined,

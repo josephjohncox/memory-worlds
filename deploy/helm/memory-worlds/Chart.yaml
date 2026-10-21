@@ -2,8 +2,8 @@ apiVersion: v2
 name: memory-worlds
 description: Durable, scoped memory for local and remote agents
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.3.0
+appVersion: "0.3.0"
 kubeVersion: ">=1.32.0-0"
 keywords: [agents, memory, graphiti, falkordb]
 annotations:

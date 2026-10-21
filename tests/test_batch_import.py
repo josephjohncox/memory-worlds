@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from sqlalchemy import func, select
 
 from memory_worlds.api import create_app
 from memory_worlds.errors import Forbidden
@@ -78,7 +79,7 @@ def credential(store, owner, world, scope, *, role=Role.WRITER, operations=("rea
 def journal_counts(store, world, scope):
     with store._world_db(world.id, scope.id) as db:
         return tuple(
-            db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            db.execute(select(func.count()).select_from(store._table(db, table))).scalar_one()
             for table in ("episodes", "audit", "projection_jobs")
         )
 

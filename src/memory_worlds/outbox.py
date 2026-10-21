@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import time
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,9 +9,11 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import AwareDatetime, Field
+from sqlalchemy import and_, or_, select
 
 from .errors import Conflict, Forbidden, NotFound
 from .models import Identifier, Model, Principal, Publication
+from .persistence import LeaseLost, Persistence, WorkerLease
 
 
 class RoutedPublication(Publication):
@@ -44,35 +45,23 @@ class RouterSearch(Model):
 
 
 class PublicationOutbox:
-    def __init__(self, data_dir: Path, authority_id: str):
+    def __init__(
+        self, data_dir: Path, authority_id: str, *, persistence: Persistence | None = None
+    ):
         self.path = Path(data_dir) / "router.sqlite3"
         self.authority_id = authority_id
-        # Reuse the local store's restrictive file creation and SQLite durability policy.
-        from .store import MemoryStore
-
-        self._connect = MemoryStore._connect
-        with self.db() as db:
-            db.executescript("""
-                CREATE TABLE IF NOT EXISTS deliveries (
-                    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-                    credential_id TEXT NOT NULL, principal TEXT NOT NULL,
-                    mount_id TEXT NOT NULL, authority_id TEXT NOT NULL,
-                    endpoint TEXT NOT NULL, world_id TEXT NOT NULL, source_id TEXT NOT NULL,
-                    payload TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL,
-                    attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL, delivered_at TEXT, error TEXT,
-                    remote_episode_id TEXT,
-                    UNIQUE(user_id,mount_id,world_id,source_id)
-                );
-            """)
+        self.persistence = persistence or Persistence(data_dir, authority_id=authority_id)
+        if persistence is None:
+            self.persistence.initialize()
+        self.worker_id = uuid4().hex
 
     @contextmanager
     def db(self):
-        connection = self._connect(self.path)
-        try:
-            yield connection
-        finally:
-            connection.close()
+        with self.persistence.outbox() as db:
+            yield db
+
+    def _table(self, db):
+        return self.persistence.table(db, "deliveries")
 
     @staticmethod
     def view(row):
@@ -96,70 +85,67 @@ class PublicationOutbox:
         payload = Publication.model_validate(
             request.model_dump(exclude={"destination_mount_id", "world_id"})
         ).model_dump(mode="json")
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(encoded.encode()).hexdigest()
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            try:
-                old = db.execute(
-                    "SELECT * FROM deliveries WHERE user_id=? AND mount_id=? AND world_id=? "
-                    "AND source_id=?",
-                    (principal.user_id, mount.id, request.world_id, request.source_id),
-                ).fetchone()
-                if old:
-                    if (
-                        old["digest"] != digest
-                        or old["endpoint"] != mount.url
-                        or old["authority_id"] != mount.authority_id
-                    ):
-                        raise Conflict("publication identity already exists with different input")
-                    db.commit()
-                    return self.view(old)
-                delivery_id = uuid4().hex
-                # A destination-scoped stable ID survives lost acknowledgments and restarts.
-                payload["source_id"] = f"publication:{self.authority_id}:{delivery_id}"
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        with self.db() as db, self.persistence.transaction(db):
+            table = self._table(db)
+            old = (
                 db.execute(
-                    "INSERT INTO deliveries (id,user_id,agent_id,credential_id,principal,mount_id,"
-                    "authority_id,endpoint,world_id,source_id,payload,digest,state,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        delivery_id,
-                        principal.user_id,
-                        principal.agent_id,
-                        principal.credential_id,
-                        principal.model_dump_json(),
-                        mount.id,
-                        mount.authority_id,
-                        mount.url,
-                        request.world_id,
-                        request.source_id,
-                        json.dumps(payload),
-                        digest,
-                        "pending",
-                        datetime.now(UTC).isoformat(),
-                    ),
+                    select(table).where(
+                        table.c.user_id == principal.user_id,
+                        table.c.mount_id == mount.id,
+                        table.c.world_id == request.world_id,
+                        table.c.source_id == request.source_id,
+                    )
                 )
-                row = db.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
-                db.commit()
-                return self.view(row)
-            except BaseException:
-                db.rollback()
-                raise
+                .mappings()
+                .fetchone()
+            )
+            if old:
+                if (
+                    old["digest"] != digest
+                    or old["endpoint"] != mount.url
+                    or old["authority_id"] != mount.authority_id
+                ):
+                    raise Conflict("publication identity already exists with different input")
+                return self.view(old)
+            delivery_id = uuid4().hex
+            payload["source_id"] = f"publication:{self.authority_id}:{delivery_id}"
+            values = dict(
+                id=delivery_id,
+                user_id=principal.user_id,
+                agent_id=principal.agent_id,
+                credential_id=principal.credential_id,
+                principal=principal.model_dump_json(),
+                mount_id=mount.id,
+                authority_id=mount.authority_id,
+                endpoint=mount.url,
+                world_id=request.world_id,
+                source_id=request.source_id,
+                payload=json.dumps(payload),
+                digest=digest,
+                state="pending",
+                created_at=datetime.now(UTC).isoformat(),
+            )
+            db.execute(table.insert().values(**values))
+            return self.view(
+                db.execute(select(table).where(table.c.id == delivery_id)).mappings().one()
+            )
 
     def list(self, principal: Principal, limit: int = 100) -> list[Delivery]:
         with self.db() as db:
-            rows = db.execute(
-                "SELECT * FROM deliveries "
-                + ("" if principal.admin else "WHERE user_id=? ")
-                + "ORDER BY created_at DESC LIMIT ?",
-                (limit,) if principal.admin else (principal.user_id, limit),
-            ).fetchall()
-        return [self.view(row) for row in rows]
+            table = self._table(db)
+            statement = select(table)
+            if not principal.admin:
+                statement = statement.where(table.c.user_id == principal.user_id)
+            rows = db.execute(statement.order_by(table.c.created_at.desc()).limit(limit))
+            return [self.view(row) for row in rows.mappings()]
 
     def owned(self, principal: Principal, delivery_id: str) -> dict:
-        """Only the owner can retry; administrator status does not permit impersonation."""
         with self.db() as db:
-            row = db.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+            table = self._table(db)
+            row = db.execute(select(table).where(table.c.id == delivery_id)).mappings().fetchone()
         if row is None:
             raise NotFound("delivery not found")
         if principal.user_id != row["user_id"]:
@@ -167,69 +153,128 @@ class PublicationOutbox:
         return dict(row)
 
     def retry(self, principal: Principal, delivery_id: str) -> Delivery:
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+        with self.db() as db, self.persistence.transaction(db):
+            table = self._table(db)
+            row = db.execute(select(table).where(table.c.id == delivery_id)).mappings().fetchone()
             if row is None:
-                db.rollback()
                 raise NotFound("delivery not found")
             if principal.user_id != row["user_id"]:
-                db.rollback()
                 raise Forbidden("delivery access denied")
+            if row["pruned"]:
+                raise Forbidden("Retained delivery identities cannot be retried")
             if row["state"] in {"blocked", "pending"}:
-                # Explicit owner retry authorizes dispatch with the current credential.
-                # The original user_id and agent_id remain the attribution on the receipt.
                 db.execute(
-                    "UPDATE deliveries SET state='pending',next_attempt=0,error=NULL,"
-                    "credential_id=?,principal=? WHERE id=?",
-                    (principal.credential_id, principal.model_dump_json(), delivery_id),
+                    table.update()
+                    .where(table.c.id == delivery_id)
+                    .values(
+                        state="pending",
+                        next_attempt=0,
+                        error=None,
+                        credential_id=principal.credential_id,
+                        principal=principal.model_dump_json(),
+                    )
                 )
-            db.commit()
             return self.view(
-                db.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+                db.execute(select(table).where(table.c.id == delivery_id)).mappings().one()
             )
 
-    def recover(self):
-        with self.db() as db:
-            db.execute(
-                "UPDATE deliveries SET state='pending',next_attempt=0 WHERE state='processing'"
-            )
+    @staticmethod
+    def lease(row) -> WorkerLease:
+        return WorkerLease(
+            f"outbox:{row['id']}", row["lease_owner"], row["lease_fence"], row["lease_expires_at"]
+        )
 
     def claim(self) -> dict | None:
+        # An expired in-flight envelope is replayable because its remote source
+        # identity is immutable. A live worker is never reset by replica startup.
         with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT * FROM deliveries WHERE state='pending' AND next_attempt<=? "
-                "ORDER BY created_at LIMIT 1",
-                (time.time(),),
-            ).fetchone()
-            if row is None:
-                db.commit()
-                return None
-            db.execute(
-                "UPDATE deliveries SET state='processing',attempts=attempts+1 WHERE id=?",
-                (row["id"],),
+            table = self._table(db)
+            now = self.persistence.database_time(db)
+            rows = (
+                db.execute(
+                    select(table)
+                    .where(
+                        or_(
+                            and_(table.c.state == "pending", table.c.next_attempt <= now),
+                            and_(table.c.state == "processing", table.c.lease_expires_at <= now),
+                        )
+                    )
+                    .order_by(table.c.created_at)
+                    .limit(100)
+                )
+                .mappings()
+                .all()
             )
-            db.commit()
-            return dict(row)
+        for row in rows:
+            lease = self.persistence.acquire_lease(f"outbox:{row['id']}", self.worker_id)
+            if lease is None:
+                continue
+            try:
+                with (
+                    self.persistence.fenced(lease),
+                    self.db() as db,
+                    self.persistence.transaction(db),
+                ):
+                    table = self._table(db)
+                    current = db.execute(select(table).where(table.c.id == row["id"]))
+                    current = current.mappings().one()
+                    if current["state"] not in {"pending", "processing"}:
+                        self.persistence.release_lease(lease)
+                        continue
+                    db.execute(
+                        table.update()
+                        .where(table.c.id == row["id"])
+                        .values(
+                            state="processing",
+                            attempts=table.c.attempts + 1,
+                            lease_owner=lease.owner,
+                            lease_fence=lease.fence,
+                            lease_expires_at=lease.expires_at,
+                        )
+                    )
+                    return {
+                        **dict(current),
+                        "lease_owner": lease.owner,
+                        "lease_fence": lease.fence,
+                        "lease_expires_at": lease.expires_at,
+                    }
+            except BaseException:
+                self.persistence.release_lease(lease)
+                raise
+            self.persistence.release_lease(lease)
+        return None
 
     def finish(
-        self, delivery_id: str, state: str, error: str | None = None, episode_id: str | None = None
+        self,
+        delivery_id: str,
+        state: str,
+        error: str | None = None,
+        episode_id: str | None = None,
+        *,
+        lease: WorkerLease,
     ):
-        with self.db() as db:
-            row = db.execute(
-                "SELECT attempts FROM deliveries WHERE id=?", (delivery_id,)
-            ).fetchone()
+        with self.persistence.fenced(lease), self.db() as db, self.persistence.transaction(db):
+            table = self._table(db)
+            row = db.execute(select(table.c.attempts).where(table.c.id == delivery_id)).fetchone()
+            if row is None:
+                raise NotFound("delivery not found")
             delay = min(3600, 2 ** min(row[0], 12)) if state == "pending" else 0
-            db.execute(
-                "UPDATE deliveries SET state=?,error=?,next_attempt=?,delivered_at=?,"
-                "remote_episode_id=? WHERE id=?",
-                (
-                    state,
-                    error,
-                    time.time() + delay,
-                    datetime.now(UTC).isoformat() if state == "delivered" else None,
-                    episode_id,
-                    delivery_id,
-                ),
+            updated = db.execute(
+                table.update()
+                .where(
+                    table.c.id == delivery_id,
+                    table.c.state == "processing",
+                    table.c.lease_owner == lease.owner,
+                    table.c.lease_fence == lease.fence,
+                )
+                .values(
+                    state=state,
+                    error=error,
+                    next_attempt=self.persistence.database_time(db) + delay,
+                    delivered_at=datetime.now(UTC).isoformat() if state == "delivered" else None,
+                    remote_episode_id=episode_id,
+                )
             )
+            if not updated.rowcount:
+                raise LeaseLost("Delivery ownership changed before completion")
+        self.persistence.release_lease(lease)

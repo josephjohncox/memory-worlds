@@ -20,6 +20,38 @@
 {{- end -}}
 {{- end -}}
 {{- define "memory-worlds.validate" -}}
+{{- range $labels := list .Values.metrics.serviceMonitor.labels .Values.metrics.prometheusRule.labels -}}
+{{- range $key, $value := $labels -}}
+{{- if or (hasPrefix "app.kubernetes.io/" $key) (eq $key "helm.sh/chart") -}}
+{{- fail "monitoring labels cannot replace chart ownership labels" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.metrics.serviceMonitor.enabled -}}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/ServiceMonitor") -}}
+{{- fail "metrics.serviceMonitor requires the installed Prometheus Operator ServiceMonitor CRD" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.metrics.prometheusRule.enabled -}}
+{{- if not (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1/PrometheusRule") -}}
+{{- fail "metrics.prometheusRule requires the installed Prometheus Operator PrometheusRule CRD" -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.backup.enabled -}}
+{{- $claims := list .Values.backup.existingClaim -}}
+{{- if .Values.persistence.existingClaim -}}
+{{- $claims = append $claims .Values.persistence.existingClaim -}}
+{{- end -}}
+{{- if .Values.falkordb.persistence.existingClaim -}}
+{{- $claims = append $claims .Values.falkordb.persistence.existingClaim -}}
+{{- end -}}
+{{- if .Values.backup.cronJob.enabled -}}
+{{- $claims = append $claims .Values.backup.cronJob.outputExistingClaim -}}
+{{- end -}}
+{{- if ne (len $claims) (len (uniq $claims)) -}}
+{{- fail "API data, graph data, backup artifacts and archive downloads require distinct PVCs" -}}
+{{- end -}}
+{{- end -}}
 {{- if and .Values.falkordb.enabled .Values.persistence.existingClaim .Values.falkordb.persistence.existingClaim -}}
 {{- if eq .Values.persistence.existingClaim .Values.falkordb.persistence.existingClaim -}}
 {{- fail "API and FalkorDB require separate existing PVCs" -}}

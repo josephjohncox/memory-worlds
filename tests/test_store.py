@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from sqlalchemy import select
 
 from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized, Unavailable
 from memory_worlds.errors import MemoryError as InvalidRequest
@@ -92,7 +93,8 @@ def test_journal_canonicalizes_default_scope_and_hashes_complete_input(setup):
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False)
     assert captured.episode.digest == hashlib.sha256(encoded.encode()).hexdigest()
     with store._world_db(world.id) as db:
-        assert db.execute("SELECT payload FROM episodes").fetchone()[0] == encoded
+        table = store._table(db, "episodes")
+        assert db.execute(select(table.c.payload)).scalar_one() == encoded
     restarted = MemoryStore(store.data_dir)
     replay = restarted.capture(
         owner, world.id, source.model_copy(update={"scope_id": world.scope_id})
@@ -204,19 +206,24 @@ def test_projection_ambiguity_is_durable_and_rebuild_preserves_later_captures(se
     store, world, admin = setup
     first = store.capture(admin, world.id, episode("one", project=True)).episode
     assert [e.id for e in store.pending_jobs(world.id)] == [first.id]
-    store.mark_processing(world.id, first.id)
+    lease = store.persistence.acquire_lease(store.projection_resource(world.id))
+    store.mark_processing(world.id, first.id, lease=lease)
+    store.persistence.release_lease(lease)
     restarted = MemoryStore(store.data_dir)
     assert restarted.recover_interrupted_projections() == 1
     assert restarted.get_world(admin, world.id).projection_state == "degraded"
     assert restarted.get_episode(admin, world.id, first.id).projection_state == "unknown"
     later = restarted.capture(admin, world.id, episode("later", project=True)).episode
+    lease = restarted.persistence.acquire_lease(restarted.projection_resource(world.id))
     with pytest.raises(Unavailable):
-        restarted.mark_processing(world.id, later.id)
-    restarted.activate_generation(world.id, "generation-two", [first.id])
+        restarted.mark_processing(world.id, later.id, lease=lease)
+    restarted.register_generation(world.id, "generation-two", lease=lease)
+    restarted.activate_generation(world.id, "generation-two", [first.id], lease=lease)
     assert restarted.get_world(admin, world.id).generation == "generation-two"
     assert restarted.get_episode(admin, world.id, later.id).projection_state == "pending"
-    assert restarted.mark_processing(world.id, later.id).id == later.id
-    restarted.mark_projected(world.id, later.id, "generation-two")
+    assert restarted.mark_processing(world.id, later.id, lease=lease).id == later.id
+    restarted.mark_projected(world.id, later.id, "generation-two", lease=lease)
+    restarted.persistence.release_lease(lease)
     assert restarted.pending_jobs(world.id) == []
     assert restarted.capture(admin, world.id, episode("one", project=True)).replayed
 
@@ -226,7 +233,10 @@ def test_explicit_projection_does_not_change_source_identity(setup):
     original = episode(project=False)
     captured = store.capture(admin, world.id, original).episode
     assert store.projection_episodes(world.id) == []
-    store.activate_generation(world.id, "consented", [captured.id])
+    lease = store.persistence.acquire_lease(store.projection_resource(world.id))
+    store.register_generation(world.id, "consented", lease=lease)
+    store.activate_generation(world.id, "consented", [captured.id], lease=lease)
+    store.persistence.release_lease(lease)
     assert [e.id for e in store.projection_episodes(world.id)] == [captured.id]
     assert store.capture(admin, world.id, original).replayed
     store.set_projection_configuration(world.id, {"backend": "fake", "model": "test"})
