@@ -1,4 +1,4 @@
-# Pi Graphiti compatibility
+# Pi Graphiti feature coverage
 
 Memory Worlds uses the real Graphiti library for graph extraction and graph
 retrieval. Its SQLite journal owns durable source evidence, credentials, scope
@@ -54,20 +54,20 @@ before asynchronous extraction finishes.
 
 Upstream maps `project` and `global` to client-selected Graphiti `group_id`
 values. This is a partition convention, not a server-enforced permission model.
-Memory Worlds must map compatibility aliases to explicitly authorized world
+Memory Worlds maps tool aliases to explicitly authorized world
 and scope IDs. A directory basename, username, alias, or subagent UUID cannot
 grant access by itself.
 
 ## Feature comparison
 
-This table describes the Memory Worlds 0.2.0 implementation. Compatibility
-preserves useful tool actions while retaining server authorization and explicit
-publication. Different transport and administration contracts are called out.
+This table describes the native Memory Worlds 0.2.0 graph features. They use
+server authorization and explicit publication. Transport and administration
+contracts are described separately.
 
 | Capability in upstream 0.6.0 | Memory Worlds 0.2.0 | Verification |
 | --- | --- | --- |
 | `graph add` | Same action and content/name/source inputs; writes only to the configured agent-persistent or invocation-private target, and explicitly requests Graphiti extraction | [Tool and alias tests](../packages/pi/test/scoping.test.mjs), [actual-service Pi smoke](../packages/pi/test/real-service-smoke.mjs) |
-| `graph search` | Scoped entity and relationship fact retrieval with IDs, source evidence, and projection provenance | [Client/compatibility tests](../packages/pi/test/scoping.test.mjs), [real graph tests](../tests/test_graph.py) |
+| `graph search` | Scoped entity and relationship fact retrieval with IDs, source evidence, and projection provenance | [Graph tool tests](../packages/pi/test/scoping.test.mjs), [real graph tests](../tests/test_graph.py) |
 | `graph episodes` | Recent authorized source episodes, including evidence awaiting extraction | [Scope client tests](../tests/test_scope_clients.py), [actual-service Pi smoke](../packages/pi/test/real-service-smoke.mjs) |
 | Project/global search | Explicit alias bindings; `both` reads their authorized union. Search defaults to `both`; add/episodes default to `project`, unless the user selected an override | [Alias tests](../packages/pi/test/scoping.test.mjs) |
 | Ambient recall | Opt-in source or graph recall before a user turn, with scope exposure recorded before model delivery | [Extension lifecycle tests](../packages/pi/test/extension.test.mjs) |
@@ -78,7 +78,7 @@ publication. Different transport and administration contracts are called out.
 | Offline local spool | Opt-in `spoolDirectory`; private immutable envelopes pinned to service, authority, credential, target, source, and exposure guard. Defaults: 10,000 envelopes and 64 MiB aggregate capacity; no automatic age-based deletion | [Queue tests](../packages/pi/test/spool.test.mjs) |
 | Document ingestion | `/graph ingest PATH` accepts one user-selected UTF-8 text file up to 200,000 bytes as one episode, with a stable retry identity. Paragraph/sentence chunking is not implemented | [Native command implementation](../packages/pi/src/extension.ts) |
 | Export and restore | Scope-aware `.mworld` source/audit archives and explicit imports; the CLI rejects restoring a private archive into a broader scope kind | [Scoped projection/portability tests](../tests/test_scope_graph.py), [adversarial review](../tests/test_scope_adversarial_review.py) |
-| Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph setup`, `uninstall`, and `teardown` are not compatibility commands | [Deployment guide](deployments.md), [Helm guide](helm.md) |
+| Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph setup`, `uninstall`, and `teardown` are operator commands | [Deployment guide](deployments.md), [Helm guide](helm.md) |
 | Graph clearing | No unrestricted agent wipe tool or `/graph clear`; administrators rebuild isolated projections from durable evidence | [Storage and recovery](storage.md) |
 
 Memory Worlds already adds multi-agent authenticated service access, SSH
@@ -88,8 +88,8 @@ These do not by themselves establish complete upstream feature parity.
 
 Memory Worlds is not a drop-in replacement for every upstream command,
 configuration key, or MCP response shape. Upstream Markdown dump/load files and
-raw group IDs are not an interchangeable archive format. Compatibility is
-defined by the native tool actions and explicit alias mappings. Running both
+raw group IDs are not an interchangeable archive format. The native graph feature contract uses explicit scope bindings and typed tool
+actions; there is no separate emulation layer. Running both
 extensions with the same `graph` tool name is unsupported; disable one tool
 registration.
 
@@ -117,8 +117,7 @@ notes. Neither alias implies access to every world or company. There is no
 automatic fallback from an absent project mapping to a broader shared write
 target. `both` is a read selector, not a write scope.
 An alias pointing at `world-shared` or `run-shared` is not an automatic capture
-destination: sharing requires the explicit publication operation. Tool
-compatibility cannot silently turn `graph add` into broader publication.
+destination: sharing requires the explicit publication operation. The graph tool cannot turn `graph add` into broader publication.
 
 An invocation can read shared scopes while writing to its private scope.
 Publishing selected conclusions creates a new attributed destination episode
@@ -178,46 +177,13 @@ Retrieved text remains evidence rather than instructions. Curation, correction
 nudges, and proactive saves use the same write boundary as explicit tool calls.
 Completing a task never automatically publishes a private transcript.
 
-## Upstream configuration and command inventory
-
-For migration review, upstream reads
-`~/.pi/agent/pi-graphiti-config.json`, overridable through `PI_GRAPHITI_CONFIG`.
-Its configuration keys are:
-
-```text
-enabled, url, groupId, toolTimeoutMs, statusTimeoutMs,
-spoolEnabled, spoolMaxEntries, spoolMaxBytes, spoolMaxAgeDays, spoolDrainBatch,
-projectScoping, injectContext, nudgeInterval,
-flushOnCompact, flushOnShutdown, flushMinTurns,
-nudgeRecentMessages, flushRecentMessages,
-reviewEnabled, reviewRecentMessages, correctionDetection,
-llmModelOverride, llmThinkingOverride, backendDir, startedBySetup
-```
-
-The upstream [configuration loader](https://github.com/p2c2e/pi-graphiti/blob/8fbfbe13c2f761af4bf29401a371e4080c0f18a9/src/config.ts)
-provides `PI_GRAPHITI_*` environment overrides. Memory Worlds retains its own
-strict configuration and private token-file convention; upstream settings must
-be translated explicitly rather than silently accepted as authority grants.
-
-The upstream [slash command](https://github.com/p2c2e/pi-graphiti/blob/8fbfbe13c2f761af4bf29401a371e4080c0f18a9/src/command.ts)
-has status, `setup`, `search`, `ingest`, `dump`, `load`, `clear`, `spool`,
-`spool drain`, `spool clear`, `uninstall`, and `teardown`. Its standalone ingest
-script accepts a file, target group, label, source format, chunk size, and dry-run
-mode. Those commands require feature-specific migration, particularly imports
-that previously trusted embedded group IDs and operations that managed a local
-Docker stack.
-
-Confidence is high for the pinned source comparison. Behavioral equivalence
-requires tests against the particular surface implemented here; this document
-does not establish it merely from similar feature names.
-
 ## Python, CLI, and MCP scope access
 
 The Python client exposes typed `scopes`, `get_scope`, `create_scope`,
 `grant_scope`, `bind_context`, `get_context`, and `delegate` operations.
 Capture, episode lookup/listing, status, and publication accept an explicit
 `scope_id`. `SearchRequest.scopes` selects several world/scope pairs, while
-legacy world-only requests retain world-shared behavior. A linked publication
+world-level requests select the world-shared scope. A linked publication
 records its source scope and source episode without changing the original.
 
 The CLI supports:

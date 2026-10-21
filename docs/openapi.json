@@ -573,16 +573,9 @@
             "title": "Role"
           },
           "scope_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope Id"
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
           },
           "sequence": {
             "title": "Sequence",
@@ -647,6 +640,7 @@
           }
         },
         "required": [
+          "scope_id",
           "source_id",
           "content",
           "occurred_at",
@@ -1528,16 +1522,9 @@
             "type": "string"
           },
           "scope_id": {
-            "anyOf": [
-              {
-                "format": "uuid",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Scope Id"
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
           }
         },
         "required": [
@@ -1546,7 +1533,8 @@
           "name",
           "kind",
           "owner_id",
-          "created_at"
+          "created_at",
+          "scope_id"
         ],
         "title": "World",
         "type": "object"

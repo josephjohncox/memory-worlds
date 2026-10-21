@@ -1,3 +1,4 @@
+import json
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -192,30 +193,29 @@ def test_http_explicit_root_scope_snapshot_preserves_scope_identity(tmp_path):
         snap = api.get(f"/v1/worlds/{world.id}/scopes/{shared['id']}/snapshot", headers=owner)
         assert snap.status_code == 200
         assert snap.json()["scope"]["id"] == shared["id"]
-        assert snap.json()["world"]["scope_id"] is None
+        assert snap.json()["world"]["scope_id"] == shared["id"]
         assert (
             api.post("/v1/contexts", json={"run_id": str(uuid4())}, headers=owner).status_code
             == 403
         )
 
 
-def test_http_root_shared_explicit_views_have_uuid_without_rewriting_legacy_identity(tmp_path):
+def test_http_default_and_explicit_world_shared_views_use_same_canonical_scope(tmp_path):
     store = MemoryStore(tmp_path)
     world, token = store.bootstrap()
     owner = auth(token)
     with TestClient(create_app(tmp_path)) as api:
         sid = api.get(f"/v1/worlds/{world.id}/scopes", headers=owner).json()[0]["id"]
-        legacy = api.post(f"/v1/worlds/{world.id}/episodes", json=note(), headers=owner).json()[
+        default = api.post(f"/v1/worlds/{world.id}/episodes", json=note(), headers=owner).json()[
             "episode"
         ]
         base = f"/v1/worlds/{world.id}/scopes/{sid}"
         scoped = api.post(base + "/episodes", json=note(), headers=owner).json()
         assert scoped["replayed"]
         assert scoped["episode"]["scope_id"] == sid
-        assert scoped["episode"]["digest"] == legacy["digest"]
-        assert scoped["episode"]["id"] == legacy["id"]
+        assert scoped["episode"] == default
         assert api.get(base + "/episodes", headers=owner).json()[0]["scope_id"] == sid
-        assert api.get(base + "/episodes/" + legacy["id"], headers=owner).json()["scope_id"] == sid
+        assert api.get(base + "/episodes/" + default["id"], headers=owner).json()["scope_id"] == sid
         assert api.get(base + "/snapshot", headers=owner).json()["episodes"][0]["scope_id"] == sid
         search = api.post(
             "/v1/search",
@@ -223,23 +223,20 @@ def test_http_root_shared_explicit_views_have_uuid_without_rewriting_legacy_iden
             headers=owner,
         )
         assert search.json()["results"][0]["scope_id"] == sid
-        explicit_legacy_route = api.post(
+        explicit_world_route = api.post(
             f"/v1/worlds/{world.id}/episodes", json=note("explicit", scope_id=sid), headers=owner
         )
-        assert explicit_legacy_route.json()["episode"]["scope_id"] == sid
+        assert explicit_world_route.json()["episode"]["scope_id"] == sid
         published = api.post(base + "/publications", json=note("published"), headers=owner)
         assert published.status_code == 200, published.text
         assert published.json()["episode"]["scope_id"] == sid
         assert (
-            api.get(f"/v1/worlds/{world.id}/episodes/{legacy['id']}", headers=owner).json()[
-                "scope_id"
-            ]
-            is None
+            api.get(f"/v1/worlds/{world.id}/episodes/{default['id']}", headers=owner).json()
+            == default
         )
     with store._world_db(world.id) as db:
-        assert (
-            '"scope_id"'
-            not in db.execute(
-                "SELECT payload FROM episodes WHERE id=?", (legacy["id"],)
-            ).fetchone()[0]
+        payload = json.loads(
+            db.execute("SELECT payload FROM episodes WHERE id=?", (default["id"],)).fetchone()[0]
         )
+    assert payload["scope_id"] == sid
+    assert payload["context_id"] is None

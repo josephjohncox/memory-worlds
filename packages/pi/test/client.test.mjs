@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryWorldsClient, MemoryWorldsError, readTokenFile, serviceURL } from "../dist/client.js";
+import { MemoryWorldsClient, MemoryWorldsError, readTokenFile, serviceURL } from "memory-worlds-pi/client";
 import { parseConfig } from "../dist/config.js";
 
-const world = { id: "private", name: "Private", authority_id: "a", kind: "personal", owner_id: "alice" };
+const selection = { world_id: "private", scope_id: "00000000-0000-4000-8000-000000000002" };
+const world = { scope_id: "00000000-0000-4000-8000-000000000001", id: "private", name: "Private", authority_id: "a", kind: "personal", owner_id: "alice" };
 const reply = value => new Response(JSON.stringify(value), { headers: { "Content-Type": "application/json" } });
 
 test("credentials stay in the authorization header and redirects are refused", async () => {
@@ -39,29 +40,27 @@ test("token files require private permissions and token rotation is read each ti
   } finally { await rm(dir, { recursive: true }); }
 });
 
-test("federation retains authority provenance and reports partial failure without fallback", async () => {
+test("federation retains explicit scope provenance and reports partial failure", async () => {
   const seen = [];
-  const client = new MemoryWorldsClient("http://localhost:8787", async () => "secret", async (url, options) => {
+  const client = new MemoryWorldsClient("http://localhost:8787", async () => "secret", async (_url, options) => {
     seen.push(JSON.parse(options.body));
-    return url.endsWith("/router/search")
-      ? reply({ results: [{ mount_id: "team", authority_id: "b", world_id: "shared", record_type: "fact", fact: "shared fact" }], failures: [{ mount_id: "offline", error: "unavailable" }], complete: false })
-      : reply({ mode: "graph", worlds: [world], results: [{ world_id: "private", fact_id: "entry", fact: "private evidence" }] });
+    return reply({ results: [{ mount_id: "team", authority_id: "b", world_id: "shared", scope_id: selection.scope_id, record_type: "fact", fact: "shared fact" }], failures: [{ mount_id: "offline", error: "unavailable" }], complete: false });
   });
-  const result = await client.search(["private"], ["team", "offline"], "bearing", "graph", 5);
+  const result = await client.searchMounts(["team", "offline"], "bearing", "graph", 5);
   assert.equal(result.complete, false);
-  assert.deepEqual(result.results.map(hit => hit.authority_id), ["a", "b"]);
-  assert.deepEqual(result.results.map(hit => hit.record_type), ["fact", "fact"]);
+  assert.deepEqual(result.results.map(hit => hit.authority_id), ["b"]);
+  assert.deepEqual(result.results.map(hit => hit.scope_id), [selection.scope_id]);
   assert.equal(result.failures[0].mount_id, "offline");
-  assert.deepEqual(seen.map(item => item.mode), ["graph", "graph"]);
+  assert.deepEqual(seen[0].mount_ids, ["team", "offline"]);
 });
 
 test("an upstream failure never echoes source or credential content", async () => {
   const client = new MemoryWorldsClient("http://localhost:8787", async () => "secret", async () => new Response("secret private transcript", { status: 403 }));
   await assert.rejects(client.worlds(), error => error instanceof MemoryWorldsError && !error.message.includes("secret"));
-  const result = await client.search(["private"], [], "words", "graph", 5);
+  const result = await client.searchMounts(["team"], "words", "graph", 5);
   assert.equal(result.complete, false);
   assert.deepEqual(result.results, []);
-  assert.equal(result.failures[0].mount_id, "local");
+  assert.equal(result.failures[0].mount_id, "router");
 });
 
 test("abort and response bounds apply to authenticated HTTP calls", async () => {
@@ -75,23 +74,19 @@ test("abort and response bounds apply to authenticated HTTP calls", async () => 
 
 test("search rejects unexpected remote mounts", async () => {
   const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply({ results: [{ mount_id: "other", authority_id: "b", world_id: "s" }], failures: [], complete: true }));
-  const result = await client.search([], ["selected"], "word", "source", 5);
+  const result = await client.searchMounts(["selected"], "word", "source", 5);
   assert.equal(result.complete, false);
   assert.equal(result.results.length, 0);
 });
 
-test("source fallback cannot be mislabeled as graph retrieval", async () => {
-  const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply({ mode: "source", worlds: [world], results: [{ world_id: "private", content: "lexical evidence" }] }));
-  const result = await client.search(["private"], [], "word", "graph", 5);
-  assert.equal(result.complete, false);
-  assert.deepEqual(result.results, []);
+test("source evidence cannot be mislabeled as graph retrieval", async () => {
+  const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply({ mode: "source", worlds: [world], results: [{ ...selection, content: "lexical evidence" }] }));
+  await assert.rejects(client.searchScopes([selection], "word", "graph", 5), /mode mismatch/);
 });
 
-test("local results outside the explicit selected worlds are rejected", async () => {
-  const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply({ mode: "source", worlds: [world, { ...world, id: "other" }], results: [{ world_id: "other", content: "out-of-scope" }] }));
-  const result = await client.search(["private"], [], "word", "source", 5);
-  assert.equal(result.complete, false);
-  assert.deepEqual(result.results, []);
+test("local results outside the explicit selected world and scope are rejected", async () => {
+  const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply({ mode: "source", worlds: [world, { ...world, id: "other" }], results: [{ ...selection, world_id: "other", content: "out-of-scope" }] }));
+  await assert.rejects(client.searchScopes([selection], "word", "source", 5), /unselected scope/);
 });
 
 test("configuration defaults to no capture/retrieval and rejects plaintext credentials", () => {
@@ -100,11 +95,11 @@ test("configuration defaults to no capture/retrieval and rejects plaintext crede
   assert.equal(config.retrieval.enabled, false);
   assert.equal(config.tokenFile, "/users/alice/.config/memory-worlds/pi.token");
   assert.equal(parseConfig({ automaticCapture: true }, {}, "/users/alice").automaticCapture, false);
-  assert.equal(parseConfig({ automaticCapture: true, writeWorldId: "private" }, {}, "/users/alice").automaticCapture, true);
+  assert.equal(parseConfig({ automaticCapture: true, writeScope: selection }, {}, "/users/alice").automaticCapture, true);
   assert.throws(() => parseConfig({ token: "secret" }, {}), /Unknown/);
   assert.throws(() => parseConfig({ retrieval: { limit: 21 } }, {}), /Retrieval/);
   assert.throws(() => parseConfig({ retrieval: { enabled: "yes" } }, {}), /boolean/);
-  assert.throws(() => parseConfig({ readWorldIds: ["../../escape"] }, {}), /identifiers/);
+  assert.throws(() => parseConfig({ readMountIds: ["../../escape"] }, {}), /identifiers/);
 });
 
 test("a credential session snapshots rotation and erases its token after completion", async () => {
@@ -114,4 +109,10 @@ test("a credential session snapshots rotation and erases its token after complet
   await client.withCredentialSession(async pinned => { retained = pinned; await pinned.worlds(); token = "second"; await pinned.worlds(); });
   assert.deepEqual(authorizations, ["Bearer first", "Bearer first"]); assert.equal(reads, 1);
   await assert.rejects(retained.worlds(), /session has ended/);
+});
+
+
+test("world discovery requires an actual scope UUID", async () => {
+  const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply([{ ...world, scope_id: "invalid" }]));
+  await assert.rejects(client.worlds(), /Invalid scope/);
 });

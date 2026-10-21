@@ -97,10 +97,9 @@ transcript. Reading a shared world never changes an agent's capture destination.
 Worlds contain four [memory scopes](docs/scopes.md): world-shared, run-shared,
 agent-persistent, and invocation-private. UUID child identities use attenuated,
 expiring credentials; parents and siblings cannot read child scratch by default.
-Source journals and Graphiti extraction are isolated by scope. Legacy world-only
-calls address world-shared memory, preserving existing source replay identities.
-The native Pi package also provides a bounded [Pi Graphiti compatibility
-surface](docs/pi-graphiti-compatibility.md).
+Source journals and Graphiti extraction are isolated by scope. World-level
+selection addresses the world-shared scope. The native Pi package provides
+[graph tools and Pi Graphiti feature coverage](docs/pi-graphiti-features.md).
 
 For remote shared spaces, `mounts` lists operator-configured authorities,
 `route-search QUERY --mount MOUNT` reads them, and `route-publish MOUNT WORLD

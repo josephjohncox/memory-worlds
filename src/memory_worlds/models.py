@@ -54,7 +54,7 @@ class World(Model):
     created_at: datetime
     generation: str | None = None
     projection_state: Literal["disabled", "ready", "degraded"] = "disabled"
-    scope_id: UUID | None = None
+    scope_id: UUID
 
 
 class CreateWorld(Model):
@@ -94,6 +94,7 @@ class EpisodeInput(Model):
 
 
 class Episode(EpisodeInput):
+    scope_id: UUID
     id: str
     world_id: str
     sequence: int

@@ -85,33 +85,3 @@ def test_restore_rejects_broader_scope_kind_and_mixed_scope_archive(tmp_path):
             target.writestr(name, data)
     with pytest.raises(PortabilityError, match="another scope"):
         restore_world(store, owner, world.id, archive, scope_id=scope.id)
-
-
-def test_legacy_version_one_archive_remains_readable(tmp_path):
-    store, world, owner, _scope = authority(tmp_path / "source")
-    store.capture(
-        owner,
-        world.id,
-        EpisodeInput(
-            source_id="old-source",
-            content="Legacy shared evidence",
-            occurred_at=datetime(2026, 1, 1, tzinfo=UTC),
-        ),
-    )
-    archive = export_world(store, owner, world.id, tmp_path / "legacy.mworld")
-    with zipfile.ZipFile(archive) as source:
-        entries = {name: source.read(name) for name in source.namelist()}
-    manifest = json.loads(entries["manifest.json"])
-    manifest["version"] = 1
-    manifest.pop("scope")
-    manifest["world"].pop("scope_id")
-    record = json.loads(entries["episodes.jsonl"])
-    record.pop("scope_id")
-    entries["episodes.jsonl"] = (json.dumps(record) + "\n").encode()
-    manifest["episodes_sha256"] = hashlib.sha256(entries["episodes.jsonl"]).hexdigest()
-    entries["manifest.json"] = json.dumps(manifest).encode()
-    with zipfile.ZipFile(archive, "w") as target:
-        for name, data in entries.items():
-            target.writestr(name, data)
-    target, target_world, target_owner, _target_scope = authority(tmp_path / "destination")
-    assert restore_world(target, target_owner, target_world.id, archive)["imported"] == 1

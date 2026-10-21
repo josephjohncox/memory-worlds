@@ -31,7 +31,7 @@ that world's authorized participants, not global to every world or authority.
 ## Authorization and delegation
 
 Every access requires world authorization and an explicit applicable scope grant.
-Legacy world-only API calls select world-shared memory exclusively. Existing
+World-level API calls select world-shared memory exclusively. Existing
 world grants do not reveal newly created private scopes.
 
 Child credentials are attenuated capabilities: their worlds, readable scopes,
@@ -51,16 +51,16 @@ Unauthorized explicit selections fail before querying storage. Direct lookup,
 list, status, search, export, restore, graph processing, and sync obey the same
 boundary. Expiring a credential does not itself delete durable source evidence.
 
-## Source storage, migration, and graph extraction
+## Source storage and graph extraction
 
 Every episode belongs to one scope. Scope changes are not in-place mutations.
 Publishing selected text creates a separate destination episode with source
 linkage, attribution, stable retry identity, and a receipt. Automatic capture
 cannot promote a private transcript into shared memory.
 
-The existing world journal becomes the world-shared journal. Existing source
-IDs, digests, replay semantics, exports, and authorization remain valid. Additional
-scope journals are isolated under the same world's storage directory, without
+The world-level journal contains world-shared memory. Every episode carries its
+canonical scope UUID, including records selected through world-level routes.
+Additional scope journals are isolated under the same world's directory, without
 requiring a pod, process, or PVC per agent. Scope identifiers are validated before
 filesystem access. Source archives preserve audience boundaries and do not
 restore credentials or broaden private scopes.
@@ -75,10 +75,9 @@ previous-episode context stays in the same scope. Facts and entity summaries
 cannot combine evidence from different audiences during ingestion. Queries fan
 out only to authorized scope projections, preserving provenance. Publications
 are projected independently at their destination. Cross-scope synthesis is not
-automatically persisted into a broader audience. Legacy graph migration must
-preserve isolation and require a safe rebuild if namespace identity changes.
+automatically persisted into a broader audience. One current namespace formula applies to all scope kinds.
 
-## Native Pi and compatibility
+## Native Pi graph features
 
 The native client exposes typed scope/context/delegation APIs for orchestrators.
 An orchestrator constructs child prompts from the task brief and explicitly
@@ -87,9 +86,9 @@ does not copy the parent's bearer credential or entire transcript. Retrieved
 scope exposure follows forks, compaction, and summaries; automatic capture stops
 when its destination audience does not cover the observed private context.
 
-Compatibility is evaluated against the released `pi-graphiti` package and pinned
+Feature coverage is evaluated against the released `pi-graphiti` package and pinned
 upstream evidence. Its `graph` tool and project/global concepts map to explicit
-authorized scopes. Compatibility never accepts arbitrary backend group IDs,
+authorized scopes. Native graph tools never accept arbitrary backend group IDs,
 unbounded graph deletion, private evidence disclosure, or publication that
 bypasses user-selected destinations. A checked feature matrix distinguishes
 equivalent, extended, restricted, and missing behavior; no blanket superset claim
@@ -100,9 +99,9 @@ must retain durable receipts, opt-in capture, and scope restrictions.
 
 Required evidence includes sibling isolation, explicit coordinator access,
 restricted recursive delegation, scope and operation escalation rejection,
-expiry and ancestor revocation, UUID collision/idempotency behavior, unchanged
-legacy source replay, scoped direct lookups and exports, isolated graph
+expiry and ancestor revocation, UUID collision/idempotency behavior, current-contract
+source replay, scoped direct lookups and exports, isolated graph
 extraction, and explicit publication provenance. Native Pi tests cover separate
 contexts, safe prompt handoff, exposure through branches, and the supported
-upstream-compatible tool surface. Existing Python, native Pi, packaging, and
+native graph tool surface. Existing Python, native Pi, packaging, and
 Kubernetes persistence checks remain release gates.

@@ -18,6 +18,7 @@ from memory_worlds.models import CreateToken, CreateWorld, Role, WorldKind
 from memory_worlds.mounts import Mount, MountConfig, MountRole
 from memory_worlds.outbox import RoutedPublication, RouterSearch
 from memory_worlds.router import RemoteFailure, WorldRouter
+from memory_worlds.scopes import world_shared_scope_id
 from memory_worlds.store import MemoryStore
 
 
@@ -286,6 +287,9 @@ async def test_expired_oidc_job_requires_a_fresh_authorized_session(federation):
         ("metadata", {"private_ref": "must not be linked"}),
         ("digest", "incorrect"),
         ("content", "Changed content"),
+        ("scope_id", None),
+        ("scope_id", "00000000-0000-4000-8000-000000000001"),
+        ("context_id", "00000000-0000-4000-8000-000000000002"),
     ],
 )
 async def test_remote_receipt_must_match_complete_publication_source(federation, field, value):
@@ -302,7 +306,12 @@ async def test_remote_receipt_must_match_complete_publication_source(federation,
     e.router.publish(e.alice, publication(e))
     await e.router.run_once()
     final = e.router.deliveries(e.alice)[0]
-    assert final.state == "blocked" and final.error == "remote_receipt_mismatch"
+    expected_error = (
+        "remote_protocol_error"
+        if field == "scope_id" and value is None
+        else "remote_receipt_mismatch"
+    )
+    assert final.state == "blocked" and final.error == expected_error
 
 
 async def test_remote_authority_and_result_world_are_checked(federation):
@@ -481,8 +490,9 @@ async def test_graph_recall_preserves_origin_and_rejects_wrong_authority(federat
                             "fact": "Approved fact",
                             "world_id": e.team.id,
                             "authority_id": authority,
+                            "scope_id": world_shared_scope_id(e.remote.authority_id, e.team.id),
                             "generation": "generation-id",
-                            "episode_ids": ["evidence-id"],
+                            "source_episode_ids": ["evidence-id"],
                         }
                     ],
                 },
@@ -494,7 +504,7 @@ async def test_graph_recall_preserves_origin_and_rejects_wrong_authority(federat
     found = await e.router.search(e.alice, request)
     assert found["complete"]
     assert found["results"][0]["generation"] == "generation-id"
-    assert found["results"][0]["episode_ids"] == ["evidence-id"]
+    assert found["results"][0]["source_episode_ids"] == ["evidence-id"]
     assert found["results"][0]["authority_id"] == authority
     authority = "untrusted-authority"
     found = await e.router.search(e.alice, request)

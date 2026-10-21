@@ -6,8 +6,8 @@ import { mkdtemp, writeFile, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MemoryWorldsClient } from "../dist/client.js";
-import { withSubagent } from "../dist/orchestrator.js";
+import { MemoryWorldsClient } from "memory-worlds-pi/client";
+import { withSubagent } from "memory-worlds-pi/orchestrator";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const python = resolve(process.env.MEMORY_WORLDS_SMOKE_PYTHON ?? join(root, "../../.venv/bin/python"));
@@ -75,7 +75,7 @@ try {
   const selected = { world_id: metadata.world.id, scope_id: metadata.scope.id };
   await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, writeScope: selected, readScopes: [selected], graphAliases: { project: selected, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
   await mkdir(join(dir, "agent"));
-  pi = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", join(root, "dist/extension.js")], {
+  pi = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", root], {
     cwd: dir, env: { ...fixtureEnv, PI_CODING_AGENT_DIR: join(dir, "agent"), MEMORY_WORLDS_CONFIG: configPath, MEMORY_WORLDS_TOKEN_FILE: tokenPath, MEMORY_WORLDS_URL: url }, stdio: ["pipe", "pipe", "pipe"],
   });
   let output = "", errors = "", sequence = 0;
@@ -123,10 +123,10 @@ try {
   const client = new MemoryWorldsClient(url, async () => token);
   const graphSource = (await client.searchScopes([selected], "selected-graphiti-evidence", "source", 5)).results;
   assert.equal(graphSource.length, 1); assert.equal(graphSource[0].scope_id, selected.scope_id);
-  const legacy = await client.search([metadata.world.id], [], "real-service-bearing-evidence", "source", 5);
-  assert.equal(legacy.results.length, 0, "Legacy world access must not expose scoped private notes");
   const globalScope = { world_id: metadata.world.id, scope_id: metadata.shared_scope_id };
   assert.match(globalScope.scope_id, /^[0-9a-f-]{36}$/);
+  const sharedIsolation = await client.searchScopes([globalScope], "real-service-bearing-evidence", "source", 5);
+  assert.equal(sharedIsolation.results.length, 0, "World-shared memory must not expose private notes");
   assert.equal((await command({ type: "prompt", message: `/memory share ${metadata.world.id} ${globalScope.scope_id} selected-world-shared-finding` })).success, true);
   const sharedSources = await client.searchScopes([globalScope], "selected-world-shared-finding", "source", 5);
   assert.equal(sharedSources.results.length, 1); assert.equal(sharedSources.results[0].scope_id, globalScope.scope_id);
@@ -136,7 +136,7 @@ try {
   const runScope = { world_id: metadata.world.id, scope_id: metadata.run_scope_id };
   await client.publishScope(runScope, { source_id: "fixture-run-brief", occurred_at: new Date().toISOString(), content: "shared-run-brief-for-private-working-notes", project: false });
   assert.equal(await client.canFlow([runScope], selected), true);
-  for (const text of [`/memory scope-read ${metadata.world.id} ${runScope.scope_id}`, "/memory capture on", "/memory search shared-run-brief-for-private-working-notes", "/memory status"]) assert.equal((await command({ type: "prompt", message: text })).success, true);
+  for (const text of [`/memory read ${metadata.world.id} ${runScope.scope_id}`, "/memory capture on", "/memory search shared-run-brief-for-private-working-notes", "/memory status"]) assert.equal((await command({ type: "prompt", message: text })).success, true);
   const lastStatus = messages.filter(message => message.type === "extension_ui_request" && message.method === "notify" && message.message?.startsWith("{\n") && message.message.includes('"automaticCapture"')).at(-1);
   assert.equal(JSON.parse(lastStatus.message).automaticCapture, true, "Live run-shared readers must flow into the narrower private capture target");
   assert.equal((await command({ type: "prompt", message: "/memory capture private-note-after-shared-run-read" })).success, true);
@@ -160,7 +160,7 @@ try {
   assert(!errors.includes("Failed to load extension"), errors);
   pi.kill("SIGTERM"); await once(pi, "exit"); pi = undefined;
   service.kill("SIGTERM"); await once(service, "exit"); service = undefined;
-  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API -> SQLite, bound UUID attribution, private native graph capture/episodes, root-journal exclusion, delegated child scratch isolation, selected result, credential revocation, provenance and credential exclusion.");
+  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API -> SQLite, bound UUID attribution, private native graph capture/episodes, world-shared exclusion, delegated child scratch isolation, selected result, credential revocation, provenance and credential exclusion.");
 } finally {
   pi?.kill("SIGKILL"); service?.kill("SIGKILL");
   await rm(dir, { recursive: true, force: true });

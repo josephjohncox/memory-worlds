@@ -65,14 +65,14 @@ class AuditRecord(Model):
 
 class Manifest(Model):
     format: str = Field(pattern=r"^memory-worlds$")
-    version: int = Field(ge=1, le=2, strict=True)
+    version: int = Field(ge=2, le=2, strict=True)
     exported_at: str
     world: World
-    scope: Scope | None = None
+    scope: Scope
     episode_count: int = Field(ge=0, le=MAX_EPISODES, strict=True)
     episodes_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    audit_count: int = Field(default=0, ge=0, le=MAX_EPISODES, strict=True)
-    audit_sha256: str = Field(default=hashlib.sha256(b"").hexdigest(), pattern=r"^[a-f0-9]{64}$")
+    audit_count: int = Field(ge=0, le=MAX_EPISODES, strict=True)
+    audit_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     recovery: str = Field(pattern=r"^source-only; graph re-extraction required$")
     projection_configuration: dict[str, str | int | None] = Field(default_factory=dict)
 
@@ -182,20 +182,19 @@ def export_world(
     try:
         world = World.model_validate(snapshot["world"])
         episodes = [Episode.model_validate(item) for item in snapshot["episodes"]]
-        audit = [AuditRecord.model_validate(item) for item in snapshot.get("audit", [])]
-        scope = Scope.model_validate(snapshot["scope"]) if snapshot.get("scope") else None
+        audit = [AuditRecord.model_validate(item) for item in snapshot["audit"]]
+        scope = Scope.model_validate(snapshot["scope"])
     except (KeyError, TypeError, ValidationError) as exc:
         raise PortabilityError(f"Invalid store snapshot: {exc}") from exc
     if len(episodes) > MAX_EPISODES or len(audit) > MAX_EPISODES:
         raise PortabilityError("Too many episodes for one portable archive")
     if any(item.world_id != world.id for item in episodes):
         raise PortabilityError("Snapshot contains episodes from another world")
-    if scope_id is not None and scope is None:
-        raise PortabilityError("Scoped snapshot is missing its audience identity")
-    if scope is not None and (
+    if (
         scope.world_id != world.id
-        or str(scope.id) != str(scope_id)
-        or any(item.scope_id is not None and item.scope_id != scope.id for item in episodes)
+        or world.scope_id != scope.id
+        or (scope_id is not None and scope.id != UUID(str(scope_id)))
+        or any(item.scope_id != scope.id for item in episodes)
     ):
         raise PortabilityError("Snapshot contains evidence from another scope")
 
@@ -312,13 +311,9 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
     lines = body.splitlines()
     if len(lines) != manifest.episode_count:
         raise PortabilityError("Episode count does not match manifest")
-    if manifest.scope is not None and (
-        manifest.version != 2 or manifest.scope.world_id != manifest.world.id
-    ):
+    if manifest.scope.world_id != manifest.world.id:
         raise PortabilityError("Invalid scoped archive identity")
-    if manifest.world.scope_id is not None and (
-        manifest.scope is None or manifest.world.scope_id != manifest.scope.id
-    ):
+    if manifest.world.scope_id != manifest.scope.id:
         raise PortabilityError("Scoped archive is missing its audience identity")
     episodes = []
     identities = set()
@@ -338,16 +333,19 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
         episode_ids.add(episode.id)
         if episode.world_id != manifest.world.id:
             raise PortabilityError("Archive contains an episode from another world")
-        if episode.scope_id is not None and (
-            manifest.scope is None or episode.scope_id != manifest.scope.id
-        ):
+        if episode.scope_id != manifest.scope.id:
             raise PortabilityError("Archive contains an episode from another scope")
-        if (
-            manifest.scope is not None
-            and manifest.scope.kind != ScopeKind.WORLD_SHARED
-            and (episode.scope_id != manifest.scope.id)
-        ):
-            raise PortabilityError("Scoped archive episode has no audience identity")
+        try:
+            canonical = json.dumps(
+                episode.model_dump(mode="json", include=set(EpisodeInput.model_fields)),
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        except (TypeError, ValueError, RecursionError, UnicodeEncodeError) as exc:
+            raise PortabilityError(f"Invalid canonical source episode {index}") from exc
+        if hashlib.sha256(canonical).hexdigest() != episode.digest:
+            raise PortabilityError(f"Episode {index} source digest mismatch")
         episodes.append(episode)
     if hashlib.sha256(audit_body).hexdigest() != manifest.audit_sha256:
         raise PortabilityError("Audit checksum mismatch")
@@ -381,11 +379,11 @@ def restore_world(
 ) -> dict:
     """Verify the entire archive before one authorized, transactional restore."""
     manifest, records, audit = _read_archive(Path(archive))
-    if manifest.scope is not None and manifest.scope.kind != ScopeKind.WORLD_SHARED:
-        if scope_id is None:
-            raise PortabilityError("Scoped archives require an explicit private destination scope")
-        target = store.snapshot(principal, world_id, scope_id=scope_id)
-        destination_scope = Scope.model_validate(target.get("scope"))
+    if manifest.scope.kind != ScopeKind.WORLD_SHARED and scope_id is None:
+        raise PortabilityError("Scoped archives require an explicit private destination scope")
+    target = store.snapshot(principal, world_id, scope_id=scope_id)
+    destination_scope = Scope.model_validate(target["scope"])
+    if manifest.scope.kind != ScopeKind.WORLD_SHARED:
         allowed = {manifest.scope.kind, ScopeKind.INVOCATION_PRIVATE}
         if destination_scope.kind not in allowed:
             raise PortabilityError("Restore cannot broaden the archived scope's audience kind")
@@ -406,8 +404,7 @@ def restore_world(
             "projection_state": record.projection_state,
             "audit": audit_by_episode.get(record.id, []),
         }
-        if manifest.scope is not None:
-            origin["scope"] = manifest.scope.model_dump(mode="json")
+        origin["scope"] = manifest.scope.model_dump(mode="json")
         for key in ("agent_uuid", "invocation_id", "parent_invocation_id", "context_id"):
             value = getattr(record, key, None)
             if value is not None:
@@ -419,7 +416,7 @@ def restore_world(
         fields.update(
             metadata=metadata,
             project=False,
-            scope_id=UUID(str(scope_id)) if scope_id is not None else None,
+            scope_id=destination_scope.id,
             context_id=None,
         )
         episodes.append(_episode(fields))

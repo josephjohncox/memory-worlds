@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import { scopeSelection, serviceURL, type EpisodeInput, type MemoryWorldsClient, type Receipt, type ScopeSelection } from "./client.js";
 
 export interface SpoolBinding { serviceUrl: string; authorityId: string; credentialId: string }
-export interface SpoolTarget { world_id: string; scope_id?: string }
+export type SpoolTarget = ScopeSelection;
 export interface SpoolFlow { read_scopes: ScopeSelection[]; write_scope: ScopeSelection }
 interface Envelope { version: 1; binding: SpoolBinding; target: SpoolTarget; episode: EpisodeInput; flow?: SpoolFlow }
 export interface SpoolDelivery { target: SpoolTarget; sourceId: string; receipt: Receipt }
@@ -14,14 +14,13 @@ function validate(value: unknown): Envelope {
   const item = value as Envelope;
   if (item.version !== 1 || !item.binding || typeof item.binding.authorityId !== "string" || !item.binding.authorityId || typeof item.binding.credentialId !== "string" || !item.binding.credentialId) throw new Error("Invalid memory spool binding");
   serviceURL(item.binding.serviceUrl);
-  if (!item.target || !/^[a-zA-Z0-9_-]{1,100}$/.test(item.target.world_id)) throw new Error("Invalid memory spool target");
-  if (item.target.scope_id) scopeSelection(item.target);
+  scopeSelection(item.target);
   if (!item.episode || typeof item.episode.source_id !== "string" || !item.episode.source_id || typeof item.episode.content !== "string" || !item.episode.content.trim() || item.episode.content.length > 200000 || typeof item.episode.occurred_at !== "string" || !Number.isFinite(Date.parse(item.episode.occurred_at))) throw new Error("Invalid memory spool source");
   if (item.episode.scope_id && item.episode.scope_id !== item.target.scope_id) throw new Error("Memory spool scope mismatch");
   if (item.flow) {
     if (!Array.isArray(item.flow.read_scopes) || item.flow.read_scopes.length > 50) throw new Error("Invalid memory spool flow guard");
     item.flow.read_scopes.forEach(scopeSelection); scopeSelection(item.flow.write_scope);
-    if (item.flow.write_scope.world_id !== item.target.world_id || item.target.scope_id && item.flow.write_scope.scope_id !== item.target.scope_id) throw new Error("Memory spool flow target mismatch");
+    if (item.flow.write_scope.world_id !== item.target.world_id || item.flow.write_scope.scope_id !== item.target.scope_id) throw new Error("Memory spool flow target mismatch");
   }
   return item;
 }
@@ -44,7 +43,7 @@ export class MemorySpool {
     return createHash("sha256").update(encoded([envelope.binding, envelope.target, envelope.episode.source_id])).digest("hex");
   }
   async enqueue(binding: SpoolBinding, target: SpoolTarget, episode: EpisodeInput, flow?: SpoolFlow): Promise<void> {
-    const envelope = validate({ version: 1, binding: { serviceUrl: serviceURL(binding.serviceUrl), authorityId: binding.authorityId, credentialId: binding.credentialId }, target: { world_id: target.world_id, ...(target.scope_id ? { scope_id: target.scope_id } : {}) }, episode, ...(flow ? { flow } : {}) });
+    const envelope = validate({ version: 1, binding: { serviceUrl: serviceURL(binding.serviceUrl), authorityId: binding.authorityId, credentialId: binding.credentialId }, target: scopeSelection(target), episode, ...(flow ? { flow } : {}) });
     const body = encoded(envelope);
     if (Buffer.byteLength(body) > 1_048_576) throw new Error("Memory spool envelope exceeds 1 MiB");
     await this.prepare();
@@ -103,8 +102,8 @@ export class MemorySpool {
       if (`${this.key(envelope)}.json` !== name) throw new Error("Memory spool identity mismatch");
       if (encoded(envelope.binding) !== encoded(expected)) { blocked++; continue; }
       if (envelope.flow && !await client.canFlow(envelope.flow.read_scopes, envelope.flow.write_scope, signal)) throw new Error("Queued source audience no longer permits automatic capture");
-      const receipt = envelope.target.scope_id ? await client.captureScope(envelope.target as ScopeSelection, envelope.episode, signal) : await client.capture(envelope.target.world_id, envelope.episode, signal);
-      if (receipt.episode.world_id !== envelope.target.world_id || (envelope.target.scope_id && receipt.episode.scope_id !== envelope.target.scope_id) || receipt.episode.source_id !== envelope.episode.source_id || !this.sameSource(receipt.episode, envelope.episode)) throw new Error("Spool receipt does not match queued source");
+      const receipt = await client.captureScope(envelope.target, envelope.episode, signal);
+      if (receipt.episode.world_id !== envelope.target.world_id || receipt.episode.scope_id !== envelope.target.scope_id || receipt.episode.source_id !== envelope.episode.source_id || !this.sameSource(receipt.episode, envelope.episode)) throw new Error("Spool receipt does not match queued source");
       await unlink(file);
       delivered.push({ target: envelope.target, sourceId: envelope.episode.source_id, receipt });
     }

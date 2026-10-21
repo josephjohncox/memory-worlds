@@ -6,7 +6,7 @@ publication envelopes and delivery receipts. The control database owns authority
 identity, world metadata, token hashes, OIDC sessions, memberships, and grants.
 A scope database owns source episodes,
 capture audit, projection jobs, active generation, and public model provenance.
-The existing world journal is world-shared. Additional scope journals live at
+The world-level journal holds the world-shared scope. Additional scope journals live at
 `worlds/<world-id>/scopes/<scope-uuid>/source.sqlite3`; scope grants and invocation
 contexts remain in `control.sqlite3`. See [agent scopes](scopes.md).
 Capture and enqueue commit together with SQLite synchronous FULL transactions.
@@ -20,8 +20,8 @@ transaction and that metadata establish the portable export boundary.
 `.mworld` recovery is source-only. It preserves attributed evidence and audit
 records and deliberately excludes live ACLs and credentials. It can reconstruct
 a new graph, but model extraction need not reproduce the same interpretation.
-Version 2 archives identify the selected scope and preserve invocation
-provenance. Version 1 archives remain readable. World-only export includes the
+The current archive format identifies the selected scope and preserves invocation
+provenance. Historical archive formats are not supported. World-only export includes the
 world-shared journal; select private scopes explicitly. Private archives require
 an explicit compatible private restore destination.
 Archive checksums detect corruption, not malicious forgery; the archive is not
@@ -33,7 +33,7 @@ the control database's credential or membership state. `restore` accepts portabl
 archives rather than arbitrary SQLite files. For routine migration use
 export/restore. Native SQLite file recovery requires an administrator to preserve
 the matching world/authority metadata and stop the daemon before replacing files.
-The current `backup` command selects the legacy world-shared source database;
+The current `backup` command selects the world-shared source database;
 it does not combine private scope journals into one SQLite file.
 
 FalkorDB uses a separate persistent volume. Namespaces separate authorities,

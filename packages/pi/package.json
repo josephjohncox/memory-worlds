@@ -22,10 +22,6 @@
       "types": "./dist/orchestrator.d.ts",
       "import": "./dist/orchestrator.js"
     },
-    "./compatibility": {
-      "types": "./dist/compatibility.d.ts",
-      "import": "./dist/compatibility.js"
-    },
     "./curation": {
       "types": "./dist/curation.d.ts",
       "import": "./dist/curation.js"
@@ -33,6 +29,10 @@
     "./spool": {
       "types": "./dist/spool.d.ts",
       "import": "./dist/spool.js"
+    },
+    "./graph": {
+      "types": "./dist/graph.d.ts",
+      "import": "./dist/graph.js"
     }
   },
   "pi": {
@@ -41,7 +41,7 @@
     ]
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "node --input-type=module -e \"import {rmSync} from 'node:fs'; rmSync('dist', {recursive: true, force: true});\" && tsc -p tsconfig.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build && node --test test/*.test.mjs",
     "smoke": "npm run build && node test/runtime-smoke.mjs",

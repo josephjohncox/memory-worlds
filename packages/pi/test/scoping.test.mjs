@@ -1,11 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryWorldsClient, MemoryWorldsError, scopeSelection } from "../dist/client.js";
+import { MemoryWorldsClient, MemoryWorldsError, scopeSelection } from "memory-worlds-pi/client";
 import { parseConfig } from "../dist/config.js";
-import { executeGraph, graphLimit, graphSelections } from "../dist/compatibility.js";
-import { withSubagent, runPiSubagent, createIsolatedPiSession } from "../dist/orchestrator.js";
+import { executeGraph, graphLimit, graphSelections } from "memory-worlds-pi/graph";
+import { withSubagent, runPiSubagent, createIsolatedPiSession } from "memory-worlds-pi/orchestrator";
 import { expose, initialState, restoreState, scopeExposure, EXPOSURE_TYPE } from "../dist/state.js";
-import { proposeMemories, reviewMemories, validateReview } from "../dist/curation.js";
+import { proposeMemories, reviewMemories, validateReview } from "memory-worlds-pi/curation";
 
 const rootId = "00000000-0000-4000-8000-000000000001";
 const privateId = "00000000-0000-4000-8000-000000000002";
@@ -27,7 +27,6 @@ test("scope identifiers and config use explicit UUID selections with independent
   assert.deepEqual(parsed.graphAliases.project, selection);
   assert.throws(() => scopeSelection({ world_id: "../bad", scope_id: privateId }), /Invalid/);
   assert.throws(() => config({ writeScope: { ...selection, scope_id: "arbitrary-group" } }), /Invalid/);
-  assert.throws(() => config({ writeWorldId: "other", writeScope: selection }), /disagree/);
   assert.throws(() => config({ graphAliases: { directory: "/tmp/project" } }), /explicit/);
   assert.throws(() => config({ projectCaptured: "yes" }), /boolean/);
 });
@@ -79,7 +78,7 @@ test("same-authority private exposure cannot be cleared by branching or compacti
   assert.equal(expose(state, ["authority"], [scopeExposure("authority", { ...selection, scope_id: siblingId })]), true);
   assert.equal(state.captureEnabled, false);
   const clean = { ...structuredClone(state), exposedScopes: [], captureEnabled: true };
-  const restored = restoreState([], [{ type: "custom", customType: EXPOSURE_TYPE, data: { exposedScopes: state.exposedScopes } }], clean);
+  const restored = restoreState([], [{ type: "custom", customType: EXPOSURE_TYPE, data: { exposedAuthorities: [], exposedScopes: state.exposedScopes } }], clean);
   assert.equal(restored.captureEnabled, false);
   assert(restored.exposedScopes.some(key => key.includes(siblingId)));
 });
@@ -92,7 +91,7 @@ test("graph aliases never derive authority from cwd or accept unbound global fal
   assert.deepEqual(graphSelections({ project: selection, global: selection }, "both"), [selection]);
 });
 
-test("graph compatibility searches entities and facts but writes only the explicitly selected private scope", async () => {
+test("native graph searches entities and facts but writes only the explicitly selected private scope", async () => {
   let captured;
   const client = {
     scope: async () => privateScope,

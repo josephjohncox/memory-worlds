@@ -179,7 +179,7 @@ Kubernetes API token automount disabled. Validate your identity webhook's
 projected token requirements on the target cluster.
 
 This configures an external backend; it provisions no AWS resources. Live AWS
-ingestion and recovery remain unverified. Review the compatibility and isolation
+ingestion and recovery remain unverified. Review backend support and isolation
 limits in [deployments.md](deployments.md#aws-neptune-evaluation-lane).
 
 ## Upgrade, uninstall, and recovery

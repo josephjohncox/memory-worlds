@@ -1,8 +1,11 @@
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized, Unavailable
 from memory_worlds.errors import MemoryError as InvalidRequest
@@ -78,6 +81,40 @@ def test_parallel_capture_and_retries_lose_no_sources(setup):
         assert len({r.episode.digest for r in retries}) == 1
     with pytest.raises(Conflict):
         store.capture(first, world.id, episode("1", metadata={"changed": True}))
+
+
+def test_journal_canonicalizes_default_scope_and_hashes_complete_input(setup):
+    store, world, owner = setup
+    source = episode()
+    captured = store.capture(owner, world.id, source)
+    assert captured.episode.scope_id == world.scope_id
+    canonical = source.model_copy(update={"scope_id": world.scope_id}).model_dump(mode="json")
+    encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    assert captured.episode.digest == hashlib.sha256(encoded.encode()).hexdigest()
+    with store._world_db(world.id) as db:
+        assert db.execute("SELECT payload FROM episodes").fetchone()[0] == encoded
+    restarted = MemoryStore(store.data_dir)
+    replay = restarted.capture(
+        owner, world.id, source.model_copy(update={"scope_id": world.scope_id})
+    )
+    assert replay.replayed and replay.episode == captured.episode
+    snapshot = restarted.snapshot(owner, world.id)
+    assert snapshot["world"]["scope_id"] == snapshot["scope"]["id"] == str(world.scope_id)
+    assert snapshot["episodes"][0]["scope_id"] == str(world.scope_id)
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_current_world_and_episode_outputs_require_scope_uuid(setup, missing):
+    store, world, owner = setup
+    record = store.capture(owner, world.id, episode()).episode
+    for model in (world, record):
+        payload = model.model_dump(mode="json")
+        if missing:
+            payload.pop("scope_id")
+        else:
+            payload["scope_id"] = None
+        with pytest.raises(ValidationError):
+            type(model).model_validate(payload)
 
 
 def test_private_owner_and_complete_search_authorization(setup):

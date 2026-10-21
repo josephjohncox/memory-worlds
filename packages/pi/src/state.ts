@@ -9,21 +9,25 @@ export const EXPOSURE_TYPE = "memory-worlds:exposure:v1";
 export const RECEIPT_TYPE = "memory-worlds:receipt:v1";
 export const CONTEXT_TYPE = "memory-worlds:context:v1";
 export interface MemoryState {
-  version: 1; agentUuid?: string; boundContext?: AgentContext; captureBinding?: SpoolBinding; readWorldIds: string[]; readMountIds: string[]; writeWorldId?: string;
+  version: 1; agentUuid: string; boundContext?: AgentContext; captureBinding?: SpoolBinding; readMountIds: string[];
   captureEnabled: boolean; captureAfterId: string | null; captureAuthority?: string;
-  exposedAuthorities: string[]; readScopes?: ScopeSelection[]; writeScope?: ScopeSelection;
-  exposedScopes?: string[]; captureScopeKey?: string; captureSafeScopeKeys?: string[]; captureTargetScope?: ScopeSelection; captureFlowReadScopes?: ScopeSelection[]; graphAliases?: { project?: ScopeSelection; global?: ScopeSelection }; graphSelection?: "project" | "global" | "both";
+  exposedAuthorities: string[]; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
+  exposedScopes: string[]; captureScopeKey?: string; captureSafeScopeKeys?: string[]; captureTargetScope?: ScopeSelection; captureFlowReadScopes?: ScopeSelection[]; graphAliases?: { project?: ScopeSelection; global?: ScopeSelection }; graphSelection?: "project" | "global" | "both";
 }
 function strings(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  if (!Array.isArray(value) || value.some(item => typeof item !== "string")) throw new Error("Invalid Memory Worlds session exposure");
+  return value as string[];
 }
-function selection(value: unknown): ScopeSelection | undefined { try { return value ? scopeSelection(value) : undefined; } catch { return undefined; } }
-function selections(value: unknown): ScopeSelection[] { return Array.isArray(value) ? value.map(selection).filter((item): item is ScopeSelection => Boolean(item)) : []; }
+function selection(value: unknown): ScopeSelection | undefined { return value === undefined ? undefined : scopeSelection(value); }
+function selections(value: unknown): ScopeSelection[] {
+  if (!Array.isArray(value)) throw new Error("Invalid Memory Worlds session scope selection");
+  return value.map(scopeSelection);
+}
 export function scopeExposure(authority: string, selected: ScopeSelection): string { return `${authority}/${scopeKey(selected)}`; }
 export function initialState(config: MemoryConfig, leaf: string | null): MemoryState {
   return {
-    version: 1, agentUuid: randomUUID(), readWorldIds: [...config.readWorldIds], readMountIds: [...config.readMountIds],
-    writeWorldId: config.writeWorldId, captureEnabled: config.automaticCapture,
+    version: 1, agentUuid: randomUUID(), readMountIds: [...config.readMountIds],
+    captureEnabled: config.automaticCapture,
     captureAfterId: leaf, exposedAuthorities: [], readScopes: [...config.readScopes], writeScope: config.writeScope,
     exposedScopes: [], graphAliases: structuredClone(config.graphAliases),
   };
@@ -34,16 +38,16 @@ export function restoreState(branch: SessionEntry[], all: SessionEntry[], fallba
   for (const entry of branch) {
     if (entry.type === "custom" && entry.customType === STATE_TYPE && entry.data && typeof entry.data === "object") {
       const saved = entry.data as Partial<MemoryState>;
-      if (saved.version !== 1) continue;
+      if (saved.version !== 1 || typeof saved.captureEnabled !== "boolean" || (saved.captureAfterId !== null && typeof saved.captureAfterId !== "string") || !Array.isArray(saved.readScopes) || !Array.isArray(saved.readMountIds) || !Array.isArray(saved.exposedAuthorities) || !Array.isArray(saved.exposedScopes)) throw new Error("Invalid Memory Worlds session state");
+      const agentUuid = scopeSelection({ world_id: "agent", scope_id: saved.agentUuid }).scope_id;
       state = {
-        version: 1, agentUuid: typeof saved.agentUuid === "string" ? saved.agentUuid : state.agentUuid, boundContext: saved.boundContext, captureBinding: saved.captureBinding, readWorldIds: strings(saved.readWorldIds), readMountIds: strings(saved.readMountIds),
-        writeWorldId: typeof saved.writeWorldId === "string" ? saved.writeWorldId : undefined,
+        version: 1, agentUuid, boundContext: saved.boundContext, captureBinding: saved.captureBinding, readMountIds: strings(saved.readMountIds),
         captureEnabled: saved.captureEnabled === true,
         captureAfterId: typeof saved.captureAfterId === "string" ? saved.captureAfterId : null,
         captureAuthority: typeof saved.captureAuthority === "string" ? saved.captureAuthority : undefined,
         exposedAuthorities: strings(saved.exposedAuthorities), readScopes: selections(saved.readScopes),
         writeScope: selection(saved.writeScope), exposedScopes: strings(saved.exposedScopes),
-        captureScopeKey: typeof saved.captureScopeKey === "string" ? saved.captureScopeKey : undefined, captureSafeScopeKeys: strings(saved.captureSafeScopeKeys), captureTargetScope: selection(saved.captureTargetScope), captureFlowReadScopes: selections(saved.captureFlowReadScopes),
+        captureScopeKey: typeof saved.captureScopeKey === "string" ? saved.captureScopeKey : undefined, captureSafeScopeKeys: saved.captureSafeScopeKeys === undefined ? undefined : strings(saved.captureSafeScopeKeys), captureTargetScope: selection(saved.captureTargetScope), captureFlowReadScopes: saved.captureFlowReadScopes === undefined ? undefined : selections(saved.captureFlowReadScopes),
         graphSelection: ["project", "global", "both"].includes(String(saved.graphSelection)) ? saved.graphSelection : undefined,
         graphAliases: saved.graphAliases && { project: selection(saved.graphAliases.project), global: selection(saved.graphAliases.global) },
       };
@@ -91,7 +95,7 @@ export function entryEpisode(sessionId: string, entry: SessionEntry): EpisodeInp
   };
 }
 export function provenance(hit: SearchHit): string {
-  return `[${hit.mount_id ?? "local"}/${hit.authority_id}/${hit.world_id}${hit.scope_id ? `/${hit.scope_id}` : ""} ${hit.record_type} ${hit.id ?? hit.fact_id ?? hit.source_id ?? "unknown"}]`;
+  return `[${hit.mount_id ?? "local"}/${hit.authority_id}/${hit.world_id}/${hit.scope_id} ${hit.record_type} ${hit.id ?? hit.fact_id ?? hit.entity_id ?? hit.source_id ?? "unknown"}]`;
 }
 export function cleanTerminal(value: string): string {
   // Strip terminal escape/control sequences from untrusted source content and labels.

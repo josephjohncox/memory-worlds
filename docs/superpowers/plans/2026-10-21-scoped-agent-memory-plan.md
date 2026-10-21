@@ -2,9 +2,9 @@
 
 The owner approved the architecture in the scoped-agent-memory design.
 
-1. Record the upstream Pi Graphiti release, API, license, and compatibility matrix.
+1. Record the upstream Pi Graphiti release, API, license, and feature matrix.
 2. Add scope/run/invocation/context models, isolated scope journals, and UUID
-   identity. Preserve world-shared legacy calls and replay identities.
+   identity. Use canonical scope UUIDs for all source and graph namespaces.
 3. Add scope authorization, attenuated delegation, live ancestor revocation and
    expiry, scoped operations, explicit publication, and adversarial API tests.
 4. Partition Graphiti projection, extraction context, provenance, recovery, and
@@ -12,7 +12,7 @@ The owner approved the architecture in the scoped-agent-memory design.
    FalkorDB/Graphiti fixture.
 5. Extend Python, MCP, CLI, router, export/restore, and native Pi clients. Bind
    native agent contexts and preserve exposure through lifecycle events.
-6. Implement and test the bounded Pi Graphiti compatibility surface; document
+6. Implement and test the native Pi graph feature set; document
    feature differences explicitly.
 7. Run independent authorization and graph-boundary review, then required
    Python/Pi/Helm/Kubernetes and packaging checks. Update the checked API schema,

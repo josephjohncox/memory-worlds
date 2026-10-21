@@ -112,7 +112,7 @@ the CLI creates it with mode 0600 and omits the bearer token from stdout.
 publication also accept `--context` for bound invocation attribution.
 
 World-only requests select world-shared memory exclusively. A private scope
-never appears in a legacy whole-world search, episode list, or export. An
+never appears in a world-shared search, episode list, or export. An
 unauthorized selection rejects the complete request before any backend query.
 Restricted children cannot recover shared access by omitting the scope UUID.
 
@@ -146,13 +146,12 @@ private and shared input during ingestion. Retrieval combines only authorized
 projections and retains scope provenance. Graph search supports entities and
 relationship facts.
 
-The existing world graph remains the world-shared namespace during upgrade.
-It contains only legacy world-shared evidence. New audiences receive independent
-namespaces. Unknown writes degrade the affected scope rather than siblings;
+Every scope uses the same namespace derivation, including world-shared memory.
+Unknown writes degrade the affected scope rather than siblings;
 rebuilds also target one scope. Scratch may remain source-only. `--project` or
 the native graph tool explicitly requests graph processing.
 
-## Native Pi and compatibility
+## Native Pi graph tools
 
 The native extension supports selected read scopes, a private write scope,
 project/global aliases, and invocation attribution. Its exported orchestrator
@@ -162,7 +161,7 @@ compaction. Automatic capture stops when its destination audience is broader
 than context already seen; explicit user publication remains separate.
 
 See the [native package](../packages/pi/README.md) for commands and SDK exports,
-and the [Pi Graphiti comparison](pi-graphiti-compatibility.md) for supported
+and the [Pi Graphiti comparison](pi-graphiti-features.md) for supported
 upstream actions and intentional differences.
 
 ## Persistence and archives
@@ -173,8 +172,8 @@ and journals remain on the API data volume. No pod or PVC per agent is required.
 Pod replacement retains scope identities, delegations, and source records.
 
 `export WORLD_ID FILE.mworld --scope SCOPE_UUID` produces a version 2 archive
-with that scope's source, audit, and audience metadata. Version 1 archives remain
-readable. Private archives require explicit compatible private restore targets;
+with that scope's source, audit, and audience metadata. This is the single
+supported archive format. Private archives require explicit private restore targets;
 they cannot silently become world-shared. Restore rebinds the destination scope,
 retains original provenance, and restores neither credentials nor live context
 bindings. Rebuild graphs separately.

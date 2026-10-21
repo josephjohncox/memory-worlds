@@ -200,7 +200,19 @@ def test_archive_export_requires_world_access(authority, tmp_path):
     assert not (tmp_path / "forbidden.mworld").exists()
 
 
-@pytest.mark.parametrize("damage", ["checksum", "count", "path", "version", "unknown_field"])
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "checksum",
+        "count",
+        "path",
+        "version",
+        "scope_identity",
+        "scope_selection",
+        "audit_count",
+        "unknown_field",
+    ],
+)
 def test_corrupt_archive_rejected_before_writes(authority, tmp_path, damage):
     store, principal, world = authority
     store.capture(principal, world.id, _input())
@@ -216,6 +228,12 @@ def test_corrupt_archive_rejected_before_writes(authority, tmp_path, damage):
             entries["../../escaped"] = b"must never be extracted"
         elif damage == "version":
             manifest["version"] = 99
+        elif damage == "scope_identity":
+            manifest.pop("scope")
+        elif damage == "scope_selection":
+            manifest["world"]["scope_id"] = "00000000-0000-4000-8000-000000000001"
+        elif damage == "audit_count":
+            manifest.pop("audit_count")
         else:
             manifest["grants"] = {"bob": "manager"}
         entries["manifest.json"] = json.dumps(manifest).encode()
@@ -245,6 +263,27 @@ def test_archive_rejects_malformed_final_record_before_importing_first(authority
     with pytest.raises(PortabilityError, match="Invalid archived episode 2"):
         restore_world(target, importer, target_world.id, destination)
     assert target.list_episodes(importer, target_world.id) == []
+
+
+def test_archive_rejects_inconsistent_source_digest_before_restore_writes(authority, tmp_path):
+    store, principal, world = authority
+    store.capture(principal, world.id, _input())
+    destination = export_world(store, principal, world.id, tmp_path / "inconsistent.mworld")
+
+    def mutate(entries):
+        record = json.loads(entries["episodes.jsonl"])
+        record["digest"] = "0" * 64
+        entries["episodes.jsonl"] = (json.dumps(record) + "\n").encode()
+        manifest = json.loads(entries["manifest.json"])
+        manifest["episodes_sha256"] = hashlib.sha256(entries["episodes.jsonl"]).hexdigest()
+        entries["manifest.json"] = json.dumps(manifest).encode()
+
+    _rewrite_archive(destination, mutate)
+    target, importer, target_world = _target(tmp_path)
+    with pytest.raises(PortabilityError, match="source digest mismatch"):
+        restore_world(target, importer, target_world.id, destination)
+    snapshot = target.snapshot(importer, target_world.id)
+    assert snapshot["episodes"] == [] and snapshot["audit"] == []
 
 
 def test_restore_conflict_rolls_back_earlier_records(authority, tmp_path):

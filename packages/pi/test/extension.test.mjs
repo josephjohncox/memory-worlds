@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registerMemoryWorlds } from "../dist/extension.js";
+import { registerMemoryWorlds } from "memory-worlds-pi";
 import { parseConfig } from "../dist/config.js";
-import { CONTEXT_TYPE, entryEpisode, expose, EXPOSURE_TYPE, memoryContext, RECEIPT_TYPE, restoreState, STATE_TYPE } from "../dist/state.js";
+import { CONTEXT_TYPE, entryEpisode, expose, initialState, EXPOSURE_TYPE, memoryContext, RECEIPT_TYPE, restoreState, STATE_TYPE } from "../dist/state.js";
 
 const rootScope = "00000000-0000-4000-8000-000000000001", privateScope = "00000000-0000-4000-8000-000000000002", siblingScope = "00000000-0000-4000-8000-000000000003";
 const world = { scope_id: rootScope, id: "private", name: "Private", authority_id: "a", kind: "personal", owner_id: "alice" };
@@ -39,14 +39,13 @@ function fixture(configOverrides = {}, dependencies = {}) {
     scope: async selected => ({ ...selected, id: selected.scope_id, kind: "invocation-private", name: "Child" }),
     scopes: async () => [],
     captureScope: async (selected, input) => { captures.push({ worldId: selected.world_id, scopeId: selected.scope_id, input }); return { episode: { ...selected, id: "scoped-receipt" }, replayed: false }; },
-    searchScopes: async () => ({ results: [], failures: [], complete: true }),
+    searchScopes: async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: privateScope, record_type: "source", content: "bearing" }], failures: [], complete: true }),
+    searchMounts: async () => ({ results: [], failures: [], complete: true }),
     publishScope: async (selected, input) => { publications.push({ selected, input }); return { episode: { ...selected, id: "published" }, replayed: false }; },
     worlds: async () => [world, { ...world, id: "shared", kind: "team" }], mounts: async () => [{ id: "team", name: "Team", world_ids: ["shared"] }], deliveries: async () => [],
-    capture: async (worldId, input) => { captures.push({ worldId, input }); return { episode: { id: "receipt" }, replayed: captures.length > 1 }; },
-    search: async () => ({ results: [{ authority_id: "a", world_id: "private", record_type: "source", content: "bearing" }], failures: [], complete: true }),
     publish: async input => { publications.push(input); return { id: "delivery", state: "pending" }; },
   };
-  const config = parseConfig({ writeWorldId: "private", readWorldIds: ["private"], ...configOverrides }, {});
+  const config = parseConfig({ writeScope: { world_id: "private", scope_id: privateScope }, readScopes: [{ world_id: "private", scope_id: privateScope }], ...configOverrides }, {});
   registerMemoryWorlds(pi, { config: async () => config, client: () => client, ...dependencies });
   return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
 }
@@ -75,8 +74,9 @@ test("automatic capture is private, future-only, branch-preserving and idempoten
   assert.equal(f.captures[0].input.occurred_at, timestamp);
   assert.equal(f.captures[1].input.parent_entry_id, "new");
   assert.equal(f.entries.filter(entry => entry.customType === RECEIPT_TYPE).length, 2);
-  await f.command("target shared");
-  assert(f.notices.some(notice => /personal or private-work/.test(notice.text)));
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: "world-shared" });
+  await f.command(`target shared ${rootScope}`);
+  assert(f.notices.some(notice => /agent-persistent or invocation-private/.test(notice.text)));
 });
 
 test("failed capture retries the exact durable source identity", async () => {
@@ -84,7 +84,7 @@ test("failed capture retries the exact durable source identity", async () => {
   await f.run("session_start", { reason: "startup" });
   f.entries.push(message("new", f.entries.at(-1).id, "evidence"));
   const attempts = [];
-  f.client.capture = async (worldId, input) => { attempts.push(structuredClone(input)); if (attempts.length === 1) throw new Error("offline"); return { episode: { id: "receipt" }, replayed: true }; };
+  f.client.captureScope = async (worldId, input) => { attempts.push(structuredClone(input)); if (attempts.length === 1) throw new Error("offline"); return { episode: { id: "receipt" }, replayed: true }; };
   await f.run("agent_end"); await f.run("agent_end");
   assert.equal(attempts.length, 2);
   assert.deepEqual(attempts[0], attempts[1]);
@@ -94,7 +94,7 @@ test("cross-authority retrieval disables capture before a turn completes and can
   const f = fixture({ automaticCapture: true, retrieval: { enabled: true } });
   await f.run("session_start", { reason: "startup" });
   const cleanBranch = [...f.entries];
-  f.client.search = async () => ({ results: [{ authority_id: "b", world_id: "team", record_type: "fact", fact: "work fact" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "b", world_id: "team", scope_id: siblingScope, record_type: "fact", fact: "work fact" }], failures: [], complete: true });
   const context = await f.run("before_agent_start", { messageType: "user", prompt: "work fact" });
   assert.match(context.message.content, /untrusted data/);
   assert.equal(context.message.customType, CONTEXT_TYPE);
@@ -125,7 +125,7 @@ test("forking an old clean entry inherits authority exposure from the complete p
     const path = join(dir, "parent.jsonl");
     await writeFile(path, [
       JSON.stringify({ type: "session", id: "parent" }),
-      JSON.stringify({ type: "custom", customType: EXPOSURE_TYPE, data: { exposedAuthorities: ["a", "b"] } }),
+      JSON.stringify({ type: "custom", customType: EXPOSURE_TYPE, data: { exposedAuthorities: ["a", "b"], exposedScopes: [] } }),
     ].join("\n"));
     const f = fixture({ automaticCapture: true });
     await f.run("session_start", { reason: "fork", previousSessionFile: path });
@@ -148,7 +148,7 @@ test("an in-memory fork preserves foreign exposure and cannot clear unknown expo
   const f = fixture({ automaticCapture: true, retrieval: { enabled: true } });
   await f.run("session_start", { reason: "startup" });
   const cleanAncestors = structuredClone(f.entries);
-  f.client.search = async () => ({ results: [{ authority_id: "b", world_id: "team", record_type: "fact", fact: "work fact" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "b", world_id: "team", scope_id: siblingScope, record_type: "fact", fact: "work fact" }], failures: [], complete: true });
   await f.run("before_agent_start", { messageType: "user", prompt: "work fact" });
   assert.match(f.widgets.get("memory-worlds"), /capture off.*mixed authorities/);
 
@@ -178,7 +178,7 @@ test("a clean fork captures future entries without re-ingesting copied ancestors
     const path = join(dir, "parent.jsonl");
     await writeFile(path, JSON.stringify({ type: "session", id: "parent" }) + "\n");
     const f = fixture({ automaticCapture: true });
-    f.entries.push({ type: "custom", id: "consent", customType: STATE_TYPE, data: { version: 1, readWorldIds: ["private"], readMountIds: [], writeWorldId: "private", captureEnabled: true, captureAfterId: null, captureAuthority: "a", exposedAuthorities: ["a"] } });
+    f.entries.push({ type: "custom", id: "consent", customType: STATE_TYPE, data: { ...initialState(parseConfig({ writeScope: { world_id: "private", scope_id: privateScope }, readScopes: [{ world_id: "private", scope_id: privateScope }] }, {}), null), captureEnabled: true, captureAuthority: "a", exposedAuthorities: ["a"] } });
     f.entries.push(message("ancestor", "consent", "already present in the parent"));
     await f.run("session_start", { reason: "fork", previousSessionFile: path });
     await f.run("agent_end");
@@ -213,7 +213,7 @@ test("repeating publication after a lost acknowledgment reuses its immutable req
 test("session shutdown aborts in-flight retrieval and clears UI", async () => {
   const f = fixture({ retrieval: { enabled: true } }); await f.run("session_start", { reason: "startup" });
   let aborted = false;
-  f.client.search = async (_worlds, _mounts, _query, _mode, _limit, signal) => new Promise((_resolve, reject) => {
+  f.client.searchScopes = async (_scopes, _query, _mode, _limit, signal) => new Promise((_resolve, reject) => {
     signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); });
   });
   const pending = f.run("before_agent_start", { messageType: "user", prompt: "question" });
@@ -224,8 +224,8 @@ test("session shutdown aborts in-flight retrieval and clears UI", async () => {
 });
 
 test("state restoration unions exposure outside the active branch and source IDs preserve entry parentage", () => {
-  const fallback = { version: 1, readWorldIds: [], readMountIds: [], captureEnabled: true, captureAfterId: null, captureAuthority: "a", exposedAuthorities: ["a"] };
-  const all = [{ type: "custom", id: "x", customType: EXPOSURE_TYPE, data: { exposedAuthorities: ["a", "b"] } }];
+  const fallback = { ...initialState(parseConfig({}, {}), null), captureEnabled: true, captureAuthority: "a", exposedAuthorities: ["a"] };
+  const all = [{ type: "custom", id: "x", customType: EXPOSURE_TYPE, data: { exposedAuthorities: ["a", "b"], exposedScopes: [] } }];
   const restored = restoreState([], all, fallback);
   assert.equal(restored.captureEnabled, false);
   assert.deepEqual(restored.exposedAuthorities, ["a", "b"]);
@@ -236,16 +236,16 @@ test("state restoration unions exposure outside the active branch and source IDs
 });
 
 test("retrieval bounds evidence and strips terminal control sequences", () => {
-  const result = { results: [{ authority_id: "a", world_id: "w", record_type: "source", id: "e", content: "\x1b[2J" + "x".repeat(5000) }], failures: [], complete: false };
+  const result = { results: [{ authority_id: "a", world_id: "w", scope_id: rootScope, record_type: "source", id: "e", content: "\x1b[2J" + "x".repeat(5000) }], failures: [], complete: false };
   const context = memoryContext(result, 512);
   assert(context.length <= 512);
   assert(!context.includes("\x1b"));
-  assert.match(context, /local\/a\/w source e/);
+  assert.match(context, /local\/a\/w\/00000000-0000-4000-8000-000000000001 source e/);
 });
 
 
 test("private invocation capture can live inside a team world without enabling shared transcript capture", async () => {
-  const f = fixture({ writeWorldId: undefined, writeScope: { world_id: "shared", scope_id: privateScope }, automaticCapture: true });
+  const f = fixture({ writeScope: { world_id: "shared", scope_id: privateScope }, automaticCapture: true });
   await f.run("session_start", { reason: "startup" });
   f.entries.push(message("private-work", f.entries.at(-1).id, "private child note"));
   await f.run("agent_end");
@@ -260,7 +260,7 @@ test("same-authority sibling-private retrieval stops automatic capture through b
   const f = fixture({ writeScope: { world_id: "private", scope_id: privateScope }, automaticCapture: true, retrieval: { enabled: true } });
   await f.run("session_start", { reason: "startup" });
   const clean = [...f.entries];
-  f.client.search = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "sibling scratch" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "sibling scratch" }], failures: [], complete: true });
   await f.run("before_agent_start", { messageType: "user", prompt: "scratch", systemPrompt: "Original" });
   assert.match(f.widgets.get("memory-worlds"), /capture off.*private scope exposure/);
   f.setBranch(clean); await f.run("session_tree"); await f.run("session_compact"); await f.command("capture on");
@@ -272,7 +272,7 @@ test("same-authority sibling-private retrieval stops automatic capture through b
 test("reading the same world's shared scope keeps a narrower private capture target enabled", async () => {
   const f = fixture({ writeScope: { world_id: "private", scope_id: privateScope }, automaticCapture: true, retrieval: { enabled: true } });
   await f.run("session_start", { reason: "startup" });
-  f.client.search = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: rootScope, record_type: "source", content: "world shared finding" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: rootScope, record_type: "source", content: "world shared finding" }], failures: [], complete: true });
   const result = await f.run("before_agent_start", { messageType: "user", prompt: "finding", systemPrompt: "Original" });
   assert.match(result.systemPrompt, /Original/); assert.match(result.systemPrompt, /scope boundaries/);
   f.entries.push(message("private-summary", f.entries.at(-1).id, "narrow private followup"));
@@ -299,7 +299,7 @@ test("scoped selected publication retries exactly and does not enable automatic 
   assert.match(f.widgets.get("memory-worlds"), /capture off/);
 });
 
-test("graph compatibility tool records private projected memory and exposes no publication tool", async () => {
+test("native graph tool records private projected memory and exposes no publication tool", async () => {
   const selected = { world_id: "private", scope_id: privateScope };
   const f = fixture({ writeScope: selected, graphAliases: { project: selected } });
   await f.run("session_start", { reason: "startup" });
@@ -322,10 +322,10 @@ test("forks create a new context invocation while retaining stable agent UUID an
   assert.notEqual(first.boundContext.invocation_id, fork.boundContext.invocation_id);
 });
 
-test("legacy source hits from another private world stop same-authority automatic capture", async () => {
+test("scoped source hits from another private world stop same-authority automatic capture", async () => {
   const f = fixture({ automaticCapture: true, retrieval: { enabled: true } });
   await f.run("session_start", { reason: "startup" });
-  f.client.search = async () => ({ results: [{ authority_id: "a", world_id: "other-private", record_type: "source", content: "other context" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "a", world_id: "other-private", scope_id: siblingScope, record_type: "source", content: "other context" }], failures: [], complete: true });
   await f.run("before_agent_start", { messageType: "user", prompt: "other context" });
   assert.match(f.widgets.get("memory-worlds"), /capture off.*private scope exposure/);
 });
@@ -334,7 +334,7 @@ test("scoped read selection changes bind a new immutable context", async () => {
   const f = fixture({ writeScope: { world_id: "private", scope_id: privateScope } });
   await f.run("session_start", { reason: "startup" });
   const first = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data.boundContext;
-  await f.command(`scope-read private ${siblingScope}`);
+  await f.command(`read private ${siblingScope}`);
   const changed = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data.boundContext;
   assert.notEqual(first.id, changed.id);
   assert(changed.read_scopes.some(scope => scope.scope_id === siblingScope));
@@ -350,7 +350,7 @@ test("configured filesystem spool makes shutdown local and survives reopening wi
     f.client.identity = async () => assert.fail("shutdown must not contact the daemon");
     f.client.captureScope = async () => assert.fail("shutdown must only enqueue");
     await f.run("session_shutdown", { reason: "quit" });
-    const { MemorySpool } = await import("../dist/spool.js");
+    const { MemorySpool } = await import("memory-worlds-pi/spool");
     assert.equal((await new MemorySpool(options.spoolDirectory).status()).pending, 1);
     const reopened = fixture(options); reopened.entries.push(...structuredClone(f.entries));
     const captures = [];
@@ -369,7 +369,7 @@ test("graph command retries retain their original context after read selection r
   await f.run("session_start", { reason: "startup" });
   await f.commands.get("graph").handler("add Stable selected claim", f.ctx);
   const first = structuredClone(f.captures[0].input);
-  await f.command(`scope-read private ${siblingScope}`);
+  await f.command(`read private ${siblingScope}`);
   await f.commands.get("graph").handler("add Stable selected claim", f.ctx);
   assert.equal(f.captures.length, 2); assert.deepEqual(f.captures[1].input, first);
 });
@@ -381,7 +381,7 @@ test("a proven run-shared audience can feed automatic invocation-private capture
   const flowChecks = [];
   f.client.canFlow = async (reads, target) => { flowChecks.push({ reads, target }); return true; };
   await f.run("session_start", { reason: "startup" });
-  f.client.search = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "run-shared brief" }], failures: [], complete: true });
+  f.client.searchScopes = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "run-shared brief" }], failures: [], complete: true });
   await f.run("before_agent_start", { messageType: "user", prompt: "brief" });
   f.entries.push(message("private-working-note", f.entries.at(-1).id, "private analysis after reading shared brief"));
   await f.run("agent_end");
@@ -433,14 +433,14 @@ test("an offline source keeps its original flow guard when later safe reads broa
     f.entries.push(message("before-later-read", f.entries.at(-1).id, "first private note"));
     f.client.captureScope = async () => { throw new Error("lost acknowledgment"); };
     await f.run("agent_end");
-    f.client.search = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "safe run brief" }], failures: [], complete: true });
+    f.client.searchScopes = async () => ({ results: [{ authority_id: "a", world_id: "private", scope_id: siblingScope, record_type: "source", content: "safe run brief" }], failures: [], complete: true });
     await f.run("before_agent_start", { messageType: "user", prompt: "brief" });
     f.entries.push(message("after-later-read", f.entries.at(-1).id, "second private note"));
     const delivered = [];
     f.client.captureScope = async (target, input) => { delivered.push(input); return { episode: { ...input, ...target, id: randomUUID() }, replayed: true }; };
     await f.run("agent_end");
     assert.equal(delivered.length, 2);
-    const { MemorySpool } = await import("../dist/spool.js");
+    const { MemorySpool } = await import("memory-worlds-pi/spool");
     assert.equal((await new MemorySpool(join(folder, "queue")).status()).pending, 0);
   } finally { await rm(folder, { recursive: true, force: true }); }
 });
@@ -454,4 +454,12 @@ test("a delegated Pi session binds the server's fixed agent UUID instead of inve
   await f.run("session_start", { reason: "startup" });
   const state = f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data;
   assert.equal(state.agentUuid, fixedAgent); assert.equal(state.boundContext.invocation_id, siblingScope);
+});
+
+
+test("malformed current session scope bindings fail closed", () => {
+  const fallback = initialState(parseConfig({}, {}), null);
+  const malformed = { ...fallback, captureEnabled: true, readScopes: [{ world_id: "private", scope_id: "invalid" }] };
+  const entry = { type: "custom", customType: STATE_TYPE, data: malformed };
+  assert.throws(() => restoreState([entry], [entry], fallback), /Invalid scope/);
 });

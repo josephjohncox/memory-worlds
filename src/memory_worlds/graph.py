@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from .errors import Unavailable
 from .models import Episode, World
-from .scopes import world_shared_scope_id
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -170,13 +169,7 @@ class GraphConfig:
 
 def graph_namespace(world: World, generation: str) -> str:
     """Never pass user-controlled names or path-shaped values to a graph driver."""
-    # The legacy namespace already contains world-shared evidence exclusively.
-    # Preserve it so upgrades do not strand an existing projection. New private
-    # audiences always get a different database/group, including during extraction.
-    parts = [world.authority_id, world.id]
-    if world.scope_id is not None:
-        parts.append(str(world.scope_id))
-    identity = "\0".join((*parts, generation))
+    identity = "\0".join((world.authority_id, world.id, str(world.scope_id), generation))
     return "mw_" + hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -451,11 +444,7 @@ class GraphitiAdapter:
         provenance = {
             "world_id": world.id,
             "authority_id": world.authority_id,
-            "scope_id": (
-                str(world.scope_id)
-                if world.scope_id is not None
-                else world_shared_scope_id(world.authority_id, world.id)
-            ),
+            "scope_id": str(world.scope_id),
             "generation": generation,
             "projection_status": "ready",
             "claim_status": "derived-unreviewed",
@@ -522,12 +511,12 @@ class ProjectionWorker:
 
     @staticmethod
     def _scope(world: World) -> dict:
-        return {"scope_id": world.scope_id} if world.scope_id is not None else {}
+        return {"scope_id": world.scope_id}
 
     def _lock(self, world: World) -> asyncio.Lock:
-        return self._locks.setdefault(f"{world.id}:{world.scope_id or 'shared'}", asyncio.Lock())
+        return self._locks.setdefault(f"{world.id}:{world.scope_id}", asyncio.Lock())
 
-    def _world(self, world_id: str, scope_id=None) -> World:
+    def _world(self, world_id: str, scope_id) -> World:
         return next(
             world
             for world in self.store.projection_worlds()
@@ -619,7 +608,7 @@ class ProjectionWorker:
             )
             return {
                 "world_id": world.id,
-                "scope_id": str(world.scope_id) if world.scope_id is not None else None,
+                "scope_id": str(world.scope_id),
                 "generation": generation,
                 "episodes": len(episodes),
                 "source_sequence": max((ep.sequence for ep in episodes), default=0),
@@ -671,11 +660,7 @@ class ProjectionWorker:
                     fact.update(
                         world_id=current.id,
                         authority_id=current.authority_id,
-                        scope_id=(
-                            str(current.scope_id)
-                            if current.scope_id is not None
-                            else world_shared_scope_id(current.authority_id, current.id)
-                        ),
+                        scope_id=str(current.scope_id),
                         generation=current.generation,
                     )
                     graph_ids = fact.pop("graph_episode_ids", [])

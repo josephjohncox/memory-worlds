@@ -176,25 +176,17 @@ class Client:
         scope_id: UUID | str | None = None,
     ) -> Receipt:
         if scope_id is None and isinstance(request, ScopedPublication):
-            if request.source_scope is not None or request.source_episode_id is not None:
-                raise ValueError("linked publication requires an explicit destination scope")
-            request = Publication.model_validate(
-                request.model_dump(exclude={"source_scope", "source_episode_id"})
-            )
+            raise ValueError("scoped publication requires an explicit destination scope")
         return Receipt.model_validate(
             self.request(
                 "POST",
                 f"{scope_path(world_id, scope_id)}/publications",
-                json=request.model_dump(mode="json", exclude_none=True),
+                json=request.model_dump(mode="json"),
             )
         )
 
     def search(self, request: SearchRequest) -> dict:
-        payload = request.model_dump(mode="json")
-        for name in ("scope_id", "scopes", "include_entities"):
-            if not payload[name]:
-                payload.pop(name)
-        return self.request("POST", "/v1/search", json=payload)
+        return self.request("POST", "/v1/search", json=request.model_dump(mode="json"))
 
     def status(self, world_id: str, *, scope_id: UUID | str | None = None) -> dict:
         return self.request("GET", f"{scope_path(world_id, scope_id)}/status")

@@ -4,22 +4,22 @@ import { isAbsolute, join } from "node:path";
 import { scopeSelection, serviceURL, type ScopeSelection } from "./client.js";
 
 export interface MemoryConfig {
-  url: string; tokenFile: string; readWorldIds: string[]; readMountIds: string[];
-  writeWorldId?: string; automaticCapture: boolean; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
+  url: string; tokenFile: string; readMountIds: string[];
+  automaticCapture: boolean; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
   graphAliases: { project?: ScopeSelection; global?: ScopeSelection }; projectCaptured: boolean; correctionHints: boolean; reviewCorrections: boolean; spoolDirectory?: string;
   retrieval: { enabled: boolean; mode: "source" | "graph"; limit: number; maxChars: number };
 }
 function ids(value: unknown): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 50 || value.some(item => typeof item !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(item))) {
-    throw new Error("World and mount selections require up to 50 identifiers");
+    throw new Error("Mount selections require up to 20 identifiers");
   }
   return [...new Set(value)];
 }
 export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env, home = homedir()): MemoryConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Memory Worlds config");
   const config = value as Record<string, unknown>;
-  const allowed = ["url", "tokenFile", "readWorldIds", "readMountIds", "writeWorldId", "automaticCapture", "retrieval", "readScopes", "writeScope", "graphAliases", "projectCaptured", "correctionHints", "reviewCorrections", "spoolDirectory"];
+  const allowed = ["url", "tokenFile", "readMountIds", "automaticCapture", "retrieval", "readScopes", "writeScope", "graphAliases", "projectCaptured", "correctionHints", "reviewCorrections", "spoolDirectory"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("Unknown Memory Worlds config key; use tokenFile for credentials");
   const rawTokenFile = env.MEMORY_WORLDS_TOKEN_FILE ?? config.tokenFile ?? join(home, ".config/memory-worlds/pi.token");
   if (typeof rawTokenFile !== "string") throw new Error("tokenFile must be an absolute path");
@@ -27,7 +27,6 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   if (!isAbsolute(tokenFile)) throw new Error("tokenFile must be an absolute path");
   const url = env.MEMORY_WORLDS_URL ?? config.url ?? "http://127.0.0.1:8787";
   if (typeof url !== "string") throw new Error("url must be a string");
-  const writeWorldId = config.writeWorldId === undefined ? undefined : ids([config.writeWorldId])[0];
   const readMountIds = ids(config.readMountIds);
   if (readMountIds.length > 20) throw new Error("At most 20 remote mounts can be selected");
   if (config.automaticCapture !== undefined && typeof config.automaticCapture !== "boolean") throw new Error("automaticCapture must be boolean");
@@ -44,7 +43,6 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   if (config.readScopes !== undefined && (!Array.isArray(config.readScopes) || config.readScopes.length > 50)) throw new Error("readScopes requires up to 50 selections");
   const readScopes = (config.readScopes as unknown[] | undefined ?? []).map(scopeSelection);
   const writeScope = config.writeScope === undefined ? undefined : scopeSelection(config.writeScope);
-  if (writeScope && writeWorldId && writeScope.world_id !== writeWorldId) throw new Error("writeScope and writeWorldId disagree");
   const aliases = config.graphAliases === undefined ? {} : config.graphAliases as Record<string, unknown>;
   if (!aliases || typeof aliases !== "object" || Array.isArray(aliases) || Object.keys(aliases).some(key => !["project", "global"].includes(key))) throw new Error("graphAliases permits explicit project/global scope selections only");
   const graphAliases = { project: aliases.project === undefined ? undefined : scopeSelection(aliases.project), global: aliases.global === undefined ? undefined : scopeSelection(aliases.global) };
@@ -54,9 +52,9 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   const spoolDirectory = config.spoolDirectory === undefined ? undefined : typeof config.spoolDirectory === "string" && config.spoolDirectory.startsWith("~/") ? join(home, config.spoolDirectory.slice(2)) : config.spoolDirectory;
   if (spoolDirectory !== undefined && (typeof spoolDirectory !== "string" || !isAbsolute(spoolDirectory))) throw new Error("spoolDirectory must be an absolute private directory");
   return {
-    url: serviceURL(url), tokenFile, readWorldIds: ids(config.readWorldIds), readMountIds, writeWorldId,
+    url: serviceURL(url), tokenFile, readMountIds,
     readScopes, writeScope, graphAliases, spoolDirectory, reviewCorrections: config.reviewCorrections === true, projectCaptured: config.projectCaptured === true, correctionHints: config.correctionHints !== false,
-    automaticCapture: Boolean((writeWorldId || writeScope) && config.automaticCapture === true),
+    automaticCapture: Boolean(writeScope && config.automaticCapture === true),
     retrieval: { enabled: retrieval.enabled === true, mode: mode as "source" | "graph", limit: Number(limit), maxChars: Number(maxChars) },
   };
 }

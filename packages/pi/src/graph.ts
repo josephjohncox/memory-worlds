@@ -1,6 +1,6 @@
 import { scopeKey, type MemoryWorldsClient, type ScopeSelection, type SearchHit } from "./client.js";
 
-/** pi-graphiti 0.6's graph input shape; aliases are explicit capability bindings. */
+/** Native graph actions; project/global aliases are explicit capability bindings. */
 export interface GraphArguments {
   action: "add" | "search" | "episodes"; content?: string; name?: string;
   source?: "text" | "message" | "json"; query?: string; limit?: number;
@@ -44,8 +44,9 @@ export async function executeGraph(
     };
   }
   if (input.action === "episodes") {
-    const episodes = (await Promise.all(scopes.map(scope => client.episodes(scope, limit, signal)))).flat().slice(0, limit);
-    return { success: true, scope: selected, scopes, records: episodes.map(episode => ({ ...episode, authority_id: "", record_type: "source" })),
+    const [identity, batches] = await Promise.all([client.identity(signal), Promise.all(scopes.map(scope => client.episodes(scope, limit, signal)))]);
+    const episodes = batches.flat().slice(0, limit);
+    return { success: true, scope: selected, scopes, records: episodes.map(episode => ({ ...episode, authority_id: identity.authority_id, record_type: "source" })),
       episodes: episodes.map(episode => episode.content), episodeUuids: episodes.map(episode => ({ label: episode.content.slice(0, 100), uuid: episode.id })),
     };
   }

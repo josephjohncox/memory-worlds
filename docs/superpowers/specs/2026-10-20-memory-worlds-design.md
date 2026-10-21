@@ -29,7 +29,7 @@ Delivery sequence:
    publication, per-destination delivery receipts, and rich Pi integration.
 3. Shared work service with OIDC, per-user work contexts, team/company/ad-hoc
    spaces, and kind/Kubernetes deployment and recovery checks.
-4. Neptune/OpenSearch deployment alternative after backend compatibility and
+4. Neptune/OpenSearch deployment alternative after backend support and
    operating requirements are demonstrated.
 
 Later stages remain part of the requested system. They are not prerequisites

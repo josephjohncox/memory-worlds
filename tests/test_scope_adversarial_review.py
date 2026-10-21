@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from memory_worlds.client import Client
 from memory_worlds.errors import Forbidden, NotFound
 from memory_worlds.models import (
     BindContext,
@@ -26,6 +27,21 @@ from memory_worlds.router import WorldRouter
 from memory_worlds.store import MemoryStore
 
 AT = datetime(2026, 10, 20, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("linked", [False, True])
+def test_scoped_publication_requires_an_explicit_destination(linked):
+    source = ScopeSelection(world_id="private", scope_id="00000000-0000-4000-8000-000000000001")
+    request = ScopedPublication(
+        source_id="result",
+        content="Selected finding",
+        occurred_at=AT,
+        source_scope=source if linked else None,
+        source_episode_id="episode" if linked else None,
+    )
+    with Client("https://memory.invalid", "synthetic-token") as client:
+        with pytest.raises(ValueError, match="explicit destination scope"):
+            client.publish("private", request)
 
 
 @pytest.fixture
@@ -303,7 +319,7 @@ def test_granting_metadata_scope_does_not_override_query_selection(authority):
         )
 
 
-def test_explicit_world_shared_uuid_restore_uses_legacy_journal_identity(authority, tmp_path):
+def test_explicit_world_shared_uuid_restore_uses_same_journal(authority, tmp_path):
     store, world, owner = authority
     original = store.capture(owner, world.id, note())
     archive = export_world(store, owner, world.id, tmp_path / "shared.mworld")
@@ -314,8 +330,8 @@ def test_explicit_world_shared_uuid_restore_uses_legacy_journal_identity(authori
     explicit = store.list_episodes(owner, target.id, scope_id=target_scope.id)
     implicit = store.list_episodes(owner, target.id)
     assert explicit[0].scope_id == target_scope.id
-    assert [item.model_copy(update={"scope_id": None}) for item in explicit] == implicit
-    assert implicit[0].scope_id is None
+    assert explicit == implicit
+    assert implicit[0].scope_id == target_scope.id
     assert explicit[0].content == original.episode.content
     assert (
         restore_world(store, owner, target.id, archive, scope_id=target_scope.id)["replayed"] == 1

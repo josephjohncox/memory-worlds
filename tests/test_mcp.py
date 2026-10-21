@@ -10,6 +10,7 @@ from mcp import Client as MCPClient
 from memory_worlds import mcp as facade
 from memory_worlds.client import Client as HTTPClient
 from memory_worlds.models import Episode, World, WorldKind
+from memory_worlds.scopes import world_shared_scope_id
 
 
 @pytest.fixture
@@ -22,6 +23,7 @@ def backend(monkeypatch):
         kind=WorldKind.PERSONAL,
         owner_id="alice",
         created_at=datetime(2026, 10, 20, tzinfo=UTC),
+        scope_id=world_shared_scope_id("fixture-authority", "private"),
     )
     deny = {"enabled": False}
 
@@ -42,7 +44,7 @@ def backend(monkeypatch):
                 },
             )
         row = Episode(
-            **body,
+            **{**body, "scope_id": world.scope_id},
             id="episode-one",
             world_id="private",
             sequence=1,
@@ -110,6 +112,9 @@ async def test_sdk2_search_passes_explicit_worlds_and_graph_mode(backend):
         "query": "capacity",
         "limit": 3,
         "mode": "graph",
+        "scope_id": None,
+        "scopes": [],
+        "include_entities": False,
     }
 
 
@@ -131,6 +136,7 @@ async def test_sdk2_capture_retries_preserve_identity_and_publication_is_narrow(
     assert requests[0].content == requests[1].content
     assert requests[2].url.path == "/v1/worlds/private/publications"
     assert set(json.loads(requests[2].content)) == {
+        "context_id",
         "source_id",
         "content",
         "occurred_at",

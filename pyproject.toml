@@ -34,6 +34,7 @@ packages = ["src/memory_worlds"]
 
 [tool.hatch.build.targets.sdist]
 include = [
+  "/AGENTS.md",
   "/src", "/tests", "/docs", "/deploy", "/scripts", "/packages/pi/src", "/packages/pi/test",
   "/packages/pi/package.json", "/packages/pi/package-lock.json", "/packages/pi/tsconfig.json",
   "/packages/pi/README.md", "/packages/pi/LICENSE", "/pyproject.toml", "/README.md", "/LICENSE", "/uv.lock",

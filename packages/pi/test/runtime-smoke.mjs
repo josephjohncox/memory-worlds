@@ -14,6 +14,8 @@ const token = "smoke-fixture-agent-token";
 const captured = [];
 const published = [];
 const requests = [];
+const privateScope = "00000000-0000-4000-8000-000000000002", contextId = "00000000-0000-4000-8000-000000000003";
+const selected = { world_id: "private", scope_id: privateScope };
 const world = { scope_id: "00000000-0000-4000-8000-000000000001", id: "private", name: "Private", authority_id: "fixture-authority", kind: "personal", owner_id: "alice", created_at: "2026-10-20T00:00:00Z", projection_state: "disabled" };
 const daemon = createServer(async (request, response) => {
   assert.equal(request.headers.authorization, `Bearer ${token}`);
@@ -22,18 +24,21 @@ const daemon = createServer(async (request, response) => {
   for await (const chunk of request) body += chunk;
   response.setHeader("Content-Type", "application/json");
   if (request.url === "/v1/worlds") response.end(JSON.stringify([world]));
+  else if (request.url === "/v1/me") response.end(JSON.stringify({ credential_id: "fixture", user_id: "alice", agent_id: "pi", authority_id: world.authority_id, worlds: [world] }));
+  else if (request.url === `/v1/worlds/private/scopes/${privateScope}`) response.end(JSON.stringify({ ...selected, id: privateScope, name: "Invocation", kind: "invocation-private", created_at: world.created_at, projection_state: "disabled" }));
+  else if (request.url === "/v1/contexts") response.end(JSON.stringify({ ...JSON.parse(body), id: contextId, credential_id: "fixture", invocation_id: contextId, created_at: world.created_at }));
   else if (request.url === "/v1/router/deliveries") response.end("[]");
   else if (request.url === "/v1/mounts") response.end(JSON.stringify([{ id: "team", name: "Team", url: "https://example.test", authority_id: "team-authority", world_ids: ["shared"], can_publish: true }]));
   else if (request.url === "/v1/scopes/flow") response.end(JSON.stringify({ allowed: true }));
-  else if (request.url === "/v1/search") response.end(JSON.stringify({ mode: "source", worlds: [world], results: [{ world_id: "private", id: "fixture-source", content: "fixture evidence" }] }));
+  else if (request.url === "/v1/search") response.end(JSON.stringify({ mode: "source", worlds: [world], results: [{ world_id: "private", scope_id: privateScope, id: "fixture-source", content: "fixture evidence" }] }));
   else if (request.url === "/v1/router/publications") {
     published.push(JSON.parse(body));
     response.statusCode = 202;
     response.end(JSON.stringify({ id: "fixture-delivery", state: "pending" }));
   }
-  else if (request.url === "/v1/worlds/private/episodes") {
+  else if (request.url === `/v1/worlds/private/scopes/${privateScope}/episodes`) {
     captured.push(JSON.parse(body));
-    response.end(JSON.stringify({ episode: { ...captured.at(-1), id: "fixture-episode" }, replayed: false }));
+    response.end(JSON.stringify({ episode: { ...captured.at(-1), ...selected, id: "fixture-episode" }, replayed: false }));
   } else { response.statusCode = 404; response.end("{}"); }
 });
 let child;
@@ -43,9 +48,9 @@ try {
   const tokenPath = join(dir, "agent.token");
   await writeFile(tokenPath, token, { mode: 0o600 });
   const configPath = join(dir, "memory-worlds.json");
-  await writeFile(configPath, JSON.stringify({ url: `http://127.0.0.1:${daemon.address().port}`, tokenFile: tokenPath, writeWorldId: "private", readWorldIds: ["private"] }));
+  await writeFile(configPath, JSON.stringify({ url: `http://127.0.0.1:${daemon.address().port}`, tokenFile: tokenPath, writeScope: selected, readScopes: [selected] }));
   await mkdir(join(dir, "agent"));
-  child = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", join(root, "dist/extension.js")], {
+  child = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", root], {
     cwd: dir,
     env: { ...process.env, PI_CODING_AGENT_DIR: join(dir, "agent"), MEMORY_WORLDS_CONFIG: configPath, MEMORY_WORLDS_URL: `http://127.0.0.1:${daemon.address().port}`, MEMORY_WORLDS_TOKEN_FILE: tokenPath },
     stdio: ["pipe", "pipe", "pipe"],

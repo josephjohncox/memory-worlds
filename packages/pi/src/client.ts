@@ -3,7 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 export type WorldKind = "personal" | "private-work" | "team" | "company" | "ad-hoc";
 export interface World {
   id: string; authority_id: string; name: string; kind: WorldKind; owner_id: string;
-  created_at: string; generation?: string | null; projection_state: string; scope_id?: string;
+  created_at: string; generation?: string | null; projection_state: string; scope_id: string;
 }
 export interface EpisodeInput {
   context_id?: string; scope_id?: string; source_id: string; content: string; occurred_at: string;
@@ -12,14 +12,14 @@ export interface EpisodeInput {
   role?: string; metadata?: Record<string, unknown>; project?: boolean;
 }
 export interface Episode extends EpisodeInput {
-  id: string; world_id: string; sequence: number; digest: string;
+  scope_id: string; id: string; world_id: string; sequence: number; digest: string;
   agent_uuid?: string; invocation_id?: string; parent_invocation_id?: string; received_at: string; actor_id: string; agent_id: string; projection_state: string;
 }
 export interface Receipt { episode: Episode; replayed: boolean }
 export interface Mount { id: string; name: string; url: string; world_ids: string[]; authority_id: string; can_publish: boolean }
 export interface Identity { credential_id: string; user_id: string; agent_id: string; admin: boolean; restricted?: boolean; agent_uuid?: string; invocation_id?: string; parent_invocation_id?: string; authority_id: string; worlds: World[] }
 export interface SearchHit {
-  mount_id?: string; authority_id: string; world_id: string; record_type: "source" | "fact" | "entity"; scope_id?: string; generation?: string; entity_id?: string; name?: string; summary?: string;
+  mount_id?: string; authority_id: string; world_id: string; record_type: "source" | "fact" | "entity"; scope_id: string; generation?: string; entity_id?: string; name?: string; summary?: string;
   id?: string; source_id?: string; content?: string; fact?: string; fact_id?: string;
   occurred_at?: string; role?: string | null; projection_state?: string;
   claim_status?: string; graph_episode_ids?: string[];
@@ -124,6 +124,7 @@ function string(value: unknown): string {
 function world(value: unknown): World {
   const item = object(value);
   for (const key of ["id", "authority_id", "name", "kind", "owner_id"]) string(item[key]);
+  scopeSelection({ world_id: item.id, scope_id: item.scope_id });
   if (!["personal", "private-work", "team", "company", "ad-hoc"].includes(item.kind as string)) throw new Error("Invalid world kind");
   return item as unknown as World;
 }
@@ -196,35 +197,14 @@ export class MemoryWorldsClient {
       return item as unknown as Mount;
     });
   }
-  async capture(worldId: string, episode: EpisodeInput, signal?: AbortSignal): Promise<Receipt> {
-    const value = object(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/episodes`, episode, signal));
-    string(object(value.episode).id);
-    return value as unknown as Receipt;
-  }
-  async search(worldIds: string[], mountIds: string[], query: string, mode: "source" | "graph", limit: number, signal?: AbortSignal): Promise<SearchResult> {
-    if (!query.trim() || query.length > 2000 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid search query or limit");
-    if (worldIds.length > 50 || mountIds.length > 20) throw new Error("Search selection exceeds world/mount limits");
-    const tasks: Promise<SearchResult>[] = [];
-    if (worldIds.length) tasks.push((async () => {
-      const result = object(await this.request("/v1/search", { world_ids: worldIds, query, mode, limit }, signal));
-      if (result.mode !== mode) throw new Error("Search response mode does not match the requested source/graph mode");
-      const worlds = array(result.worlds).map(world);
-      const results = array(result.results).map(item => {
-        const hit = object(item);
-        const worldId = string(hit.world_id);
-        if (!worldIds.includes(worldId)) throw new Error("Search returned a world outside the selected scope");
-        string(mode === "source" ? hit.content : hit.fact);
-        const authority = worlds.find(item => item.id === worldId)?.authority_id;
-        if (!authority) throw new Error("Search returned a world outside the selected scope");
-        return { ...hit, authority_id: authority, record_type: mode === "source" ? "source" : "fact" } as SearchHit;
-      });
-      return { results, failures: [], complete: true };
-    })());
-    if (mountIds.length) tasks.push((async () => {
+  async searchMounts(mountIds: string[], query: string, mode: "source" | "graph", limit: number, signal?: AbortSignal): Promise<SearchResult> {
+    if (!query.trim() || query.length > 2000 || !Number.isInteger(limit) || limit < 1 || limit > 100 || mountIds.length > 20) throw new Error("Invalid remote search selection, query or limit");
+    if (!mountIds.length) return { results: [], failures: [], complete: true };
+    try {
       const response = object(await this.request("/v1/router/search", { mount_ids: mountIds, query, mode, limit }, signal));
       const results = array(response.results).map(value => {
-        const hit = object(value);
-        string(hit.authority_id); string(hit.world_id);
+        const hit = object(value); scopeSelection(hit);
+        string(hit.authority_id);
         if (!mountIds.includes(string(hit.mount_id))) throw new Error("Unexpected remote mount in search response");
         if (hit.record_type !== (mode === "source" ? "source" : "fact")) throw new Error("Remote search response mode mismatch");
         string(mode === "source" ? hit.content : hit.fact);
@@ -234,24 +214,11 @@ export class MemoryWorldsClient {
         const item = object(value);
         return { mount_id: string(item.mount_id), error: string(item.error) };
       });
-      return { results, failures, complete: response.complete === true };
-    })());
-    const results = await Promise.allSettled(tasks);
-    signal?.throwIfAborted();
-    const combined: SearchResult = { results: [], failures: [], complete: true };
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        combined.failures.push({ mount_id: worldIds.length && index === 0 ? "local" : "router", error: "unavailable" });
-        combined.complete = false;
-      } else {
-        combined.results.push(...result.value.results);
-        combined.failures.push(...result.value.failures);
-        combined.complete &&= result.value.complete;
-      }
-    });
-    // Authorities retain their own ordering; scores are not comparable across services.
-    combined.results = combined.results.slice(0, limit);
-    return combined;
+      return { results: results.slice(0, limit), failures, complete: response.complete === true };
+    } catch {
+      signal?.throwIfAborted();
+      return { results: [], failures: [{ mount_id: "router", error: "unavailable" }], complete: false };
+    }
   }
   async scopes(worldId: string, signal?: AbortSignal): Promise<Scope[]> {
     return array(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/scopes`, undefined, signal)).map(scope);

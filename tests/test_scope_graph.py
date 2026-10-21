@@ -9,7 +9,6 @@ import pytest
 from memory_worlds.errors import Unavailable
 from memory_worlds.graph import GraphitiAdapter, ProjectionWorker, graph_episode_id, graph_namespace
 from memory_worlds.models import CreateScope, EpisodeInput, ScopeKind
-from memory_worlds.scopes import world_shared_scope_id
 from memory_worlds.store import MemoryStore
 
 
@@ -85,14 +84,19 @@ async def test_same_world_same_source_identity_extracts_in_separate_namespaces(s
         result = await worker.search([target], "Ada")
         assert len(result) == 1 and result[0]["fact"] == episode.content
         assert result[0]["source_episode_ids"] == [episode.id]
-        assert result[0]["scope_id"] == (
-            str(target.scope_id)
-            if target.scope_id
-            else world_shared_scope_id(target.authority_id, target.id)
-        )
+        assert result[0]["scope_id"] == str(target.scope_id)
     result = await worker.search(targets[1:], "Ada")
     assert {row["scope_id"] for row in result} == {str(t.scope_id) for t in targets[1:]}
     assert all("SHARED" not in row["fact"] for row in result)
+
+
+def test_default_and_explicit_shared_selection_use_identical_graph_namespace(scoped):
+    store, owner, targets, _episodes = scoped
+    default = targets[0]
+    explicit = store.get_world(owner, default.id, scope_id=default.scope_id)
+    assert explicit == default
+    assert graph_namespace(default, "generation") == graph_namespace(explicit, "generation")
+    assert graph_namespace(default, "generation") != graph_namespace(targets[1], "generation")
 
 
 async def test_unknown_scope_projection_does_not_degrade_sibling_or_shared(scoped):

@@ -1,9 +1,5 @@
-import hashlib
-import json
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier
 from uuid import UUID, uuid4
 
 import pytest
@@ -76,7 +72,7 @@ def test_subagents_have_distinct_uuids_and_no_parent_or_sibling_visibility(local
     assert private.id not in {scope.id for scope in store.list_scopes(owner, world.id)}
 
 
-def test_legacy_routes_cannot_bypass_child_scope_ceiling(local):
+def test_default_world_selection_cannot_bypass_child_scope_ceiling(local):
     store, world, owner = local
     store.capture(owner, world.id, note("shared", "world common"))
     child, private, _ = delegate(store, owner, world)
@@ -365,9 +361,10 @@ def test_scope_graph_journals_jobs_generations_and_recovery_are_isolated(local):
     assert store.get_world(owner, world.id).projection_state == "disabled"
     assert store.get_world(child, world.id, scope_id=private.id).projection_state == "degraded"
     targets = store.projection_worlds()
-    assert {
-        (target.id, str(target.scope_id) if target.scope_id else None) for target in targets
-    } == {(world.id, None), (world.id, str(private.id))}
+    assert {(target.id, target.scope_id) for target in targets} == {
+        (world.id, world.scope_id),
+        (world.id, private.id),
+    }
 
 
 def test_search_authorizes_whole_scope_selection_before_results(local):
@@ -390,25 +387,6 @@ def test_search_authorizes_whole_scope_selection_before_results(local):
         )
         == 1
     )
-
-
-def test_legacy_root_digest_and_episode_identity_survive_scope_initialization(local):
-    store, world, owner = local
-    data = note()
-    receipt = store.capture(owner, world.id, data)
-    old_payload = json.dumps(
-        data.model_dump(mode="json", exclude={"scope_id", "context_id"}),
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    assert receipt.episode.digest == hashlib.sha256(old_payload.encode()).hexdigest()
-    reopened = MemoryStore(store.data_dir)
-    shared = reopened.list_scopes(owner, world.id)[0]
-    assert UUID(str(shared.id))
-    replay = reopened.capture(owner, world.id, data.model_copy(update={"scope_id": shared.id}))
-    assert replay.replayed and replay.episode.id == receipt.episode.id
-    assert reopened.world_path(world.id) == store.world_path(world.id)
 
 
 @pytest.mark.parametrize(
@@ -542,22 +520,6 @@ def test_persistent_scope_preserves_agent_identity_and_distinct_invocation_prove
     assert replay.episode.invocation_id == first.invocation_id
 
 
-def test_pre_scope_journal_schema_migration_preserves_payload_and_digest(local):
-    store, world, owner = local
-    receipt = store.capture(owner, world.id, note())
-    with store._world_db(world.id) as db:
-        payload = db.execute("SELECT payload FROM episodes").fetchone()[0]
-        for column in ("agent_uuid", "invocation_id", "parent_invocation_id"):
-            db.execute(f"ALTER TABLE episodes DROP COLUMN {column}")
-    reopened = MemoryStore(store.data_dir)
-    old = reopened.get_episode(owner, world.id, receipt.episode.id)
-    assert old.agent_uuid is None and old.invocation_id is None
-    assert old.digest == receipt.episode.digest
-    assert reopened.capture(owner, world.id, note()).replayed
-    with reopened._world_db(world.id) as db:
-        assert db.execute("SELECT payload FROM episodes").fetchone()[0] == payload
-
-
 def test_bound_context_attributes_ordinary_agent_invocation_and_rejects_other_destination(local):
     store, world, owner = local
     shared = store.list_scopes(owner, world.id)[0]
@@ -627,51 +589,6 @@ def test_administrator_cannot_delegate_another_users_private_world(local):
                 grants=[ScopeGrant(world_id=other.id, scope_id=shared.id, operations=["read"])]
             ),
         )
-
-
-def test_existing_journal_migration_serializes_independent_store_instances(local, monkeypatch):
-    store, world, owner = local
-    original = store.capture(owner, world.id, note())
-    with store._world_db(world.id) as db:
-        for column in ("agent_uuid", "invocation_id", "parent_invocation_id"):
-            db.execute(f"ALTER TABLE episodes DROP COLUMN {column}")
-    second = MemoryStore(store.data_dir)
-    barrier = Barrier(2)
-    connect = MemoryStore._connect
-
-    class SynchronizedConnection:
-        def __init__(self, db):
-            self.db, self.first = db, True
-
-        def __getattr__(self, name):
-            return getattr(self.db, name)
-
-        def execute(self, query, *args):
-            result = self.db.execute(query, *args)
-            if query == "PRAGMA table_info(episodes)" and self.first:
-                self.first = False
-                rows = result.fetchall()
-                barrier.wait(timeout=5)
-                return rows
-            return result
-
-    def synchronized(path):
-        db = connect(path)
-        return SynchronizedConnection(db) if path.name == "source.sqlite3" else db
-
-    for instance in (store, second):
-        monkeypatch.setattr(instance, "_connect", synchronized)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        rows = list(
-            pool.map(
-                lambda instance: instance.get_episode(owner, world.id, original.episode.id),
-                (store, second),
-            )
-        )
-    assert all(
-        episode.id == original.episode.id and episode.digest == original.episode.digest
-        for episode in rows
-    )
 
 
 def flow(reads, write):

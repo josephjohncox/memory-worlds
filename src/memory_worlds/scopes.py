@@ -81,31 +81,28 @@ class ScopedStore:
             );
         """)
 
-    def _ensure_shared_scope(self, db, world_id: str):
-        world = db.execute("SELECT * FROM worlds WHERE id=?", (world_id,)).fetchone()
-        if world is None:
-            raise NotFound("World not found")
-        sid = world_shared_scope_id(self.authority_id, world_id)
+    def _create_shared_scope(self, db, world):
+        sid = world_shared_scope_id(self.authority_id, world.id)
         db.execute(
-            "INSERT OR IGNORE INTO scopes (id,world_id,kind,name,created_at) VALUES (?,?,?,?,?)",
-            (sid, world_id, ScopeKind.WORLD_SHARED.value, "World shared", world["created_at"]),
+            "INSERT INTO scopes (id,world_id,kind,name,created_at) VALUES (?,?,?,?,?)",
+            (
+                sid,
+                world.id,
+                ScopeKind.WORLD_SHARED.value,
+                "World shared",
+                world.created_at.isoformat(),
+            ),
         )
-        return db.execute("SELECT * FROM scopes WHERE id=?", (sid,)).fetchone()
 
     def _scope_row(self, db, world_id: str, scope_id: str | UUID | None):
-        shared = self._ensure_shared_scope(db, world_id)
         if scope_id is None:
-            return shared
+            scope_id = world_shared_scope_id(self.authority_id, world_id)
         row = db.execute(
             "SELECT * FROM scopes WHERE id=? AND world_id=?", (scope_uuid(scope_id), world_id)
         ).fetchone()
         if row is None:
             raise NotFound("Scope not found")
         return row
-
-    @staticmethod
-    def _journal_scope(row) -> str | None:
-        return None if row["kind"] == ScopeKind.WORLD_SHARED.value else row["id"]
 
     def _credential_principal(self, db, row) -> Principal:
         context = db.execute(
@@ -201,7 +198,7 @@ class ScopedStore:
             raise Forbidden("An ancestor no longer permits delegation")
 
     def _hydrate_scope(self, row, control=None) -> Scope:
-        with self._world_db(row["world_id"], self._journal_scope(row)) as db:
+        with self._world_db(row["world_id"], row["id"]) as db:
             projection = db.execute("SELECT generation,state FROM projection").fetchone()
         with nullcontext(control) if control is not None else self._control() as db:
             coordinator = db.execute(
@@ -335,7 +332,6 @@ class ScopedStore:
     def list_scopes(self, principal: Principal, world_id: str) -> list[Scope]:
         with self._control() as db:
             self._authorized(db, principal, world_id)
-            self._ensure_shared_scope(db, world_id)
             visible = []
             for row in db.execute(
                 "SELECT * FROM scopes WHERE world_id=? ORDER BY created_at,id", (world_id,)
@@ -712,16 +708,16 @@ class ScopedStore:
             occurred_at=request.occurred_at,
             source_type="publication",
             project=request.project,
-            scope_id=self._journal_scope(destination),
+            scope_id=destination["id"],
             metadata=metadata,
             context_id=request.context_id,
         )
         attributed = self._capture_principal(
-            principal, world_id, self._journal_scope(destination), request.context_id
+            principal, world_id, destination["id"], request.context_id
         )
         with (
-            self._world_db(world_id, self._journal_scope(destination)) as db,
+            self._world_db(world_id, destination["id"]) as db,
             self._transaction(db),
         ):
             receipt = self._insert(db, attributed, world_id, episode)
-        return self._receipt_response(receipt, scope_id)
+        return receipt

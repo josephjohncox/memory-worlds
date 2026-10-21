@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, stat, chmod, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { MemorySpool } from "../dist/spool.js";
+import { MemorySpool } from "memory-worlds-pi/spool";
 
 const binding = { serviceUrl: "http://localhost:8787", authorityId: "authority", credentialId: "agent-credential" };
 const target = { world_id: "personal", scope_id: "00000000-0000-4000-8000-000000000001" };
@@ -90,7 +90,7 @@ test("queued automatic capture rechecks the live audience before dispatch", asyn
 
 
 test("a token rotation between identity and dispatch cannot redirect queued sources", async () => fixture(async spool => {
-  const { MemoryWorldsClient } = await import("../dist/client.js");
+  const { MemoryWorldsClient } = await import("memory-worlds-pi/client");
   await spool.enqueue(binding, target, episode); let token = "first", reads = 0;
   const authorizations = [];
   const actual = new MemoryWorldsClient(binding.serviceUrl, async () => { reads++; return token; }, async (url, options) => {

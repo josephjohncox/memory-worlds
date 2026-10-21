@@ -54,6 +54,7 @@ FORBIDDEN_NAMES = (
     "bootstrap.json",
 )
 SOURCE_ROOTS = {
+    "AGENTS.md",
     "src",
     "tests",
     "docs",
