@@ -7,7 +7,7 @@ release assets carry their own exact source commit and image digest receipts.
 
 | Check | Executed result |
 | --- | --- |
-| Python 3.15.0 complete suite with local PostgreSQL, native graph recovery and rclone | 546 passed; 10 backend-specific or separately enabled infrastructure checks skipped |
+| Python 3.15.0 complete suite with local PostgreSQL, native graph recovery and rclone | 553 passed; 10 backend-specific or separately enabled infrastructure checks skipped |
 | Native PostgreSQL 18.6 and SQLite persistence | Competing claims, live heartbeats, process death, stale external completions, two HTTP replicas, pool exhaustion and maintenance cancellation/drain passed |
 | Encrypted recovery | Private credentials/grants/scopes, sequences, tombstones, extraction intent, malformed archives and fresh-target rollback passed; SQLite → PostgreSQL → SQLite round trip passed |
 | Native FalkorDB 6.0.0 recovery | Exact original namespaces, vector search, full-text indexes, edges and source provenance survived recovery into a fresh backend |
@@ -48,7 +48,10 @@ of a production RDS deployment's availability.
 
 Independent adversarial review found and fixed lost-acknowledgment graph restore
 cleanup, omitted active graph inventory, PostgreSQL selector validation,
-database-aware readiness, and guard/DAL pool self-deadlock. Regression tests
+database-aware readiness, guard/DAL pool self-deadlock, and cross-process SQLite
+maintenance. Actual subprocess tests drain an existing writer, reject a new
+writer during the cut, permit it afterward, and restore exactly the pre-cut source.
+Regression tests
 retain those current failure boundaries. The project has one current API,
 schema, archive format and Pi state contract, with no historical readers,
 automatic migrations or compatibility harnesses.

@@ -38,8 +38,9 @@ mise run cli -- --token-file /private/admin.token authority-backups
 ```
 
 The default native backup coordinates a maintenance barrier across control,
-source and outbox writes and graph operations. SQLite uses the single owning
-daemon; PostgreSQL uses authority-wide advisory locks across replicas. New
+source and outbox writes and graph operations. SQLite uses a fair thread barrier
+and a shared/exclusive Unix file lock across the owning daemon and supported
+local CLI/library processes. PostgreSQL uses authority-wide advisory locks across replicas. New
 requests receive a retryable 503 during the cut. The artifact becomes visible
 atomically after authenticated encryption and fsync, without replacing an
 existing file.
@@ -62,6 +63,13 @@ Both modes use AES-256-GCM. The reader verifies the authentication tag before
 parsing any decrypted archive, then validates checksums, the complete current
 table/scope inventory and the current schema. There are no migration or older
 format readers.
+
+Backup and restore need private temporary space for uncompressed tables and
+graph dumps as well as the encrypted artifact. Size the process `TMPDIR` for
+that working set. The default Helm `/tmp` budget is 128 MiB; for larger cuts,
+point `TMPDIR` at an adequately provisioned private volume through the runtime
+Secret. Keep this working directory outside generic file-sync clients. The
+artifact transport copies only a completed authenticated archive.
 
 ## Restore into an isolated fresh target
 

@@ -9,10 +9,10 @@ Goal: complete the approved remaining-work backlog with executable evidence.
 | Lifecycle and retention | Pi agent | Retraction/erasure receipts, non-resurrection, scoped retention and generation cleanup | Implemented; 27 cases pass |
 | Named identities and Python client/CLI | root | Owner-visible UUID/name registry, stable explicit identities, restricted-child isolation | Implemented; HTTP/CLI and owner/delegation tests pass |
 | Native Pi aliases and import | Pi agent | Live resolution, stable named identity, bounded private planner bridge, actual Pi smoke | 138 tests and all three actual smokes pass |
-| Qualification and sharing evaluation | qualification agent | Labeled corpus, local model/provider contracts and local OIDC end-to-end in kind | In progress |
-| Metrics, scheduled backups and deployments | Pi agent | Tested optional chart resources and backend-appropriate replicas | Eight profiles and 40 negative checks pass; kind application qualification running |
+| Qualification and sharing evaluation | qualification agent | Labeled corpus, local model/provider contracts and local OIDC end-to-end in kind | Implemented; real local IdP, model emulators and Cilium checks pass; receipts bind each final image |
+| Metrics, scheduled backups and deployments | Pi agent | Tested optional chart resources and backend-appropriate replicas | Eight profiles and 40 negative checks pass; two-replica native lost-volume recovery and scheduled backups pass |
 | Artifact synchronization | root | Immutable completed encrypted-artifact transfers and verified download | Implemented; actual local rclone transport tests pass |
-| Validation and durable private release | root | Current receipts, all packages/images, signed source and versioned private artifacts | Queued behind implementation checks |
+| Validation and durable private release | root | Current receipts, all packages/images, signed source and versioned private artifacts | Signed source and audited versioned packages prepared; exact-commit hosted gates and durable private assets are tracked in release receipts |
 
 Work happens in the primary workspace. The real Git publishing checkout is the
 private nested repository; only approved public files are synchronized there.

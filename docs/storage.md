@@ -78,8 +78,11 @@ Authority maintenance blocks new operations and drains in-flight graph calls.
 Ordinary PostgreSQL SQL sessions use a transaction-level shared lock on their
 own connection. Graph calls retain a separate session-level lock across network
 operations, with bounded fail-fast concurrency. Both conflict with the authority's
-exclusive maintenance lock. SQLite uses the local daemon's
-barrier. Ordinary requests fail promptly with `503` while maintenance is pending
+exclusive maintenance lock. SQLite combines a fair thread barrier with a Unix
+shared/exclusive file lock across daemon and supported local CLI/library processes.
+Its `.authority-maintenance.lock` file is a persistent lock inode; do not remove
+or replace it while the authority is in use.
+Ordinary requests fail promptly with `503` while maintenance is pending
 or active. Asynchronous maintenance waits without blocking the event loop.
 Lifecycle graph purge also requires explicit worker-drain attestation: a remote
 request already dispatched by a failed process may outlive that process's lease.

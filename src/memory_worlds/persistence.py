@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import os
 import re
+import stat
 import threading
 from collections.abc import Iterator
 from contextlib import asynccontextmanager, contextmanager, nullcontext
@@ -378,7 +379,7 @@ class Persistence:
             self.directory(self.data_dir / "worlds")
             self._engine = None
             self._guard_engine = None
-            self._barrier_key = f"sqlite:{self.data_dir}"
+            self._barrier_key = f"sqlite:{os.getpid()}:{self.data_dir.resolve()}"
         with _BARRIER_LOCK:
             self._barrier = _BARRIERS.setdefault(self._barrier_key, _Barrier())
 
@@ -817,9 +818,42 @@ class Persistence:
         )
 
     @contextmanager
+    def _sqlite_file_guard(self, exclusive: bool):
+        """Coordinate all local authority processes on one persistent inode."""
+        import fcntl
+
+        path = self.data_dir / ".authority-maintenance.lock"
+        try:
+            descriptor = os.open(
+                path,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                0o600,
+            )
+        except OSError:
+            raise Conflict("Authority maintenance requires a private regular lock file") from None
+        locked = False
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+                raise Conflict("Authority maintenance requires a private regular lock file")
+            os.fchmod(descriptor, 0o600)
+            try:
+                fcntl.flock(
+                    descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH | fcntl.LOCK_NB
+                )
+            except BlockingIOError:
+                raise Unavailable("Authority maintenance is in progress") from None
+            locked = True
+            yield
+        finally:
+            if locked:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+
+    @contextmanager
     def _backend_guard(self, exclusive: bool):
         if not self.is_postgres:
-            with self._barrier.hold(exclusive):
+            with self._barrier.hold(exclusive), self._sqlite_file_guard(exclusive):
                 yield
             return
         from .postgres import advisory_key
