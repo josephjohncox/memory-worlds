@@ -1,16 +1,20 @@
 # Deployments
 
-The [Helm chart](helm.md) packages this topology with validated values, existing
-Secret references, release-specific networking, and optional ingress. The
-Kustomize manifests below remain available for installations that prefer them.
+The [Helm chart](helm.md) supports a single-replica SQLite StatefulSet or
+PostgreSQL-backed API replicas, with validated values, existing Secret references,
+release-specific networking, and optional ingress. The Kustomize base below uses
+the single-replica SQLite topology.
 
 Memory Worlds runs the same authenticated API, scoped-world authorization,
-router, and durable publication outbox locally and in Kubernetes. One API pod
-owns its SQLite directory. FalkorDB has a separate pod and volume. This is a
-single-replica deployment with persistent storage; it does not provide high
-availability. Do not scale the API or mount SQLite WAL on a shared network
-filesystem. Multiple API replicas require replacing the source, control, and
-router databases with a shared SQL implementation.
+router, and durable publication outbox locally and in Kubernetes. In the
+Kustomize base, one API pod owns its SQLite directory, and FalkorDB has a separate
+pod and volume. This topology provides persistent storage with one API replica.
+Do not scale the SQLite API or mount SQLite WAL on a shared network filesystem.
+For multiple API replicas, use the [PostgreSQL Helm profile](helm.md#postgresql-and-rds),
+which stores source, control, and outbox journals in PostgreSQL.
+
+The [local and corporate memory guide](hybrid.md) covers using a personal daemon
+alongside a shared deployment.
 
 ## Local Kubernetes with kind
 

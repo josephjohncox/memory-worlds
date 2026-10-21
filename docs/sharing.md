@@ -7,6 +7,9 @@ spaces. Credentials and world IDs are meaningful within their issuing authority.
 An authority ID pins a router mount to the expected service, including after a
 URL is accidentally pointed at a different installation.
 
+For a complete personal-daemon and corporate-service setup, see the
+[local and corporate memory guide](hybrid.md).
+
 ## Shared-service identity
 
 Initialize the shared service once with the ordinary `init` command. Keep its

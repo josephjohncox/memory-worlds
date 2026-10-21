@@ -25,6 +25,9 @@ cleans its owned `dist` directory before compilation.
 
 ## Configure
 
+For a personal daemon alongside a corporate service, see the
+[local and corporate memory guide](../../docs/hybrid.md).
+
 Create `~/.pi/agent/memory-worlds.json` with explicit world/scope UUIDs or `@alias` references:
 
 ```json

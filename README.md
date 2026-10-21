@@ -2,8 +2,8 @@
 
 A shared memory service for agents. Run one local daemon per user, give each agent its
 own credential, and share durable memory across sessions and machines through
-HTTP or SSH forwarding. Mount private and shared worlds independently from the
-world that receives new evidence.
+HTTP or SSH forwarding. Select private and shared read scopes independently from
+the destination for new evidence.
 
 The service includes SQLite local journals and PostgreSQL shared journals, authenticated HTTP,
 a Python client, CLI, optional stdio MCP, native Pi tools and hooks, remote
@@ -17,6 +17,9 @@ StatefulSet with SQLite volumes, or as PostgreSQL-backed API replicas. The [rout
 [native Pi package](packages/pi/README.md), and [deployment guide](docs/deployments.md)
 cover those configurations. The optional Neptune/OpenSearch adapter is experimental;
 the local and Kubernetes graph backend is FalkorDB.
+
+For a personal daemon alongside a corporate service, follow the
+[local and corporate memory guide](docs/hybrid.md).
 
 ## Run locally
 
