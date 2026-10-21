@@ -49,11 +49,11 @@ saved only in private referenced files, not the declarative config or stdout.
 | `setup` / `setup init` | Interactive configuration and review; explicit apply uses the same apply path |
 | `setup validate --config FILE` | Offline schema/path/reference validation; no writes or network |
 | `setup plan --config FILE` | Describe planned changes without creating resources or reading source content |
-| `setup connect --config FILE` | Explicit normal-user corporate login/discovery; no corporate writes |
+| `setup connect --config FILE` | Explicit normal-user corporate login/discovery; no source/publication or administrative writes |
 | `setup apply --config FILE` | Provision or resume owned local resources and generated files |
 | `setup run --config FILE` | Start the owned graph and run the configured daemon in the foreground |
 | `setup doctor --config FILE` | Read-only diagnostics, with explicit configuration/online check results |
-| `setup down --config FILE` | Stop only owned graph resources while retaining data; never kill an unrelated daemon |
+| `setup down --config FILE` | After the daemon stops, stop only owned graph resources while retaining data |
 
 Configuration-driven apply requires no interactive answers. Device login remains
 an explicit human authorization flow; unattended setup can supply an existing API
@@ -98,6 +98,10 @@ Planning and doctor must not construct MemoryStore merely to inspect a path:
 its constructor initializes storage. They must leave absent/existing authority
 directories unchanged. Online diagnostics may inspect authorized metadata,
 identity and health, but not read source contents or write probe memories.
+Ordinary OAuth authentication can create sessions/private-work identity state
+and reconcile memberships from signed claims. Online doctor/connect use that
+normal authentication contract; they do not promise a side-effect-free corporate
+GET request or suppress its authorization reconciliation.
 
 Persist canonical setup-owned world, scope and credential identities in authority
 metadata transactionally with their creation. Names/aliases are display and
@@ -130,6 +134,9 @@ and serves the owning API in the foreground; it does not initialize an authority
 An occupied port, running owner or authority/config mismatch fails visibly.
 Stopping setup-owned containers retains volumes. No automatic `down -v`, data
 removal, systemd/launchd registration or corporate infrastructure provisioning.
+Ctrl-C stops the foreground daemon and retains the running graph. Down refuses
+while that daemon owns its data-directory lock; after it stops, down removes only
+the setup-owned graph containers/network and retains the persistent volumes.
 
 ## Hybrid and generated client defaults
 
