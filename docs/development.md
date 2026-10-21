@@ -64,9 +64,9 @@ the actual Graphiti driver with deterministic model responses. `test:container`
 requires Docker and builds the deployment under test. The normal test run reports
 these external checks as skipped unless explicitly enabled.
 
-The [setup controller](setup.md) also works from an installed wheel. Its shell
-entrypoint and mise task delegate to the same Python implementation; setup
-configuration and credentials stay outside the source checkout.
+The [setup controller](setup.md) also works from an installed wheel. Its Python
+bootstrap and mise task delegate to the same implementation; setup configuration
+and credentials stay outside the source checkout.
 
 The kind lifecycle smoke supplies deliberately synthetic provider settings and
 captures source records with `project=false`. It checks durable source, native

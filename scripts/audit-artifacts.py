@@ -252,7 +252,7 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             "PKG-INFO",
             "deploy/helm/memory-worlds/Chart.yaml",
             "src/memory_worlds/templates/setup-graph.compose.yaml",
-            "scripts/setup.sh",
+            "scripts/bootstrap.py",
             "tasks/setup.toml",
             "docs/setup.md",
         }

@@ -8,18 +8,21 @@ service. Reuse the current service, scope, router, Graphiti and OAuth contracts.
 The setup controller provisions local resources and client configuration; it does
 not become a second memory server or a corporate identity administrator.
 
-Use a Python controller exposed through `memory-worlds setup`, with thin mise and
-shell entrypoints. Python already supplies TOML parsing and the project supplies
-typed validation, authentication and provisioning. A shell-only installer would
-duplicate secret and recovery logic. A full TUI or deployment manager adds a
-second interface before the basic workflow is reliable.
+Use a Python controller exposed through `memory-worlds setup` and `mise run
+setup`, with a standard-library-only Python bootstrap for source checkouts.
+Python already supplies TOML parsing and the project supplies typed validation,
+authentication and provisioning. Keep configuration, secrets and recovery in
+that shared controller.
 
 ## User flow
 
-`scripts/setup.sh` and `mise run setup` launch the same terminal wizard. The
-script checks prerequisites and uses the locked mise tools/dependencies; it does
-not install system packages or silently trust source. The installed Python CLI
-supports the same setup flow without requiring a source checkout.
+`python3 scripts/bootstrap.py` prepares the locked mise tools/dependencies and
+launches the same terminal wizard as `mise run setup`. The host Python runs only
+the small bootstrap; the setup controller and service use mise's managed Python.
+The bootstrap preserves arguments and the caller's working directory without
+shell evaluation. It does not install system packages or silently trust source.
+The installed Python CLI supports the same setup flow through `memory-worlds
+setup` without requiring a source checkout.
 
 The wizard collects, in order:
 

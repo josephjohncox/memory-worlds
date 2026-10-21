@@ -12,14 +12,17 @@ then launch the wizard:
 
 ```sh
 mise trust
-scripts/setup.sh
+python3 scripts/bootstrap.py
 ```
 
-The script installs the locked Python/uv tools and dependencies through mise. It
-does not install system packages, trust source automatically or edit your shell
-configuration. `mise run setup` launches the same wizard. An installed Python
-package can use `memory-worlds setup` without a source checkout or mise; its graph
-template ships inside the wheel.
+The bootstrap uses only the host Python standard library to invoke mise. Mise
+installs the locked Python/uv tools and dependencies; the setup controller and
+service run with that managed Python. Arguments and the caller's working
+directory pass through unchanged. The bootstrap does not install system
+packages, trust source automatically or edit your shell configuration.
+`mise run setup` launches the same wizard. An installed Python package can use
+`memory-worlds setup` without a source checkout or mise; its graph template ships
+inside the wheel.
 
 The wizard collects the installation name, owner, private paths, loopback ports,
 explicit extraction/embedding settings and optional corporate connection. API

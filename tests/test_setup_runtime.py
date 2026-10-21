@@ -634,7 +634,11 @@ def test_docker_errors_do_not_echo_private_output(tmp_path, monkeypatch):
     assert caught.value.__cause__ is None
 
 
-def test_setup_script_forwards_arguments_from_another_directory_without_trusting_source(tmp_path):
+@pytest.mark.parametrize("relative_lookup", [False, True])
+def test_python_bootstrap_forwards_arguments_from_another_directory_without_trusting_source(
+    tmp_path,
+    relative_lookup,
+):
     root = Path(__file__).resolve().parents[1]
     binary = tmp_path / "bin"
     binary.mkdir()
@@ -651,10 +655,11 @@ def test_setup_script_forwards_arguments_from_another_directory_without_trusting
     )
     stub.chmod(0o700)
     arguments = ["validate", "--config", "path with spaces;$(not-a-shell).toml"]
+    lookup = binary.name if relative_lookup else str(binary)
     subprocess.run(
-        [str(root / "scripts/setup.sh"), *arguments],
+        [sys.executable, str(root / "scripts/bootstrap.py"), *arguments],
         cwd=tmp_path,
-        env={"PATH": f"{binary}{os.pathsep}{os.environ['PATH']}"},
+        env={"PATH": f"{lookup}{os.pathsep}{os.environ['PATH']}"},
         check=True,
         capture_output=True,
     )
@@ -666,3 +671,49 @@ def test_setup_script_forwards_arguments_from_another_directory_without_trusting
     assert all(call["cwd"] == str(root) and call["caller"] == str(tmp_path) for call in calls)
     task = tomllib.loads((root / "tasks/setup.toml").read_text())["setup"]
     assert task["raw_args"] and task["depends"] == ["python:deps"]
+
+
+def test_python_bootstrap_reports_missing_mise_without_starting_setup(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "empty-bin"
+    binary.mkdir()
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/bootstrap.py"), "init"],
+        cwd=tmp_path,
+        env={"PATH": str(binary)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "mise" in result.stderr.lower()
+    assert "https://mise.jdx.dev/installing-mise.html" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not list(tmp_path.glob("**/setup.toml"))
+
+
+def test_python_bootstrap_does_not_start_wizard_when_locked_tool_installation_fails(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    binary = tmp_path / "bin"
+    binary.mkdir()
+    log = tmp_path / "calls.jsonl"
+    stub = binary / "mise"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, sys\n"
+        f"with open({str(log)!r}, 'a') as stream:\n"
+        "    stream.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "raise SystemExit(37 if sys.argv[1:2] == ['install'] else 0)\n"
+    )
+    stub.chmod(0o700)
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts/bootstrap.py"), "init"],
+        cwd=tmp_path,
+        env={"PATH": str(binary)},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 37
+    assert [json.loads(line) for line in log.read_text().splitlines()] == [
+        ["install", "--locked", "python", "uv"]
+    ]
+    assert not list(tmp_path.glob("**/setup.toml"))
