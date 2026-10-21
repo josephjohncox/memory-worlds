@@ -6,7 +6,7 @@ installation path that matches your use, then add clients and shared access.
 
 ## Start here
 
-- [Guided local or hybrid setup](setup.md): wizard, one TOML config, apply, run and doctor.
+- [Guided local or hybrid setup](setup.md): mise bootstrap, one TOML config, wizard, background service and diagnostics.
 - [Manual local setup](manual-setup.md): initialize the daemon and issue agent credentials yourself.
 - [Local and corporate memory](hybrid.md): keep personal memory local and read selected shared worlds.
 - [Pi extension](../packages/pi/README.md): installation, configuration and first use.

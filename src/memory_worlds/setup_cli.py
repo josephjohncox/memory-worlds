@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 
 from .errors import MemoryError
@@ -14,6 +15,11 @@ def add_setup_parser(subparsers) -> None:
     parser = subparsers.add_parser("setup", help="configure and manage local or hybrid memory")
     default = Path.home() / ".config/memory-worlds/default/setup.toml"
     parser.add_argument("--config", type=Path, default=default)
+    parser.add_argument(
+        "--service",
+        action="store_true",
+        help="install a user background service after applying the interactive setup",
+    )
     operations = parser.add_subparsers(dest="setup_command")
     help_text = {
         "init": "interactively create a private setup configuration",
@@ -30,6 +36,21 @@ def add_setup_parser(subparsers) -> None:
         operation.add_argument("--config", type=Path, default=argparse.SUPPRESS)
         if name in ("apply", "init"):
             operation.add_argument("--adopt-admin-file", type=Path)
+        if name == "init":
+            operation.add_argument(
+                "--service",
+                action="store_true",
+                default=argparse.SUPPRESS,
+                help="install a user background service after applying setup; leave it stopped",
+            )
+    service = operations.add_parser("service", help="manage the optional user background service")
+    service.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+    actions = service.add_subparsers(dest="service_command", required=True)
+    for name in ("install", "start", "stop", "restart", "status", "uninstall"):
+        action = actions.add_parser(name)
+        action.add_argument("--config", type=Path, default=argparse.SUPPRESS)
+        if name == "install":
+            action.add_argument("--start", action="store_true", help="start the installed service")
 
 
 def validate_setup(config: SetupConfig, *, adopt_admin_file: Path | None = None) -> dict:
@@ -101,6 +122,9 @@ def plan_setup(config: SetupConfig) -> dict:
 
 def run_setup_command(args):
     command = args.setup_command
+    install_service = getattr(args, "service", False)
+    if install_service and command not in (None, "init"):
+        raise MemoryError("--service is available only with setup or setup init")
     if command in (None, "init"):
         from .setup_interactive import wizard
 
@@ -111,13 +135,33 @@ def run_setup_command(args):
         except (EOFError, KeyboardInterrupt):
             answer = "no"
         if answer not in ("y", "yes"):
-            return {"configured": True, "instance": config.instance, "next": "setup apply"}
+            result = {"configured": True, "instance": config.instance, "next": "setup apply"}
+            if install_service:
+                result["then"] = "setup service install"
+            return result
         from .setup_provision import apply_setup
 
         adoption = getattr(args, "adopt_admin_file", None) or config.adopt_admin_file
         validate_setup(config, adopt_admin_file=adoption)
-        return apply_setup(config, adopt_admin_file=adoption)
+        result = apply_setup(config, adopt_admin_file=adoption)
+        if install_service:
+            from .setup_service import service_setup
+
+            result["service"] = service_setup(config, args.config, "install")
+        else:
+            config_argument = shlex.quote(str(args.config.expanduser().absolute()))
+            print(
+                "Optional background service: mise run setup -- service install --start "
+                f"--config {config_argument}"
+            )
+        return result
     config = load_config(args.config)
+    if command == "service":
+        from .setup_service import service_setup
+
+        return service_setup(
+            config, args.config, args.service_command, start=getattr(args, "start", False)
+        )
     if command == "validate":
         return validate_setup(config)
     if command == "plan":

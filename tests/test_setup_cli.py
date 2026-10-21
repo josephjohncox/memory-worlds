@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from datetime import UTC, datetime
+from types import ModuleType
 
 import pytest
 
@@ -15,6 +16,142 @@ from memory_worlds.setup_cli import validate_setup
 from memory_worlds.setup_config import SetupConfig, save_config
 from memory_worlds.setup_files import read_json, write_private
 from memory_worlds.store import MemoryStore
+
+
+@pytest.fixture
+def service_cli(tmp_path, monkeypatch):
+    """Isolate CLI routing from the operating system's user service manager."""
+    provider = {
+        "provider": "openai-compatible",
+        "model": "explicit",
+        "base_url": "http://localhost:9999/v1",
+    }
+    config = SetupConfig(
+        data_dir=tmp_path / "data",
+        state_dir=tmp_path / "state",
+        extraction=provider,
+        embedding=provider,
+    )
+    path = tmp_path / "setup.toml"
+    save_config(config, path)
+    calls = []
+
+    def service_setup(config, config_file, operation, *, start=False):
+        calls.append((config, config_file, operation, start))
+        return {"operation": operation, "started": start}
+
+    module = ModuleType("memory_worlds.setup_service")
+    module.service_setup = service_setup
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    return config, path, calls
+
+
+@pytest.mark.parametrize(
+    "operation", ["install", "start", "stop", "restart", "status", "uninstall"]
+)
+@pytest.mark.parametrize("config_position", ["setup", "service", "action"])
+def test_service_dispatch_accepts_config_at_each_level(
+    service_cli, config_position, operation, capsys
+):
+    config, path, calls = service_cli
+    arguments = ["setup"]
+    if config_position == "setup":
+        arguments += ["--config", str(path)]
+    arguments += ["service"]
+    if config_position == "service":
+        arguments += ["--config", str(path)]
+    arguments += [operation]
+    if config_position == "action":
+        arguments += ["--config", str(path)]
+
+    run(parser().parse_args(arguments))
+
+    assert calls == [(config, path, operation, False)]
+    assert json.loads(capsys.readouterr().out) == {"operation": operation, "started": False}
+    assert not config.data_dir.exists()
+    assert not config.state_dir.exists()
+
+
+def test_service_install_explicit_start_is_forwarded(service_cli, capsys):
+    config, path, calls = service_cli
+    run(parser().parse_args(["setup", "service", "install", "--start", "--config", str(path)]))
+    assert calls == [(config, path, "install", True)]
+    assert json.loads(capsys.readouterr().out)["started"] is True
+
+
+@pytest.mark.parametrize("operation", ["start", "stop", "restart", "status", "uninstall"])
+def test_service_start_flag_is_only_valid_for_install(operation):
+    with pytest.raises(SystemExit):
+        parser().parse_args(["setup", "service", operation, "--start"])
+
+
+@pytest.mark.parametrize(
+    "wizard_arguments",
+    [[], ["init"], ["--service"], ["init", "--service"], ["--service", "init"]],
+)
+@pytest.mark.parametrize("apply_now", [True, False])
+def test_wizard_installs_service_only_when_requested_and_applied(
+    service_cli, wizard_arguments, apply_now, monkeypatch, capsys
+):
+    from memory_worlds import setup_interactive, setup_provision
+    from memory_worlds.setup_cli import run_setup_command
+
+    config, path, calls = service_cli
+    apply_calls = []
+    monkeypatch.setattr(setup_interactive, "wizard", lambda selected: config)
+    monkeypatch.setattr("builtins.input", lambda prompt: "yes" if apply_now else "no")
+
+    def apply_setup(selected, *, adopt_admin_file):
+        assert not calls, "service must not be installed before provisioning succeeds"
+        apply_calls.append((selected, adopt_admin_file))
+        return {"applied": True}
+
+    monkeypatch.setattr(setup_provision, "apply_setup", apply_setup)
+    args = parser().parse_args(["setup", "--config", str(path), *wizard_arguments])
+    result = run_setup_command(args)
+
+    requested = "--service" in wizard_arguments
+    assert apply_calls == ([(config, None)] if apply_now else [])
+    assert calls == ([(config, path, "install", False)] if requested and apply_now else [])
+    if requested and apply_now:
+        assert result["service"] == {"operation": "install", "started": False}
+    else:
+        assert "service" not in result
+    if not apply_now:
+        assert result["next"] == "setup apply"
+        if requested:
+            assert result["then"] == "setup service install"
+    output = capsys.readouterr().out
+    if apply_now and not requested:
+        assert "mise run setup -- service install --start --config" in output
+        assert str(path) in output
+
+
+def test_wizard_provision_failure_never_installs_service(service_cli, monkeypatch):
+    from memory_worlds import setup_interactive, setup_provision
+    from memory_worlds.setup_cli import run_setup_command
+
+    config, path, calls = service_cli
+    monkeypatch.setattr(setup_interactive, "wizard", lambda selected: config)
+    monkeypatch.setattr("builtins.input", lambda prompt: "yes")
+
+    def fail_setup(*args, **kwargs):
+        raise MemoryError("provisioning failed")
+
+    monkeypatch.setattr(setup_provision, "apply_setup", fail_setup)
+    with pytest.raises(MemoryError, match="provisioning failed"):
+        run_setup_command(
+            parser().parse_args(["setup", "init", "--service", "--config", str(path)])
+        )
+    assert calls == []
+
+
+def test_wizard_service_flag_rejects_non_wizard_commands():
+    from memory_worlds.setup_cli import run_setup_command
+
+    args = parser().parse_args(["setup", "--service", "plan"])
+    with pytest.raises(MemoryError, match="only with setup or setup init"):
+        run_setup_command(args)
 
 
 def test_setup_dispatch_precedes_admin_token_and_local_store(tmp_path, monkeypatch, capsys):

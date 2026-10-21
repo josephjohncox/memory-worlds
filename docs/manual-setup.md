@@ -5,6 +5,10 @@
 Use this path when you want to manage the daemon, credentials and graph
 configuration yourself. The [guided setup](setup.md) automates these steps and
 creates separate client profiles. Choose one setup path for an installation.
+For managed startup at user login, use guided setup's
+[background service option](setup.md#run-as-a-background-service). It runs the
+applied TOML installation; it does not install an independently configured
+manual daemon.
 
 ## Initialize the authority
 

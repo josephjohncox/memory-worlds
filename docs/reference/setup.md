@@ -45,7 +45,7 @@ expands to your home directory, and no shell evaluates configuration.
 `data_dir` and `state_dir` must be separate dedicated directories. API and graph
 ports must differ and bind `127.0.0.1`. Setup refuses a remote Docker context.
 It does not install system packages, trust source automatically, change your
-shell or register a background service.
+shell or register a background service unless you request service installation.
 
 For hybrid mode, set `mode = "hybrid"` before first apply and add:
 
@@ -72,7 +72,7 @@ All commands accept `--config FILE`:
 
 | Command | Effect |
 | --- | --- |
-| `setup` or `setup init` | Collect and review configuration; offer a separate apply step |
+| `setup` or `setup init` | Collect and review configuration; offer a separate apply step; `init --service` also installs a user service after apply |
 | `setup validate` | Check configuration and referenced files without changing state |
 | `setup plan` | Show configured resources and planned effects |
 | `setup connect` | Authenticate as a corporate user and record selected access |
@@ -80,6 +80,9 @@ All commands accept `--config FILE`:
 | `setup run` | Start the owned graph and serve the API in the foreground |
 | `setup doctor` | Inspect ownership, credential bindings and readiness |
 | `setup down` | Remove the owned graph containers/network after the API stops; retain data |
+| `setup service install [--start]` | Register the applied installation for user-login startup; optionally start now |
+| `setup service start`, `stop`, `restart`, `status` | Control or inspect the registered user service |
+| `setup service uninstall` | Stop and unregister the user service; retain installation data |
 
 Apply provisions an agent-persistent notes scope, router configuration and an
 owned graph definition. It does not call a model. Repeat apply preserves recorded
@@ -101,6 +104,57 @@ backend. Ctrl-C stops the API and leaves the graph running. Down refuses an
 active API and does not remove unrelated containers or persistent volumes.
 Missing provider keys or damaged client profiles do not block down when graph
 ownership and its definition still match.
+
+## Background service
+
+The `setup service` commands use the same TOML and applied installation as
+foreground `setup run`. They install a per-user systemd unit on Linux or a
+launchd LaunchAgent on macOS. A functioning systemd user manager or a logged-in
+macOS user session is required. These are login services, not machine-wide
+boot services; setup does not enable Linux lingering or require root access.
+
+Install after `setup apply`. Stop a foreground API before starting the service.
+`install` registers startup for future user logins; `install --start` also starts
+the process immediately.
+`setup init --service` registers the service only after you accept and complete
+the wizard's apply step. It does not start it immediately. A declined apply
+does not install a service.
+
+The generated definition launches the exact installed Python interpreter with
+`-I -m memory_worlds.cli setup run --config` and the absolute TOML path. Isolated
+Python ignores ambient import-path overrides. It does not
+launch a shell, mise or uv. Keep that Python environment and checkout available
+at their installed paths. To move or replace the runtime, uninstall the service
+before moving the old environment, then install it from the new environment.
+Repeated install preserves the recorded interpreter and definition. Stop the
+service before `setup apply`; restart it after applying changes.
+
+Service startup uses a bounded environment. Its PATH includes the Docker
+executable directory found at installation and standard system directories;
+it does not source shell profiles or copy arbitrary shell variables. Provider
+credentials still come from the TOML's referenced private files. Ensure the
+local Docker engine and context are available outside your terminal session.
+
+`stop` stops the managed process and retains login startup registration on both
+platforms; `start` runs it again. `uninstall` stops the process, disables startup
+and removes its registered definition. Neither command removes the
+TOML, journal, credentials, source data or graph volumes. The owned graph stays
+running until a separate `setup down` after the service stops.
+
+Setup saves the service authority, interpreter, definition and content hash in
+private `state_dir/service.json`. Management commands verify this receipt and
+the owned service definition; they refuse unrelated or externally changed
+definitions. If registration is interrupted, rerun `service install` with the
+same configuration to finish its recorded intent. If removal is interrupted,
+rerun `service uninstall`. Do not delete the receipt to bypass ownership checks.
+
+`service status` reports the service-manager unit or label and its definition's
+absolute file path. On Linux, inspect logs with `journalctl --user -u UNIT`,
+using that reported unit. On
+macOS, stdout and stderr are retained in private `service.stdout.log` and
+`service.stderr.log` files under `state_dir`. `setup doctor` still checks the
+installation and API; a service-manager status alone does not establish API,
+graph or provider readiness.
 
 ## Adopt an existing authority
 
@@ -135,7 +189,7 @@ The intent is removed after completion.
 Resume by rerunning the wizard with the same output path:
 
 ```sh
-python3 scripts/bootstrap.py --config "$config"
+mise run setup -- init --config "$config"
 ```
 
 If a newly entered provider key had not reached its private file, enter that

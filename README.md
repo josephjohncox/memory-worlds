@@ -11,12 +11,13 @@ Source receipts record durable storage, with graph extraction tracked separately
 
 ## Run locally
 
-Install [mise](https://mise.jdx.dev/installing-mise.html), a host Python 3, and
-Docker with Compose. Linux and macOS are supported. From a reviewed checkout:
+Install [mise](https://mise.jdx.dev/installing-mise.html) and Docker with Compose.
+Linux and macOS are supported. From a reviewed checkout:
 
 ```sh
 mise trust
-python3 scripts/bootstrap.py
+mise install --locked
+mise run setup
 ```
 
 The wizard asks for local or hybrid setup, extraction and embedding providers,
@@ -31,6 +32,17 @@ mise run setup -- run
 The API binds to loopback. Agents use their own generated credentials; the local
 operator credential stays with you. Ctrl-C stops the API and retains the graph.
 Model processing uses the providers you configure.
+
+After stopping any foreground instance, register the configured installation for
+user-login startup and start it in the background:
+
+```sh
+mise run setup -- service install --start
+```
+
+This installs a per-user systemd service on Linux or a launchd LaunchAgent on
+macOS. See [background service setup](docs/setup.md#run-as-a-background-service)
+for custom configuration paths, controls and runtime requirements.
 
 See [guided setup](docs/setup.md) for custom config paths, scripted setup and
 diagnostics. For direct control of initialization and credentials, use

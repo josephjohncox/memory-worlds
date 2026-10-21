@@ -217,9 +217,9 @@ def unlink_private(path: Path, *, expected_hash: str) -> None:
 
 
 @contextmanager
-def setup_lock(config: SetupConfig):
+def setup_lock(config: SetupConfig, *, name: str = "setup.lock"):
     ensure_private_dir(config.state_dir)
-    path = check_path(config.path("setup.lock"))
+    path = check_path(config.path(name))
     with _directory(path.parent) as directory:
         _private_directory(directory)
         fd = os.open(

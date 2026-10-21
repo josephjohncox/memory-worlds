@@ -34,6 +34,10 @@ def validate_output(output: Path, config: SetupConfig) -> None:
         config.path(name)
         for name in (
             "setup.lock",
+            "service.lock",
+            "service.json",
+            "service.stdout.log",
+            "service.stderr.log",
             "provision.json",
             "state.json",
             "operator.token",

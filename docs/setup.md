@@ -14,12 +14,16 @@ local Docker engine. From a reviewed source checkout:
 
 ```sh
 mise trust
-python3 scripts/bootstrap.py
+mise install --locked
+mise run setup
 ```
 
-The Python bootstrap runs the locked mise toolchain. If the toolchain is already
-installed, `mise run setup` opens the same wizard. An installed package also
-provides `memory-worlds setup` without a checkout or mise.
+Mise installs the pinned Python and dependency tools; you do not need a host
+Python installation. The setup task installs locked Python dependencies before
+opening the wizard. If the toolchain is already installed, run `mise run setup`
+directly. The optional `python3 scripts/bootstrap.py` launcher invokes these same
+mise tools when a host Python is available. An installed package also provides
+`memory-worlds setup` without a checkout or mise.
 
 Have these settings ready:
 
@@ -62,6 +66,51 @@ Down removes this installation's graph containers and network while retaining
 source data and graph volumes. It requires the recorded ownership and graph
 definition to match; missing model keys or damaged client profiles do not prevent
 shutdown.
+
+## Run as a background service
+
+After applying the configuration, stop any foreground API, then install a
+per-user service and start it now:
+
+```sh
+mise run setup -- service install --config "$config" --start
+mise run setup -- service status --config "$config"
+```
+
+Linux uses systemd's user manager; macOS uses a launchd LaunchAgent. The service
+starts at user login. Installation needs no sudo and does not create a system
+service. Omit `--start` to register it for a later login without starting it now.
+For a new installation, `mise run setup -- init --service` offers the usual
+wizard and apply step, then installs the service after a successful apply.
+
+The service runs the configured Python environment directly, without invoking
+mise or installing dependencies at login. Keep the checkout, virtual environment
+and TOML at their installed paths. Docker must remain available to your user,
+and its local engine must be running. On macOS, arrange for Docker Desktop or
+your chosen engine to start at login as well.
+
+Manage the process through setup:
+
+```sh
+mise run setup -- service restart --config "$config"
+mise run setup -- service stop --config "$config"
+mise run setup -- service start --config "$config"
+```
+
+Stop retains startup registration for the next user login. Stop the service
+before applying changed configuration. To remove startup
+registration and stop the process:
+
+```sh
+mise run setup -- service uninstall --config "$config"
+```
+
+Stopping or uninstalling retains source data, graph volumes and credentials.
+The graph remains running; use `setup down` after stopping the service to stop
+its containers. See the [service reference](reference/setup.md#background-service)
+for logs, environment handling and installation paths.
+
+## Choose an agent profile
 
 The generated Pi profiles live in `state_dir`. Select the personal profile for
 personal chats. Hybrid mode also generates separate work-research and direct
