@@ -57,12 +57,21 @@ remain external operations. Diagnostics and preview reports omit document bodies
 ## Planning and context
 
 Planning performs no service calls or writes. A deterministic heading-, paragraph-
-and fence-aware chunker preserves contiguous exact text and character offsets.
+and fence-aware chunker preserves contiguous exact text and Unicode-scalar offsets.
 Chunks carry the document identity, revision, heading path, chunk position and
 whole-document digest. No overlap or generated summary introduces extra claims.
-Identities depend on the collection, object, revision and chunk descriptor, never
-the absolute input path or the current clock. Replaying identical input is
-idempotent; changed data under an immutable revision conflicts atomically.
+Chunk identities hash only collection namespace, object ID, immutable revision
+and zero-based chunk index. Every chunk also carries one canonical fingerprint
+of the complete document, retained collection context and chunking policy. Require
+complete-document batches with every index from zero through count minus one.
+Thus changed content or shifted boundaries under the same immutable revision
+conflict at chunk zero rather than silently acquiring disjoint source IDs.
+Content-derived revisions hash canonical JSON of the normalized text, retained
+document fields and collection context, excluding the revision field itself.
+Canonical JSON uses sorted keys and finite values. Raw source-byte and normalized
+text digests remain distinct. Neither identities nor replay payloads use the
+absolute input path or a newly generated acquisition time. Identical input replays;
+acquisition time belongs in the apply receipt.
 
 Lower documents to the current EpisodeInput contract with typed
 `metadata.knowledge`, original source references and Graphiti extraction enabled
@@ -74,6 +83,9 @@ preserve attribution, revision, content kind and temporal uncertainty. Knowledge
 chunks do not borrow arbitrary recent episodes from unrelated documents or
 revisions as extraction context. Retrieval retains source episode IDs so a
 harness can obtain the authorized source document and its context for citations.
+The native client and Pi/MCP tools provide a bounded source-episode lookup using
+the existing world/scope/episode route and current caller credential. Pi renders
+the originating source IDs; lookup never falls back to broader credentials.
 
 ## Applying and audience
 
@@ -85,7 +97,13 @@ and no other live user readers.
 Shared application is a distinct, explicit knowledge publication action. It
 requires an explicitly chosen world/scope, an explicit shared-mode request,
 publication-eligible documents, the world's write role and the scope's publish
-grant. It never widens chat-directory import permissions. Validate the entire
+grant, checked by the service. Allowed destinations are world-shared scopes in
+team/company/ad-hoc worlds, or explicitly selected run-shared scopes. Reject the
+entire batch if any document retains private eligibility. Record an importer
+audience attestation bound to the service authority and canonical world/scope
+IDs. This attestation means the importer explicitly selected that audience; it
+does not assert that source ACL equivalence was verified. It never widens
+chat-directory import permissions. Validate the entire
 knowledge batch before one transaction inserts source records, audit rows and
 projection jobs. Replays and source conflicts follow the current source contract.
 
@@ -109,6 +127,10 @@ Plans can be saved as private bounded files with a canonical SHA-256 digest.
 Applying a reviewed plan verifies the requested digest and submits the exact
 saved records, without reopening source files or regenerating timestamps. Plan
 files contain source content and must not appear in preview output or artifacts.
+The plan digest binds content, context and document eligibility, not credentials
+or a destination. Apply independently binds the selected authority, world, scope
+and private/shared mode. Shared apply requires explicit audience acknowledgement
+for that destination and rechecks live write/publication permissions.
 MCP accepts supplied bundles; filesystem access is not implicitly granted by
 enabling the MCP server. Native SDK callers can explicitly invoke local planning.
 Preview metadata and source citations remain separate from chat capture, ambient
