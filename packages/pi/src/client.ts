@@ -147,11 +147,11 @@ export function serviceURL(value: string): string {
 
 export async function readTokenFile(path: string): Promise<string> {
   const info = await stat(path);
-  if (!info.isFile() || info.size > 8192 || (process.platform !== "win32" && (info.mode & 0o077))) {
+  if (!info.isFile() || info.size > 16_386 || (process.platform !== "win32" && (info.mode & 0o077))) {
     throw new Error("Memory Worlds token must be a private regular file (chmod 600)");
   }
   const token = (await readFile(path, "utf8")).trim();
-  if (!token || /\s/.test(token)) throw new Error("Memory Worlds token file must contain one bearer token");
+  if (!token || token.length > 16_384 || /[^\x21-\x7e]/.test(token)) throw new Error("Memory Worlds token file must contain one ASCII bearer token of at most 16384 characters");
   return token;
 }
 

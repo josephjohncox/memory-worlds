@@ -40,6 +40,51 @@ test("token files require private permissions and token rotation is read each ti
   } finally { await rm(dir, { recursive: true }); }
 });
 
+test("token files accept the API maximum ASCII bearer with bounded LF or CRLF endings", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mw-token-boundary-"));
+  try {
+    const path = join(dir, "token"), token = "synthetic-" + "a".repeat(16_384 - "synthetic-".length);
+    for (const ending of ["", "\n", "\r\n"]) {
+      await writeFile(path, token + ending, { mode: 0o600 });
+      assert.equal(await readTokenFile(path), token);
+    }
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+test("token files reject overlong, non-ASCII, empty or embedded-whitespace bearers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mw-token-invalid-"));
+  try {
+    const path = join(dir, "token");
+    for (const text of ["a".repeat(16_385), "a".repeat(16_385) + "\n", "", "\r\n", "synthetic token", "synthetic\ttoken", "synthetic\ntoken", "synthetic\rtoken", "synthetic-é", "synthetic-\u007f"]) {
+      await writeFile(path, text, { mode: 0o600 });
+      await assert.rejects(readTokenFile(path), /ASCII bearer token/);
+    }
+    await writeFile(path, "a".repeat(16_385) + "\r\n");
+    await assert.rejects(readTokenFile(path), /private regular file/);
+    await assert.rejects(readTokenFile(dir), /private regular file/);
+  } finally { await rm(dir, { recursive: true }); }
+});
+
+test("discovery forwards a private token larger than 8 KiB unchanged only in authenticated headers", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mw-token-discovery-"));
+  try {
+    const path = join(dir, "token"), token = "synthetic-" + "b".repeat(12_000), requests = [];
+    await writeFile(path, token + "\n", { mode: 0o600 });
+    const client = new MemoryWorldsClient("http://127.0.0.1:8787", () => readTokenFile(path), async (url, options) => {
+      requests.push({ url, options });
+      assert.equal(options.headers.Authorization, `Bearer ${token}`);
+      assert.equal(options.method, "GET"); assert.equal(options.body, undefined);
+      return reply(url.endsWith("/v1/worlds") ? [world] : []);
+    });
+    const result = await client.discover();
+    assert.deepEqual(result, { worlds: [world], scopes: { private: [] }, mounts: [] });
+    assert.equal(requests.length, 3);
+    assert(!JSON.stringify(result).includes(token));
+    assert(!JSON.stringify(result).includes("Bearer "));
+    assert(requests.every(request => !request.url.includes(token)));
+  } finally { await rm(dir, { recursive: true }); }
+});
+
 test("federation retains explicit scope provenance and reports partial failure", async () => {
   const seen = [];
   const client = new MemoryWorldsClient("http://localhost:8787", async () => "secret", async (_url, options) => {
