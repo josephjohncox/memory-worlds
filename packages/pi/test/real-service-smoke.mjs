@@ -73,7 +73,7 @@ try {
   assert.equal(identity.authority_id, metadata.world.authority_id);
   const configPath = join(dir, "memory-worlds.json");
   const selected = { world_id: metadata.world.id, scope_id: metadata.scope.id };
-  await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, writeScope: selected, readScopes: [selected], graphAliases: { project: selected, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
+  await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, writeScope: selected, readScopes: [selected], projectCaptured: false, graphAliases: { project: selected, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
   await mkdir(join(dir, "agent"));
   pi = spawn(process.execPath, [join(root, "node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"), "--mode", "rpc", "--no-session", "--no-extensions", "--no-skills", "--no-context-files", "--no-prompt-templates", "--extension", root], {
     cwd: dir, env: { ...fixtureEnv, PI_CODING_AGENT_DIR: join(dir, "agent"), MEMORY_WORLDS_CONFIG: configPath, MEMORY_WORLDS_TOKEN_FILE: tokenPath, MEMORY_WORLDS_URL: url }, stdio: ["pipe", "pipe", "pipe"],
@@ -101,7 +101,7 @@ try {
   const commands = await command({ type: "get_commands" });
   assert(commands.data.commands.some(command => command.name === "memory"));
   assert(commands.data.commands.some(command => command.name === "graph"));
-  for (const text of ["/memory status", "/memory capture real-service-bearing-evidence", "/memory search real-service-bearing-evidence"]) {
+  for (const text of ["/memory status", "/memory capture real-service-bearing-evidence", "/memory source real-service-bearing-evidence"]) {
     assert.equal((await command({ type: "prompt", message: text })).success, true);
   }
   const searchResponse = await fetch(`${url}/v1/search`, { method: "POST", headers: authHeaders, body: JSON.stringify({ scopes: [selected], query: "real-service-bearing-evidence", mode: "source", limit: 5 }) });
@@ -136,7 +136,7 @@ try {
   const runScope = { world_id: metadata.world.id, scope_id: metadata.run_scope_id };
   await client.publishScope(runScope, { source_id: "fixture-run-brief", occurred_at: new Date().toISOString(), content: "shared-run-brief-for-private-working-notes", project: false });
   assert.equal(await client.canFlow([runScope], selected), true);
-  for (const text of [`/memory read ${metadata.world.id} ${runScope.scope_id}`, "/memory capture on", "/memory search shared-run-brief-for-private-working-notes", "/memory status"]) assert.equal((await command({ type: "prompt", message: text })).success, true);
+  for (const text of [`/memory read ${metadata.world.id} ${runScope.scope_id}`, "/memory capture on", "/memory source shared-run-brief-for-private-working-notes", "/memory status"]) assert.equal((await command({ type: "prompt", message: text })).success, true);
   const lastStatus = messages.filter(message => message.type === "extension_ui_request" && message.method === "notify" && message.message?.startsWith("{\n") && message.message.includes('"automaticCapture"')).at(-1);
   assert.equal(JSON.parse(lastStatus.message).automaticCapture, true, "Live run-shared readers must flow into the narrower private capture target");
   assert.equal((await command({ type: "prompt", message: "/memory capture private-note-after-shared-run-read" })).success, true);

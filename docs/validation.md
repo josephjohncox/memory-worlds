@@ -1,16 +1,20 @@
 # Validation
 
-## Scope implementation, version 0.2.0
+## Current implementation, version 0.2.0
 
 Executed on 2026-10-20 local time (2026-10-21 UTC), Linux ARM64:
 
 | Check | Result |
 | --- | --- |
-| Python 3.15.0 complete default suite | 255 passed, 3 opt-in checks skipped |
-| Real Graphiti/FalkorDB check, enabled separately | Passed extraction and entity/fact retrieval across two worlds and a private scope within one world |
-| Final built-image and authenticated Compose checks | 2 passed; all 16 service source modules match the built image byte for byte |
-| Node 26.12.0 / Pi 1.3.0 | 68 unit cases, TypeScript checks, and both actual Pi RPC smokes passed |
+| Python 3.15.0 complete default suite | 294 passed, 4 infrastructure checks skipped |
+| Real Graphiti/FalkorDB check, enabled separately | 15 passed through mise, including extraction and entity/fact retrieval across worlds and private scopes |
+| Final built-image and authenticated Compose checks | 3 passed, including default Compose model-outage durability; all 17 service source modules match the built image byte for byte |
+| Node 26.12.0 / Pi 1.3.0 | 69 unit cases, TypeScript checks, and both actual Pi RPC smokes passed |
 | Helm 4.3.1 / Kubernetes 1.37.0 | Six profile contracts and 22 invalid configurations checked; isolated kind and Helm lifecycle smokes passed |
+
+Mise 2026.10.17 manages the locked tools and developer/CI tasks. Actual task
+execution covers dependency installation, full Python/Pi checks, CLI forwarding,
+packaging, real Graphiti/FalkorDB, and the isolated kind/Helm lifecycle.
 
 Scope tests cover restricted recursive delegation, ancestor revocation and
 expiry, default parent/sibling isolation, opt-in read-only coordinator access,
@@ -39,6 +43,11 @@ oversized archives. OIDC checks cover signatures, issuer/audience/expiry, key
 rotation, live membership, and grant containment. Router tests exercise two real
 daemons, durable offline publication, restart, recovery, and validated receipts.
 SSH tests use a real temporary tunnel and still require API credentials.
+Discovery checks exercise visible-only aliases, ambiguity rejection, canonical
+IDs, and actual CLI capture/recall through named scope selections. OIDC checks
+include native device login against a signed loopback issuer, application/scope
+gates, policy-change revocation, and group/private-scope separation. No live Okta
+tenant was exercised.
 
 Graph checks use the actual pinned Graphiti library and FalkorDB with synthetic
 LLM and embedding responses. They verify ingestion, namespace isolation, entity

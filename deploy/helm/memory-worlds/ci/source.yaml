@@ -1,2 +1,4 @@
+graph:
+  backend: disabled
 falkordb:
   enabled: false

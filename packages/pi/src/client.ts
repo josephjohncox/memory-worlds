@@ -35,7 +35,7 @@ export interface Delivery {
 }
 export interface Publication {
   destination_mount_id: string; world_id: string; source_id: string;
-  content: string; occurred_at: string; project: false;
+  content: string; occurred_at: string; project: boolean;
 }
 
 export type ScopeKind = "world-shared" | "run-shared" | "agent-persistent" | "invocation-private";

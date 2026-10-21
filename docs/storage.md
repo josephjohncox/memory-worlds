@@ -14,10 +14,11 @@ Files are private to their operating-system owner. Use a local filesystem.
 
 SQLite readers and writers use the daemon; agents do not synchronize open files.
 Local administrative import/export uses the same authorization and SQLite
-transactions. World metadata is immutable in this version, so a source read
-transaction and that metadata establish the portable export boundary.
+transactions. A source read transaction establishes the episode snapshot; world
+and scope metadata are copied into the archive at export time.
 
-`.mworld` recovery is source-only. It preserves attributed evidence and audit
+`.mworld` archives contain durable source evidence rather than a graph snapshot.
+Restore queues a new Graphiti extraction by default. The archive preserves attributed evidence and audit
 records and deliberately excludes live ACLs and credentials. It can reconstruct
 a new graph, but model extraction need not reproduce the same interpretation.
 The current archive format identifies the selected scope and preserves invocation
@@ -60,6 +61,14 @@ files. Never place a live source or graph data directory in file synchronization
 For shared deployment, a PVC/StatefulSet can hold a single authoritative backend.
 It does not supply replication or backups. Multiple API replicas need shared SQL
 storage and durable work ownership; sharing SQLite WAL over a network filesystem
-is unsupported. The optional Neptune adapter requires OpenSearch as well as
+is unsupported. Graphiti is the extraction and retrieval engine; the default backend is FalkorDB.
+The experimental Neptune adapter requires OpenSearch as well as
 graph storage. It has offline contract tests; real AWS ingestion and recovery
 remain unverified. See [deployment configuration](deployments.md).
+
+RDS PostgreSQL with pgvector cannot replace this graph backend: the pinned
+Graphiti distribution has no PostgreSQL driver. It also cannot replace SQLite
+by configuration alone; the application has no PostgreSQL source/control store.
+For AWS without Neptune, deploy the normal FalkorDB/PVC topology. See the
+[PostgreSQL and RDS assessment](rds-postgresql.md) for verified upstream and AWS
+support, preflight queries, and the implementation work required for RDS.

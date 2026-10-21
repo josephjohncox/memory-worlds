@@ -50,6 +50,17 @@ function fixture(configOverrides = {}, dependencies = {}) {
   return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
 }
 
+
+test("graph extraction and retrieval are the normal configuration with explicit source opt-outs", () => {
+  const normal = parseConfig({}, {});
+  assert.equal(normal.projectCaptured, true);
+  assert.equal(normal.retrieval.mode, "graph");
+  assert.equal(normal.automaticCapture, false);
+  const recovery = parseConfig({ projectCaptured: false, retrieval: { mode: "source" } }, {});
+  assert.equal(recovery.projectCaptured, false);
+  assert.equal(recovery.retrieval.mode, "source");
+});
+
 test("the extension registers native tools, command, UI and lifecycle hooks", async () => {
   const f = fixture();
   await f.run("session_start", { reason: "startup" });
@@ -114,7 +125,7 @@ test("publication is an explicit selected-text user command without private prov
   assert.equal(f.publications.length, 1);
   assert.deepEqual(Object.keys(f.publications[0]).sort(), ["content", "destination_mount_id", "occurred_at", "project", "source_id", "world_id"]);
   assert.equal(f.publications[0].content, "Selected public statement");
-  assert.equal(f.publications[0].project, false);
+  assert.equal(f.publications[0].project, true);
   await f.command("publish team private Oops");
   assert.equal(f.publications.length, 1);
 });

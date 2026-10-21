@@ -29,7 +29,9 @@ def test_http_agents_isolation_publication_and_revocation(tmp_path):
             == 200
         )
         found = api.post(
-            "/v1/search", json={"world_ids": [world.id], "query": "ceramic"}, headers=auth
+            "/v1/search",
+            json={"world_ids": [world.id], "query": "ceramic", "mode": "source"},
+            headers=auth,
         )
         assert len(found.json()["results"]) == 1
         bob = api.post(
@@ -37,7 +39,7 @@ def test_http_agents_isolation_publication_and_revocation(tmp_path):
         ).json()
         assert api.post(
             "/v1/search",
-            json={"world_ids": [world.id, bob["id"]], "query": "ceramic"},
+            json={"world_ids": [world.id, bob["id"]], "query": "ceramic", "mode": "source"},
             headers=token,
         ).status_code in (403, 404)
         assert (
@@ -103,7 +105,9 @@ def test_validation_limits_and_graph_unavailability(tmp_path):
         assert "secret-fixture-marker" not in response.text
         assert (
             api.post(
-                "/v1/search", json={"world_ids": [], "query": "x"}, headers=headers
+                "/v1/search",
+                json={"world_ids": [], "query": "x", "mode": "source"},
+                headers=headers,
             ).status_code
             == 422
         )

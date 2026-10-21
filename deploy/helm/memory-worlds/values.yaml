@@ -13,11 +13,11 @@ serviceAccount:
   name: ""
   annotations: {}
 runtime:
-  # Optional operator-created Secret containing provider/OIDC environment settings.
+  # Operator-created Secret containing explicit extraction/embedding provider settings.
   existingSecret: ""
 graph:
-  # disabled leaves capture/source search available without model calls.
-  backend: disabled
+  # Graphiti is the normal memory engine; disabled is for maintenance/recovery only.
+  backend: falkordb
 persistence:
   # Empty storageClass uses the cluster default; "-" explicitly uses no class.
   storageClass: ""

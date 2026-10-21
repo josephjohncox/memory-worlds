@@ -88,7 +88,7 @@ def create_mcp(url: str, token: str):
 
     @mcp.tool()
     def memory_remote_search(
-        mount_ids: list[str], query: str, graph: bool = False, limit: int = 10
+        mount_ids: list[str], query: str, graph: bool = True, limit: int = 10
     ) -> dict[str, Any]:
         """Read explicit shared mounts. Report partial failures alongside attributed evidence."""
         with Client(url, token) as client:
@@ -111,7 +111,7 @@ def create_mcp(url: str, token: str):
     def memory_search(
         world_ids: list[str],
         query: str,
-        graph: bool = False,
+        graph: bool = True,
         limit: int = 10,
         scope_id: str | None = None,
         scopes: list[ScopeSelection] | None = None,
@@ -137,7 +137,7 @@ def create_mcp(url: str, token: str):
         source_id: str,
         content: str,
         occurred_at: str,
-        project: bool = False,
+        project: bool = True,
         scope_id: str | None = None,
         context_id: str | None = None,
     ) -> Receipt:
@@ -162,7 +162,7 @@ def create_mcp(url: str, token: str):
         source_id: str,
         content: str,
         occurred_at: str,
-        project: bool = False,
+        project: bool = True,
         scope_id: str | None = None,
         context_id: str | None = None,
     ) -> Receipt:

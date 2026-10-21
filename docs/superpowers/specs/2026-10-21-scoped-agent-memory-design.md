@@ -67,8 +67,8 @@ restore credentials or broaden private scopes.
 
 Graphiti remains the sole graph extraction engine for both local and shared
 deployments. SQLite remains authoritative for source evidence, authorization,
-receipts, and orchestration. Graph projection is opt-in; source capture and search
-work while the graph is disabled or unavailable.
+receipts, and orchestration. Graphiti extraction and recall are the default. Explicit source retrieval remains
+available for recovery, and an unavailable graph does not discard source evidence.
 
 Graph namespaces include authority, world, scope, and generation. Extraction's
 previous-episode context stays in the same scope. Facts and entity summaries

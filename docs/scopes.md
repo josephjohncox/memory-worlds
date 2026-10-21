@@ -148,8 +148,8 @@ relationship facts.
 
 Every scope uses the same namespace derivation, including world-shared memory.
 Unknown writes degrade the affected scope rather than siblings;
-rebuilds also target one scope. Scratch may remain source-only. `--project` or
-the native graph tool explicitly requests graph processing.
+rebuilds also target one scope. Every capture queues extraction by default. Explicit source-only capture is an
+operator or agent recovery choice, and graph failures never discard source.
 
 ## Native Pi graph tools
 

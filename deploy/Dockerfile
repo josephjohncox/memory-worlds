@@ -18,6 +18,7 @@ USER memory
 ENV MEMORY_WORLDS_DATA_DIR=/data
 ENV PATH="/opt/venv/bin:$PATH"
 ENV GRAPHITI_TELEMETRY_ENABLED=false
+ENV MEMORY_WORLDS_GRAPH_BACKEND=falkordb
 EXPOSE 8787
 ENTRYPOINT ["memory-worlds"]
 CMD ["serve", "--host", "0.0.0.0", "--allow-network"]

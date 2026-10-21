@@ -220,7 +220,6 @@ def test_cli_scope_selections_reach_http_without_implicit_worlds(backend, capsys
             f"private:{SCOPE}",
             "--select",
             f"team:{OTHER}",
-            "--graph",
             "--entities",
         ]
     )
@@ -494,6 +493,7 @@ def test_real_daemon_python_and_cli_child_context_isolation(tmp_path):
                 found = child.search(
                     SearchRequest(
                         query="coolant",
+                        mode="source",
                         scopes=[
                             selected,
                             ScopeSelection(world_id=world.id, scope_id=child_scope.id),

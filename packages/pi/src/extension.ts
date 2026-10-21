@@ -15,7 +15,7 @@ export interface ExtensionDependencies {
   client?: (config: MemoryConfig) => MemoryWorldsClient;
   review?: (selected: readonly MemoryProposal[], signal: AbortSignal) => Promise<unknown>;
 }
-const HELP = "/memory status | worlds | read WORLD [SCOPE]|none | mounts | mount MOUNT,...|none | target WORLD SCOPE|off | scopes WORLD | alias project|global WORLD SCOPE | share WORLD SCOPE TEXT | capture on|off|TEXT | search QUERY | graph QUERY | publish MOUNT WORLD TEXT | deliveries";
+const HELP = "/memory status | worlds | read WORLD [SCOPE]|none | mounts | mount MOUNT,...|none | target WORLD SCOPE|off | scopes WORLD | alias project|global WORLD SCOPE | share WORLD SCOPE TEXT | capture on|off|TEXT | search QUERY | source QUERY | publish MOUNT WORLD TEXT | deliveries";
 const CAPTURE_INTENT_TYPE = "memory-worlds:capture-intent:v1";
 const PUBLICATION_INTENT_TYPE = "memory-worlds:publication-intent:v1";
 class CommandError extends Error {}
@@ -433,9 +433,9 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
           const receipt = await captureSelected(target, { context_id: state.boundContext?.id, source_id: `pi:explicit:${randomUUID()}`, content: text, occurred_at: new Date().toISOString(), source_type: "pi", metadata: {}, project: config.projectCaptured }, signal(ctx));
           ctx.ui.notify(`Captured ${receipt.episode.id} in ${target.id}`, "info"); return;
         }
-        if (command === "search" || command === "graph") {
+        if (command === "search" || command === "source") {
           const query = argument;
-          const result = await search(ctx, query, command === "graph" ? "graph" : "source");
+          const result = await search(ctx, query, command === "source" ? "source" : "graph");
           ctx.ui.notify(memoryContext(result, config.retrieval.maxChars), result.complete ? "info" : "warning"); return;
         }
         if (command === "publish") {
@@ -450,7 +450,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
           const previous = ctx.sessionManager.getEntries().find(entry => entry.type === "custom" && entry.customType === PUBLICATION_INTENT_TYPE && (entry.data as { key?: string } | undefined)?.key === key);
           const intent = previous?.type === "custom" ? previous.data as { key: string; sourceId: string; occurredAt: string } : { key, sourceId: `pi:publication:${randomUUID()}`, occurredAt: new Date().toISOString() };
           if (!previous) pi.appendEntry(PUBLICATION_INTENT_TYPE, intent);
-          const result = await client.publish({ destination_mount_id: mountId, world_id: worldId, source_id: intent.sourceId, content: text, occurred_at: intent.occurredAt, project: false }, signal(ctx));
+          const result = await client.publish({ destination_mount_id: mountId, world_id: worldId, source_id: intent.sourceId, content: text, occurred_at: intent.occurredAt, project: config.projectCaptured }, signal(ctx));
           pending = undefined; paint(ctx);
           ctx.ui.notify(`Publication ${result.id}: ${result.state}`, "info"); return;
         }
@@ -470,7 +470,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     promptSnippet: "Search selected Memory Worlds with source attribution",
     parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }), mode: Type.Optional(Type.Union([Type.Literal("source"), Type.Literal("graph")])) }),
     execute: async (_id, params, abort, _update, ctx) => {
-      const result = await search(ctx, params.query, params.mode ?? "source", abort);
+      const result = await search(ctx, params.query, params.mode ?? "graph", abort);
       return { content: [{ type: "text", text: memoryContext(result, ready().config.retrieval.maxChars) }], details: { records: result.results.length, complete: result.complete, authorities: [...new Set(result.results.map(hit => hit.authority_id))] } };
     },
     renderCall: (args, theme) => new Text(theme.fg("accent", `Memory · ${cleanTerminal(args.query)}`), 0, 0),

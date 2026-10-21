@@ -140,3 +140,103 @@ def test_graph_compose_authentication_configuration_and_restart():
         # The unique project owns these containers, network, and volume. Preserve
         # all images and every resource belonging to any other Compose project.
         compose("down", "--volumes", "--remove-orphans", "--timeout", "10")
+
+
+def test_default_compose_queues_graphiti_and_retains_sources_during_model_outage(tmp_path):
+    """Run the default topology; unreachable local model endpoints cause no paid calls."""
+    import json
+
+    import httpx
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    definition = yaml.safe_load((root / "deploy/compose.yaml").read_text())
+    definition["services"]["api"].pop("build")
+    definition["services"]["api"]["image"] = os.getenv(
+        "MEMORY_WORLDS_TEST_IMAGE", "memory-worlds:local"
+    )
+    definition["services"]["api"]["ports"] = ["127.0.0.1::8787"]
+    definition["services"]["api"]["environment"].update(
+        MEMORY_WORLDS_LLM_PROVIDER="openai-compatible",
+        MEMORY_WORLDS_LLM_MODEL="synthetic-unreachable-model",
+        MEMORY_WORLDS_LLM_BASE_URL="http://127.0.0.1:9/v1",
+        MEMORY_WORLDS_LLM_API_KEY="synthetic-no-auth",
+        MEMORY_WORLDS_EMBEDDING_PROVIDER="openai-compatible",
+        MEMORY_WORLDS_EMBEDDING_MODEL="synthetic-unreachable-embedder",
+        MEMORY_WORLDS_EMBEDDING_BASE_URL="http://127.0.0.1:9/v1",
+        MEMORY_WORLDS_EMBEDDING_API_KEY="synthetic-no-auth",
+        MEMORY_WORLDS_EMBEDDING_DIMENSIONS="1536",
+    )
+    password = secrets.token_hex(32)
+    definition["services"]["api"]["environment"]["MEMORY_WORLDS_FALKORDB_PASSWORD"] = password
+    definition["services"]["falkordb"]["environment"]["REDISCLI_AUTH"] = password
+    assert "ports" not in definition["services"]["falkordb"]
+    path = tmp_path / "compose.json"
+    path.write_text(json.dumps(definition))
+    path.chmod(0o600)
+    project = "mw-default-graph-" + uuid4().hex[:12]
+    base = ["docker", "compose", "--project-name", project, "--file", str(path)]
+
+    def compose(*arguments, timeout=60):
+        result = subprocess.run(
+            [*base, *arguments], capture_output=True, text=True, timeout=timeout, check=False
+        )
+        assert result.returncode == 0, (result.stdout + result.stderr).replace(
+            password, "[redacted]"
+        )
+        return result.stdout.strip()
+
+    try:
+        initialized = json.loads(compose("run", "--rm", "--no-deps", "api", "init"))
+        compose("up", "--detach", "--wait", "--wait-timeout", "60", timeout=90)
+        url = "http://" + compose("port", "api", "8787")
+        world = initialized["world"]["id"]
+        with httpx.Client(
+            base_url=url,
+            headers={"Authorization": "Bearer " + initialized["token"]},
+            trust_env=False,
+            timeout=10,
+        ) as client:
+            receipt = client.post(
+                f"/v1/worlds/{world}/episodes",
+                json={
+                    "source_id": "graph-default-outage",
+                    "content": "Ada operates a lathe during a synthetic model outage",
+                    "occurred_at": "2026-10-20T00:00:00Z",
+                },
+            )
+            assert receipt.status_code == 200
+            assert receipt.json()["episode"]["project"] is True
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                stored = client.get(
+                    f"/v1/worlds/{world}/episodes/{receipt.json()['episode']['id']}"
+                ).json()
+                if stored["projection_state"] == "unknown":
+                    break
+                time.sleep(0.1)
+            assert stored["projection_state"] == "unknown"
+            graph = client.post("/v1/search", json={"world_ids": [world], "query": "lathe"})
+            assert graph.status_code == 503
+            source = client.post(
+                "/v1/search",
+                json={"world_ids": [world], "query": "lathe", "mode": "source"},
+            )
+            assert source.status_code == 200
+            assert source.json()["results"][0]["id"] == receipt.json()["episode"]["id"]
+            continued = client.post(
+                f"/v1/worlds/{world}/episodes",
+                json={
+                    "source_id": "source-during-graph-outage",
+                    "content": "Durable capture continues",
+                    "occurred_at": "2026-10-20T00:00:01Z",
+                },
+            )
+            assert continued.status_code == 200
+            assert continued.json()["episode"]["projection_state"] == "pending"
+    finally:
+        subprocess.run(
+            [*base, "down", "--volumes", "--remove-orphans", "--timeout", "10"],
+            capture_output=True,
+            timeout=60,
+        )

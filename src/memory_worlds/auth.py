@@ -11,6 +11,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,9 +28,18 @@ _ALGORITHMS = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
 )
 _PREFIX = "MEMORY_WORLDS_OIDC_"
+_SCOPE = re.compile(r"^[\x21\x23-\x5b\x5d-\x7e]{1,200}$")
 
 
 def _trusted_url(value: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 4096
+        or any(character.isspace() or not character.isprintable() for character in value)
+    ):
+        raise ValueError(
+            "OIDC URLs must be bounded and contain no whitespace or control characters"
+        )
     parsed = urlsplit(value)
     # Accessing port validates malformed and out-of-range authorities at startup.
     _ = parsed.port
@@ -53,6 +63,10 @@ class AuthConfig:
     algorithms: tuple[str, ...] = ("RS256",)
     groups_claim: str = "groups"
     group_mappings: dict[str, dict[str, Role]] = field(default_factory=dict)
+    client_ids: tuple[str, ...] = ()
+    client_id_claim: str = "cid"
+    required_scopes: tuple[str, ...] = ()
+    scopes_claim: str = "scp"
     cache_ttl: float = 300
     refresh_cooldown: float = 5
     request_timeout: float = 5
@@ -70,6 +84,24 @@ class AuthConfig:
             raise ValueError("OIDC request timeout must be in (0, 30] seconds")
         if not self.groups_claim or len(self.groups_claim) > 100:
             raise ValueError("OIDC groups claim must be nonempty and at most 100 characters")
+        for name in (self.client_id_claim, self.scopes_claim):
+            if not isinstance(name, str) or not name or len(name) > 100:
+                raise ValueError("OIDC client and scope claim names must be nonempty and bounded")
+        if len(self.client_ids) > 100 or any(
+            not isinstance(value, str)
+            or not value
+            or len(value) > 2000
+            or any(character.isspace() or not character.isprintable() for character in value)
+            for value in self.client_ids
+        ):
+            raise ValueError("OIDC client IDs must be bounded nonempty strings")
+        if self.audience in self.client_ids:
+            raise ValueError("OIDC API audience must differ from allowed application client IDs")
+        if len(self.required_scopes) > 100 or any(
+            not isinstance(value, str) or not _SCOPE.fullmatch(value)
+            for value in self.required_scopes
+        ):
+            raise ValueError("OIDC required scopes must be bounded OAuth scope tokens")
         if not isinstance(self.group_mappings, dict) or len(self.group_mappings) > 1000:
             raise ValueError("OIDC group mappings must be an object with at most 1000 groups")
         for group, worlds in self.group_mappings.items():
@@ -105,6 +137,14 @@ class AuthConfig:
             algorithms=tuple(os.environ.get(_PREFIX + "ALGORITHMS", "RS256").split(",")),
             groups_claim=os.environ.get(_PREFIX + "GROUPS_CLAIM", "groups"),
             group_mappings=mappings,
+            client_ids=tuple(
+                value.strip()
+                for value in os.environ.get(_PREFIX + "CLIENT_IDS", "").split(",")
+                if value.strip()
+            ),
+            client_id_claim=os.environ.get(_PREFIX + "CLIENT_ID_CLAIM", "cid"),
+            required_scopes=tuple(os.environ.get(_PREFIX + "REQUIRED_SCOPES", "").split()),
+            scopes_claim=os.environ.get(_PREFIX + "SCOPES_CLAIM", "scp"),
         )
 
 
@@ -120,7 +160,22 @@ class OIDCAuthenticator:
         self._last_attempt = float("-inf")
 
     def reconcile(self) -> None:
-        """Apply operator mapping changes while the authority's daemon lock is held."""
+        """Apply trusted verifier and mapping changes under the daemon lock."""
+        policy = {
+            "issuer": self.config.issuer,
+            "audience": self.config.audience,
+            "jwks_url": self.config.jwks_url,
+            "algorithms": sorted(set(self.config.algorithms)),
+            "client_ids": sorted(set(self.config.client_ids)),
+            "client_id_claim": self.config.client_id_claim,
+            "required_scopes": sorted(set(self.config.required_scopes)),
+            "scopes_claim": self.config.scopes_claim,
+            "groups_claim": self.config.groups_claim,
+        }
+        digest = hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        self.store.reconcile_oidc_policy(self.config.issuer, digest)
         self.store.reconcile_oidc_mappings(self.config.issuer, self.config.group_mappings)
 
     def _refresh(self) -> None:
@@ -224,6 +279,24 @@ class OIDCAuthenticator:
                     raise Unauthorized("Identity token times must be finite NumericDate values")
             if self.config.group_mappings and "iat" not in claims:
                 raise Unauthorized("Mapped identity groups require a signed issued-at time")
+            if self.config.client_ids:
+                client_id = claims.get(self.config.client_id_claim)
+                if not isinstance(client_id, str) or client_id not in self.config.client_ids:
+                    raise Unauthorized("Identity token was issued to an unauthorized application")
+            if self.config.required_scopes:
+                scopes = claims.get(self.config.scopes_claim)
+                if isinstance(scopes, str):
+                    scopes = scopes.split(" ")
+                if (
+                    not isinstance(scopes, list)
+                    or len(scopes) > 1000
+                    or any(
+                        not isinstance(scope, str) or not _SCOPE.fullmatch(scope)
+                        for scope in scopes
+                    )
+                    or not set(self.config.required_scopes).issubset(scopes)
+                ):
+                    raise Unauthorized("Identity token lacks required API scopes")
             groups = claims.get(self.config.groups_claim, [])
             if (
                 not isinstance(groups, list)

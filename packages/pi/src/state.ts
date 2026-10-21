@@ -91,7 +91,7 @@ export function entryEpisode(sessionId: string, entry: SessionEntry): EpisodeInp
   return {
     source_id: `pi:${sessionId}:${entry.id}`, content: text, occurred_at: entry.timestamp,
     source_type: "pi", session_id: sessionId, source_entry_id: entry.id,
-    parent_entry_id: entry.parentId, role: entry.message.role, metadata: {}, project: false,
+    parent_entry_id: entry.parentId, role: entry.message.role, metadata: {}, project: true,
   };
 }
 export function provenance(hit: SearchHit): string {

@@ -151,6 +151,18 @@
             ],
             "title": "Agent Id"
           },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
           "invocation_id": {
             "anyOf": [
               {
@@ -231,6 +243,18 @@
       "CreateWorld": {
         "additionalProperties": false,
         "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
           "kind": {
             "$ref": "#/components/schemas/WorldKind",
             "default": "personal"
@@ -540,7 +564,7 @@
             "title": "Parent Invocation Id"
           },
           "project": {
-            "default": false,
+            "default": true,
             "title": "Project",
             "type": "boolean"
           },
@@ -700,7 +724,7 @@
             "title": "Parent Entry Id"
           },
           "project": {
-            "default": false,
+            "default": true,
             "title": "Project",
             "type": "boolean"
           },
@@ -892,7 +916,7 @@
             "type": "string"
           },
           "project": {
-            "default": false,
+            "default": true,
             "title": "Project",
             "type": "boolean"
           },
@@ -970,7 +994,7 @@
             "type": "string"
           },
           "project": {
-            "default": false,
+            "default": true,
             "title": "Project",
             "type": "boolean"
           },
@@ -1007,7 +1031,7 @@
             "type": "integer"
           },
           "mode": {
-            "default": "source",
+            "default": "graph",
             "enum": [
               "source",
               "graph"
@@ -1053,6 +1077,18 @@
               }
             ],
             "title": "Agent Id"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
           },
           "coordinator_credential_id": {
             "anyOf": [
@@ -1287,7 +1323,7 @@
             "type": "string"
           },
           "project": {
-            "default": false,
+            "default": true,
             "title": "Project",
             "type": "boolean"
           },
@@ -1344,7 +1380,7 @@
             "type": "integer"
           },
           "mode": {
-            "default": "source",
+            "default": "graph",
             "enum": [
               "source",
               "graph"
@@ -1392,6 +1428,28 @@
           "query"
         ],
         "title": "SearchRequest",
+        "type": "object"
+      },
+      "UpdateAlias": {
+        "additionalProperties": false,
+        "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          }
+        },
+        "required": [
+          "alias"
+        ],
+        "title": "UpdateAlias",
         "type": "object"
       },
       "UpdateScopeGrant": {
@@ -1475,6 +1533,18 @@
       "World": {
         "additionalProperties": false,
         "properties": {
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
           "authority_id": {
             "title": "Authority Id",
             "type": "string"
@@ -2224,6 +2294,60 @@
         "summary": "Create World"
       }
     },
+    "/v1/worlds/{world_id}/alias": {
+      "put": {
+        "operationId": "world_alias_v1_worlds__world_id__alias_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "world_id",
+            "required": true,
+            "schema": {
+              "title": "World Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAlias"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/World"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "World Alias"
+      }
+    },
     "/v1/worlds/{world_id}/episodes": {
       "get": {
         "operationId": "episodes_v1_worlds__world_id__episodes_get",
@@ -2725,6 +2849,70 @@
           }
         ],
         "summary": "Scope"
+      }
+    },
+    "/v1/worlds/{world_id}/scopes/{scope_id}/alias": {
+      "put": {
+        "operationId": "scope_alias_v1_worlds__world_id__scopes__scope_id__alias_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "world_id",
+            "required": true,
+            "schema": {
+              "title": "World Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "scope_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAlias"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Scope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Scope Alias"
       }
     },
     "/v1/worlds/{world_id}/scopes/{scope_id}/episodes": {

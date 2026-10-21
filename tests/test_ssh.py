@@ -219,11 +219,25 @@ def test_authenticated_memory_capture_and_search_through_real_ssh(tmp_path):
             )
             assert receipt["episode"]["agent_id"] == "ssh-agent"
             found = _invoke(
-                data_dir, "search", "through SSH", "--world", world, url=tunnel_url, token=agent
+                data_dir,
+                "search",
+                "--source",
+                "through SSH",
+                "--world",
+                world,
+                url=tunnel_url,
+                token=agent,
             )
             assert [item["id"] for item in found["results"]] == [receipt["episode"]["id"]]
         found = _invoke(
-            data_dir, "search", "through SSH", "--world", world, url=direct_url, token=administrator
+            data_dir,
+            "search",
+            "--source",
+            "through SSH",
+            "--world",
+            world,
+            url=direct_url,
+            token=administrator,
         )
         assert found["results"][0]["source_id"] == "ssh-fixture-1"
     assert not list(tmp_path.glob("isolated-ssh-*"))

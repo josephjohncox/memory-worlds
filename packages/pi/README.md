@@ -111,7 +111,7 @@ inspect authority/world/scope/source attribution.
 | `/memory capture off` | Stop automatic capture |
 | `/memory capture TEXT` | Save an explicitly selected private note |
 | `/memory search QUERY` | Search source episodes |
-| `/memory graph QUERY` | Retrieve Graphiti evidence |
+| `/memory source QUERY` | Retrieve durable source evidence explicitly |
 | `/memory alias project WORLD SCOPE` | Bind the project alias; `global` binds the other alias |
 | `/memory share WORLD SCOPE TEXT` | Publish selected text to another local scope |
 | `/memory publish MOUNT WORLD TEXT` | Publish selected text through the router outbox |
@@ -157,9 +157,11 @@ Feature coverage is documented in [Pi graph features](../../docs/pi-graphiti-fea
 ## Capture and offline durability
 
 Capture defaults off. Automatic capture requires an explicit private `writeScope`
-and consent through configuration or `/memory capture on`. `projectCaptured: true`
-requests extraction for captured sources; false keeps source capture independent of
-model extraction.
+and consent through configuration or `/memory capture on`. Once captured, memory
+queues Graphiti extraction by default (`projectCaptured: true`). Set
+`projectCaptured: false` only for explicit source maintenance or recovery.
+`/memory search` and the memory search tool retrieve graph evidence by default;
+`/memory source` requests source records explicitly.
 
 Only future user/assistant text on the active branch is captured automatically.
 Images, thinking blocks and tool output are excluded. Original session/entry IDs,

@@ -1,0 +1,52 @@
+["python:deps"]
+description = "Synchronize locked Python dependencies with the selected mise Python"
+run = 'uv sync --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}"'
+
+[lint]
+description = "Check Python lint without modifying files"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- ruff check .'
+
+[format]
+description = "Format Python source and examples"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- ruff format .'
+
+["format:check"]
+description = "Check Python formatting without modifying files"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- ruff format --check .'
+
+["python:consistency"]
+description = "Verify the selected Python and installed dependency constraints"
+depends = ["python:deps"]
+run = [
+  'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python --version',
+  'uv pip check --python "${UV_PROJECT_ENVIRONMENT:?}/bin/python"',
+]
+
+[test]
+description = "Run current-contract Python tests; additional pytest arguments are forwarded"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest -q'
+
+["test:graph"]
+description = "Run Graphiti extraction and retrieval against a reachable real FalkorDB"
+env.MEMORY_WORLDS_RUN_FALKORDB_TEST = "1"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest tests/test_graph.py -q'
+
+["test:container"]
+description = "Build and test the container and authenticated Compose graph deployment"
+env.MEMORY_WORLDS_RUN_CONTAINER_TEST = "1"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest tests/test_container.py tests/test_graph_deployment.py -q'
+
+["python:check"]
+description = "Run Python lint, formatting, dependency consistency, and tests"
+depends = ["lint", "format:check", "python:consistency", "test"]
+
+["python:build"]
+description = "Build the Python wheel and source archive from the current source"
+raw_args = true
+run = 'uv build --no-sources --python "${MEMORY_WORLDS_PYTHON:?}"'
+
+[cli]
+description = "Run Memory Worlds with locked dependencies; pass its CLI arguments directly"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- memory-worlds'

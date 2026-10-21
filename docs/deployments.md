@@ -14,18 +14,23 @@ router databases with a shared SQL implementation.
 
 ## Local Kubernetes with kind
 
-Docker, Python 3, kind, and kubectl are required. The optional installer downloads
-checksum-verified binaries into the directory you choose; it changes no global
-tools. Versions checked on 2026-10-20: kind 0.33.0, kubectl 1.37.1, and the
-official kind 1.37.0 node image pinned by digest. The node uses kind's published
-1.37.0 image while kubectl uses the current stable patch release.
+Docker and mise are required. The repository pins Python, kind, kubectl, Helm,
+and their supporting tools; `mise.lock` records verified tool distributions.
+The isolated smoke uses kind 0.33.0, kubectl 1.37.1, and the official kind 1.37.0
+node image pinned by digest. Run the complete source/native graph/Helm lifecycle
+check with:
 
 ```sh
-scripts/install-deploy-tools.sh /tmp/memory-worlds-tools
-KIND=/tmp/memory-worlds-tools/kind \
-KUBECTL=/tmp/memory-worlds-tools/kubectl \
-  scripts/deploy-kind.sh --smoke
+mise install --locked
+mise run deps
+mise run kind:smoke
 ```
+
+For an installation that you intend to use, configure explicit extraction and
+embedding providers in a private copy of `deploy/k8s/runtime.env.example`, then
+pass it to `mise run kind:deploy -- --runtime-env /private/operator/runtime.env`.
+Missing provider/model configuration fails startup. No commercial model or
+external endpoint is selected implicitly.
 
 The script builds this checkout, creates a randomly named isolated cluster,
 loads the API and pinned FalkorDB images, generates a database password, applies
@@ -41,28 +46,31 @@ authentication, captures an episode and idempotent replay, writes a deterministi
 native graph fixture, replaces both pods, and verifies the source and graph
 remain available on their original PVCs. This proves pod replacement continuity.
 It does not prove restoration after node/volume loss, model extraction quality,
-or network isolation. The base profile intentionally keeps model projection
-disabled until a provider is explicitly configured.
+or network isolation. The smoke supplies explicit synthetic provider settings and uses requests that
+disable extraction. It tests source and native graph persistence without
+calling a model; ordinary deployment uses Graphiti extraction by default.
 
 With Helm installed, add `--helm-smoke` to exercise chart installation, the
 read-only Helm test, source/graph persistence through pod replacement and an
 upgrade, and retained PVC reuse through uninstall/reinstall. Credentials stay
 in the private state directory. CI runs both deployment paths with `--delete`.
 
-The clean deployment smoke passed on 2026-10-20 (local date), using kind 0.33.0,
-Kubernetes 1.37.0, kubectl 1.37.1, and Python 3.15.0 on Linux ARM64. The
-[retained receipt](../deploy/kind/validation.json) records the tested images,
-installed source hashes, manifest/script hashes, and checks. Later parser
-containment changes to the authentication/router modules are verified by the
-application suite separately. The test host initially exhausted its inotify
-instance limit; validation temporarily raised that limit from 128 to 1024,
-restored 128 afterward, and deleted every cluster created by this test. The
-deployment script never changes host kernel settings itself.
+The deployment smoke passed through `mise run kind:smoke` on 2026-10-20
+(local date), using kind 0.33.0, Kubernetes 1.37.0, kubectl 1.37.1, and Python
+3.15.0 on Linux ARM64. The [kind receipt](../deploy/kind/validation.json) identifies
+the tested image, installed source and script hashes, and persistence checks.
+The [Helm receipt](../deploy/kind/helm-validation.json) records chart/PVC retention,
+private invocation isolation, and revocation. Synthetic model endpoints are
+configured in these lifecycle checks; their source operations explicitly skip
+model extraction. Separate real Graphiti/FalkorDB tests verify extraction and
+retrieval. The local test temporarily raised its exhausted inotify limit from
+128 to 1024, restored 128 afterward, and deleted its owned cluster. The deployment
+script itself does not change host kernel settings.
 
 Connect to a retained test cluster with its printed values:
 
 ```sh
-kubectl --kubeconfig /private/state/kubeconfig \
+mise run kubectl -- --kubeconfig /private/state/kubeconfig \
   --context kind-memory-worlds-CLUSTER -n memory-worlds \
   port-forward --address=127.0.0.1 service/memory-worlds 8787:8787
 ```
@@ -88,15 +96,15 @@ kubeconfig/context on every command and create these secrets before applying
 the workload manifests:
 
 ```sh
-kubectl --kubeconfig "$config" --context "$context" apply \
+mise run kubectl -- --kubeconfig "$config" --context "$context" apply \
   -f deploy/k8s/base/namespace.yaml
-kubectl --kubeconfig "$config" --context "$context" -n memory-worlds \
+mise run kubectl -- --kubeconfig "$config" --context "$context" -n memory-worlds \
   create secret generic memory-worlds-falkordb \
   --from-file=password=/private/config/falkordb-password
-kubectl --kubeconfig "$config" --context "$context" -n memory-worlds \
+mise run kubectl -- --kubeconfig "$config" --context "$context" -n memory-worlds \
   create secret generic memory-worlds-runtime \
   --from-env-file=/private/config/runtime.env
-kubectl --kubeconfig "$config" --context "$context" apply -k deploy/k8s/base
+mise run kubectl -- --kubeconfig "$config" --context "$context" apply -k deploy/k8s/base
 ```
 
 The database password file must contain 64 random hexadecimal characters. Use a
@@ -113,15 +121,15 @@ operator file. Initialization is not in a pod init container, so a one-time
 administrator credential never appears in pod logs. Reinitialization of an
 existing authority fails rather than rotating or printing another credential.
 
-The graph overlay, `deploy/k8s/overlays/graph`, explicitly selects FalkorDB and
-injects its password from the database secret. Populate all provider/model
-settings before selecting it. Local models inside the cluster need an explicit
-egress rule for their labeled pods and port; the default policies permit DNS,
-FalkorDB, and HTTPS only. Liveness tests the HTTP process. Readiness tests the
-source service and required background tasks; graph degradation is reported by
-the graph API while durable capture remains available.
+The base deployment selects Graphiti/FalkorDB and injects its password from the
+database Secret. Populate all provider/model settings before deployment. Local
+models inside the cluster need an explicit egress rule for their labeled pods
+and port; the default policies permit DNS, FalkorDB, and HTTPS only. Liveness
+tests the HTTP process. Readiness tests the source service and required
+background tasks; graph degradation is reported by the graph API while durable
+capture remains available.
 
-`deploy/k8s/overlays/work` adds the graph profile and read-only router files:
+`deploy/k8s/overlays/work` adds read-only router files:
 `memory-worlds-mounts` supplies `mounts.json` at `/config/mounts.json`, and
 `memory-worlds-remote-tokens` supplies per-remote credentials below
 `/secrets/remotes`. Use those paths in the router mount configuration described
@@ -184,6 +192,18 @@ here. Do not copy live SQLite/WAL files or call independent volume snapshots a
 distributed transaction. Cluster credentials and grants also require an explicit
 recovery policy; portable world restore never activates archived grants.
 
+## AWS without Neptune: FalkorDB, and the RDS boundary
+
+Use the normal Helm deployment with block-backed PVCs on EKS when Neptune is
+unwanted. RDS PostgreSQL with pgvector is not a drop-in Graphiti backend: the
+pinned Graphiti distribution has no PostgreSQL driver, and this application
+has no PostgreSQL source/control store. The deployment therefore cannot be
+switched to RDS by adding extensions or a connection URL.
+
+The [RDS PostgreSQL guide](rds-postgresql.md) records verified backend and
+extension support, an EKS storage example, read-only extension discovery, and
+the work needed before an RDS profile would be runnable.
+
 ## AWS Neptune evaluation lane
 
 `MEMORY_WORLDS_GRAPH_BACKEND=neptune` selects Graphiti 0.31.2's Neptune driver.
@@ -229,7 +249,7 @@ partially restored backend. Use a dedicated collection/backend per authority,
 and validate isolation, indexing, load, credential refresh, and recovery on real
 AWS before promoting this lane to a shared deployment.
 
-Upstream references verified on 2026-10-20:
+Upstream references:
 
 - [kind 0.33.0 release and node digests](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0)
 - [Kubernetes supported releases](https://kubernetes.io/releases/)

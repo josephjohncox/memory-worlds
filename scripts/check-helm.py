@@ -37,6 +37,7 @@ def render(helm: str, release: str = "alpha", profile: str = "") -> list[dict]:
         "--kube-version",
         "1.37.0",
     ]
+    arguments += ["--set", "runtime.existingSecret=synthetic-runtime"]
     if profile:
         arguments += ["--values", str(CHART / "ci" / f"{profile}.yaml")]
     return [item for item in yaml.safe_load_all(run(helm, *arguments)) if item]
@@ -105,7 +106,7 @@ def check_objects(objects: list[dict], release: str) -> None:
 
 
 def validate(helm: str) -> dict:
-    run(helm, "lint", "--strict", str(CHART))
+    run(helm, "lint", "--strict", str(CHART), "--set", "runtime.existingSecret=synthetic-runtime")
     profiles = ["", "source", "graph", "work", "neptune", "existing-pvc"]
     for profile in profiles:
         objects = render(helm, profile=profile)
@@ -119,10 +120,10 @@ def validate(helm: str) -> dict:
         }
         expected_backend = (
             "falkordb"
-            if profile in {"graph", "work"}
+            if profile not in {"source", "neptune"}
             else "neptune"
             if profile == "neptune"
-            else ""
+            else "disabled"
         )
         assert env["MEMORY_WORLDS_GRAPH_BACKEND"] == expected_backend
         if profile == "existing-pvc":

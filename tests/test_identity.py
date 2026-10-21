@@ -12,7 +12,16 @@ from jwt.algorithms import RSAAlgorithm
 
 from memory_worlds.auth import AuthConfig, OIDCAuthenticator
 from memory_worlds.errors import Forbidden, Unauthorized, Unavailable
-from memory_worlds.models import CreateToken, CreateWorld, EpisodeInput, Role, WorldKind
+from memory_worlds.models import (
+    CreateScope,
+    CreateToken,
+    CreateWorld,
+    DelegateCredential,
+    EpisodeInput,
+    Role,
+    ScopeKind,
+    WorldKind,
+)
 from memory_worlds.store import MemoryStore
 
 
@@ -42,6 +51,7 @@ def identity(tmp_path):
     issuer = f"http://127.0.0.1:{server.server_port}"
     config = AuthConfig(issuer, "memory-api", issuer + "/jwks", refresh_cooldown=0)
     auth = OIDCAuthenticator(store, config)
+    auth.reconcile()
 
     def token(subject="alice", *, key=signing, kid="initial", **changes):
         claims = {
@@ -444,6 +454,7 @@ def test_configuration_is_explicit_and_unsafe_algorithms_urls_rejected(monkeypat
         {"issuer": "http://remote.test"},
         {"jwks_url": "https://id.test/jwks?query=1"},
         {"jwks_url": "https://user:password@id.test/jwks"},
+        {"issuer": "https://id.test\n"},
     ):
         with pytest.raises(ValueError):
             replace(AuthConfig.from_env(), **changes)
@@ -512,3 +523,136 @@ def test_mapped_groups_require_iat_and_operator_map_changes_apply_on_authenticat
     store.set_membership(admin, team.id, alice.user_id, None)
     with pytest.raises(Forbidden):
         store.get_world(alice, team.id)
+
+
+def test_application_and_scope_policy_uses_verified_claims_without_granting_worlds(identity):
+    store, _, auth, token, _, _ = identity
+    configured = OIDCAuthenticator(
+        store,
+        replace(
+            auth.config,
+            client_ids=("native-client",),
+            required_scopes=("memory-worlds",),
+        ),
+    )
+    accepted = configured.authenticate(token(cid="native-client", scp=["openid", "memory-worlds"]))
+    assert [world.kind for world in store.list_worlds(accepted)] == [WorldKind.PRIVATE_WORK]
+    for claims in (
+        {"scp": ["memory-worlds"]},
+        {"cid": "other-client", "scp": ["memory-worlds"]},
+        {"cid": ["native-client"], "scp": ["memory-worlds"]},
+        {"cid": "native-client"},
+        {"cid": "native-client", "scp": ["openid"]},
+        {"cid": "native-client", "scp": ["memory-worlds", 3]},
+        {"cid": "native-client", "scp": "memory-worlds\nadmin"},
+    ):
+        with pytest.raises(Unauthorized):
+            configured.authenticate(token(**claims))
+    custom = OIDCAuthenticator(
+        store,
+        replace(
+            configured.config,
+            client_id_claim="azp",
+            scopes_claim="scope",
+        ),
+    )
+    assert (
+        custom.authenticate(token(azp="native-client", scope="openid memory-worlds")).user_id
+        == accepted.user_id
+    )
+    with pytest.raises(Unauthorized):
+        custom.authenticate(token(cid="native-client", scp=["memory-worlds"]))
+
+
+def test_oidc_policy_configuration_and_private_map_targets_fail_closed(identity, monkeypatch):
+    store, admin, auth, _, _, _ = identity
+    for suffix, value in {
+        "ISSUER": auth.config.issuer,
+        "AUDIENCE": auth.config.audience,
+        "JWKS_URL": auth.config.jwks_url,
+        "CLIENT_IDS": "native-client,another-client",
+        "CLIENT_ID_CLAIM": "azp",
+        "REQUIRED_SCOPES": "memory-worlds audit",
+        "SCOPES_CLAIM": "scope",
+    }.items():
+        monkeypatch.setenv("MEMORY_WORLDS_OIDC_" + suffix, value)
+    config = AuthConfig.from_env()
+    assert config.client_ids == ("native-client", "another-client")
+    assert config.required_scopes == ("memory-worlds", "audit")
+    assert config.client_id_claim == "azp" and config.scopes_claim == "scope"
+    for changes in (
+        {"client_ids": (auth.config.audience,)},
+        {"client_ids": ("bad client",)},
+        {"required_scopes": ("scope with spaces",)},
+        {"client_id_claim": ""},
+        {"scopes_claim": "x" * 101},
+    ):
+        with pytest.raises(ValueError):
+            replace(auth.config, **changes)
+    private = store.list_worlds(admin)[0]
+    for world_id in ("missing-world", private.id):
+        mapped = OIDCAuthenticator(
+            store, replace(auth.config, group_mappings={"nobody": {world_id: Role.READER}})
+        )
+        with pytest.raises(ValueError, match="existing shared world IDs"):
+            mapped.reconcile()
+
+
+def test_verifier_policy_change_revokes_sessions_and_private_delegation(identity):
+    store, _, auth, token, _, _ = identity
+    bearer = token(cid="native-client", scp=["memory-worlds"])
+    parent = auth.authenticate(bearer)
+    world = store.list_worlds(parent)[0]
+    child = store.delegate_credential(parent, DelegateCredential(private_world_id=world.id))
+    child_principal = store.authenticate(child["token"])
+    auth.reconcile()
+    assert store.validate_principal(parent) == parent
+    assert store.validate_principal(child_principal) == child_principal
+    changed = OIDCAuthenticator(store, replace(auth.config, client_ids=("native-client",)))
+    changed.reconcile()
+    for principal in (parent, child_principal):
+        with pytest.raises(Unauthorized):
+            store.validate_principal(principal)
+    with pytest.raises(Unauthorized):
+        changed.authenticate(bearer)
+    fresh = changed.authenticate(token(cid="native-client", scp=["memory-worlds"], jti="fresh"))
+    assert fresh.user_id == parent.user_id
+
+
+def test_finite_far_future_oidc_expiry_preserves_bounded_default_child_lifetime(identity):
+    store, _, auth, token, _, _ = identity
+    parent = auth.authenticate(token(exp=1e100))
+    world = store.list_worlds(parent)[0]
+    before = time.time()
+    child = store.delegate_credential(parent, DelegateCredential(private_world_id=world.id))
+    assert before + 3599 <= child["expires_at"].timestamp() <= time.time() + 3600
+    assert store.authenticate(child["token"]).invocation_id == child["context"].invocation_id
+
+
+def test_signed_oidc_submicrosecond_expiry_caps_child_without_rounding_up(identity):
+    store, _, auth, token, _, _ = identity
+    expiry = int(time.time()) + 300 + 0.00000075
+    assert datetime.fromtimestamp(expiry, UTC).timestamp() > expiry
+    parent = auth.authenticate(token(exp=expiry))
+    world = store.list_worlds(parent)[0]
+    child = store.delegate_credential(parent, DelegateCredential(private_world_id=world.id))
+    assert 0 <= expiry - child["expires_at"].timestamp() < 0.000001
+    assert store.authenticate(child["token"]).invocation_id == child["context"].invocation_id
+
+
+def test_shared_group_membership_never_grants_private_scope_access(identity):
+    store, operator, auth, token, _, _ = identity
+    team = store.create_world(operator, CreateWorld(name="Data", kind=WorldKind.TEAM))
+    mapped = OIDCAuthenticator(
+        store, replace(auth.config, group_mappings={"data": {team.id: Role.WRITER}})
+    )
+    alice = mapped.authenticate(token(groups=["data"]))
+    bob = mapped.authenticate(token("bob", groups=["data"]))
+    scratch = store.create_scope(
+        alice, team.id, CreateScope(kind=ScopeKind.INVOCATION_PRIVATE, name="Alice scratch")
+    )
+    receipt = store.capture(alice, team.id, episode().model_copy(update={"scope_id": scratch.id}))
+    assert store.get_episode(alice, team.id, receipt.episode.id, scope_id=scratch.id)
+    for other in (bob, operator):
+        with pytest.raises(Forbidden):
+            store.get_episode(other, team.id, receipt.episode.id, scope_id=scratch.id)

@@ -103,7 +103,11 @@ def test_http_scope_creation_context_delegation_capture_and_selected_return(tmp_
         assert publication.json()["episode"]["id"] != episode["id"]
         shared_results = api.post(
             "/v1/search",
-            json={"scopes": [{"world_id": world.id, "scope_id": run["id"]}], "query": "selected"},
+            json={
+                "scopes": [{"world_id": world.id, "scope_id": run["id"]}],
+                "query": "selected",
+                "mode": "source",
+            },
             headers=owner,
         )
         assert shared_results.status_code == 200, shared_results.text
@@ -145,12 +149,18 @@ def test_http_scope_uuid_mismatch_and_entire_selection_authorization(tmp_path):
                         {"world_id": world.id, "scope_id": two["private_scope"]["id"]},
                     ],
                     "query": "trial",
+                    "mode": "source",
                 },
                 headers=child,
             ).status_code
             == 403
         )
-        assert api.post("/v1/search", json={"query": "trial"}, headers=child).status_code == 422
+        assert (
+            api.post(
+                "/v1/search", json={"query": "trial", "mode": "source"}, headers=child
+            ).status_code
+            == 422
+        )
         assert (
             api.post(
                 "/v1/search",
@@ -159,6 +169,7 @@ def test_http_scope_uuid_mismatch_and_entire_selection_authorization(tmp_path):
                     "scope_id": sid,
                     "scopes": [{"world_id": world.id, "scope_id": sid}],
                     "query": "trial",
+                    "mode": "source",
                 },
                 headers=child,
             ).status_code
@@ -219,7 +230,11 @@ def test_http_default_and_explicit_world_shared_views_use_same_canonical_scope(t
         assert api.get(base + "/snapshot", headers=owner).json()["episodes"][0]["scope_id"] == sid
         search = api.post(
             "/v1/search",
-            json={"scopes": [{"world_id": world.id, "scope_id": sid}], "query": "trial"},
+            json={
+                "scopes": [{"world_id": world.id, "scope_id": sid}],
+                "query": "trial",
+                "mode": "source",
+            },
             headers=owner,
         )
         assert search.json()["results"][0]["scope_id"] == sid

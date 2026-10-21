@@ -8,8 +8,8 @@ world that receives new evidence.
 The service includes per-world SQLite source storage, authenticated HTTP,
 a Python client, CLI, optional stdio MCP, native Pi tools and hooks, remote
 shared-space routing, an OIDC shared service, ChatGPT/Pi import, portable export
-and restore, and an opt-in Graphiti/FalkorDB knowledge graph. Source search works
-without a graph or model provider. Graph extraction has separate delivery state;
+and restore, and Graphiti/FalkorDB extraction and recall by default. Explicit
+source retrieval remains available for recovery and inspection. Graph extraction has separate delivery state;
 a capture receipt establishes durable source storage.
 
 Run the same service locally, through SSH, or as a single-replica Kubernetes
@@ -21,15 +21,24 @@ the local and Kubernetes graph backend is FalkorDB.
 ## Run locally
 
 Linux and macOS are the initial targets. The daemon uses Unix file locking.
-Use current uv; `.python-version` selects stable Python 3.15. The lockfile records
-exact dependencies, including Graphiti 0.31.2 and MCP 2.3.0.
+Use [mise](https://mise.jdx.dev/) to install the pinned toolchain and run tasks.
+The checked-in mise, uv, and npm lockfiles record the tool and library versions.
+See [development tasks](docs/development.md). Configure explicit extraction and
+embedding models in a private `.env` before starting the service.
 
 ```sh
-uv sync --locked --extra graph --extra mcp
+mise trust
+mise install
+mise run deps
+cp .env.example .env
+chmod 600 .env
+# Fill the model/provider settings and a random 64-hex FalkorDB password.
+# The example uses host model endpoints; change them to your actual providers.
+mise run graph:backend-up
 umask 077
 mkdir -p ~/.config/memory-worlds
-.venv/bin/memory-worlds init --user alice > ~/.config/memory-worlds/bootstrap.json
-python3 - <<'PY'
+mise run cli -- init --user alice > ~/.config/memory-worlds/bootstrap.json
+mise exec -- python - <<'PY'
 import json
 from pathlib import Path
 folder = Path.home() / ".config/memory-worlds"
@@ -37,7 +46,7 @@ bootstrap = json.loads((folder / "bootstrap.json").read_text())
 (folder / "admin.token").write_text(bootstrap["token"] + "\n")
 print("Personal world:", bootstrap["world"]["id"])
 PY
-.venv/bin/memory-worlds serve
+mise run cli -- serve
 ```
 
 Keep the bootstrap output private: it contains the initial administrative
@@ -50,8 +59,8 @@ an owner credential.
 In a second terminal, replace `WORLD_ID` with the printed ID:
 
 ```sh
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token worlds
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token worlds
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   token-create --user alice --agent editor --grant WORLD_ID:writer
 ```
 
@@ -61,23 +70,42 @@ its credential ID for `token-revoke`. Agent roles are `reader`, `writer`, and
 a separate credential capability. Use routine agent credentials for agents.
 
 ```sh
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/editor.token \
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token \
   capture WORLD_ID --source-id session-42-entry-7 \
   --at 2026-10-20T12:00:00Z --text 'The fixture spindle uses a ceramic bearing.'
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/editor.token \
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token \
   search 'ceramic bearing' --world WORLD_ID
 ```
 
 Repeat the same source ID, timestamp, content, and metadata on retries. The
 service returns the original receipt. Reusing an ID with changed input returns
-HTTP 409. Capture defaults to source-only; `--project` queues graph extraction.
-Source search performs case-insensitive matching of every query word against
-source text. `search --graph` explicitly requests graph retrieval.
+HTTP 409. Capture queues Graphiti extraction by default; recall defaults to graph
+retrieval. `search --source` explicitly inspects the durable source journal, while
+`capture --source-only` deliberately skips extraction for that record. A failed
+graph query reports its error and never silently changes retrieval modes.
 
 The HTTP contract is at `/docs` and `/openapi.json`, with an inspectable
 [OpenAPI artifact](docs/openapi.json) in the repository. The [Python client
 example](docs/agents.md) and MCP adapter use that same service. `/healthz` checks
 the HTTP process; `/readyz` also checks that required background workers are running.
+
+## Discover worlds, scopes, and mounts
+
+```sh
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token discover --scopes
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token worlds --table
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token mounts --table
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token world-alias WORLD_ID personal
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token resolve world @personal
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token discover --world @personal --json
+```
+
+Worlds and scopes have display names and optional lowercase aliases. Use
+`@alias` in local CLI selections; IDs remain the canonical values in API requests,
+contexts, graph namespaces, and authorization. Aliases resolve only among visible
+objects. Multiple visible matches require an explicit ID. Scope aliases require a
+manage grant; world aliases require the operator. `--select @personal:@notes`
+selects one world/scope pair. Mounted worlds retain IDs from their remote authority.
 
 ## Worlds and private data
 
@@ -142,16 +170,16 @@ the local setup does not require opening a public listener.
 ## Import and portable recovery
 
 Import is a local administrative operation using `--data-dir` and an admin
-token. It defaults to source-only, even if models are configured.
+token. Imports queue Graphiti extraction using the configured models.
 
 ```sh
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   import-chatgpt WORLD_ID /private/path/conversations.json
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   import-pi WORLD_ID /private/path/session.jsonl
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   export WORLD_ID /private/backups/world.mworld
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   restore NEW_WORLD_ID /private/backups/world.mworld
 ```
 
@@ -188,35 +216,28 @@ SQLite source backup while capture continues. It is an administrator recovery
 artifact; the `restore` command accepts portable `.mworld` archives. See
 [storage and recovery](docs/storage.md) for backend boundaries.
 
-## Enable the graph
+## Graphiti runtime configuration
 
-Start a local persistent FalkorDB 6.0 instance:
+Configure the private `.env` before starting the daemon. The backend-only Compose
+service publishes FalkorDB on loopback port `16379` for a host daemon. Use one
+random 64-hex-character database password in that file. Mise loads it with
+redaction; keep the file mode `0600` and outside version control.
 
-```sh
-export MEMORY_WORLDS_FALKORDB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
-docker compose -f deploy/compose.graph.yaml up -d
+```dotenv
+MEMORY_WORLDS_GRAPH_BACKEND=falkordb
+MEMORY_WORLDS_FALKORDB_PORT=16379
+MEMORY_WORLDS_LLM_PROVIDER=openai-compatible
+MEMORY_WORLDS_LLM_MODEL=your-extraction-model
+MEMORY_WORLDS_LLM_BASE_URL=http://127.0.0.1:9000/v1
+MEMORY_WORLDS_EMBEDDING_PROVIDER=openai-compatible
+MEMORY_WORLDS_EMBEDDING_MODEL=your-embedding-model
+MEMORY_WORLDS_EMBEDDING_BASE_URL=http://127.0.0.1:9001/v1
+MEMORY_WORLDS_EMBEDDING_DIMENSIONS=1536
 ```
 
-The graph-only Compose file exposes its database port on loopback `16379`. The
-host daemon uses `MEMORY_WORLDS_FALKORDB_PORT=16379`. It is not an agent endpoint.
-Keep that generated password in your private configuration and supply it to
-both the backend and daemon. Compose refuses to start without it. Loopback
-binding alone would allow other users on the host to access an unprotected
-graph port. The deployment requires 64 hex characters and writes its private
-config into tmpfs so the password is absent from process arguments. Configure
-extraction and embeddings before starting the daemon:
-
 ```sh
-export MEMORY_WORLDS_GRAPH_BACKEND=falkordb
-export MEMORY_WORLDS_FALKORDB_PORT=16379
-export MEMORY_WORLDS_LLM_PROVIDER=openai-compatible
-export MEMORY_WORLDS_LLM_MODEL=your-extraction-model
-export MEMORY_WORLDS_LLM_BASE_URL=http://127.0.0.1:9000/v1
-export MEMORY_WORLDS_EMBEDDING_PROVIDER=openai-compatible
-export MEMORY_WORLDS_EMBEDDING_MODEL=your-embedding-model
-export MEMORY_WORLDS_EMBEDDING_BASE_URL=http://127.0.0.1:9001/v1
-export MEMORY_WORLDS_EMBEDDING_DIMENSIONS=1536
-.venv/bin/memory-worlds serve
+mise run graph:backend-up
+mise run cli -- serve
 ```
 
 Those model names/endpoints are placeholders for servers you operate. Providers
@@ -226,7 +247,8 @@ Alternatively select `openai` for each provider, choose models, and supply
 Model processing occurs at those configured providers. Graphiti telemetry is
 disabled by default. See [.env.example](.env.example) for all options.
 
-Capture with `--project` to enqueue extraction. `status WORLD_ID` distinguishes
+Capture, publication, import, and restore enqueue extraction by default.
+`status WORLD_ID` distinguishes
 disabled, pending, processing, projected, and unknown records. Graph mutations
 serialize within a world; independent worlds can progress concurrently.
 An interrupted or failed write may have changed the backend: the world becomes
@@ -234,23 +256,24 @@ degraded and graph reads stop while source capture/search continue. Stop the
 daemon and repair explicitly:
 
 ```sh
-.venv/bin/memory-worlds --token-file ~/.config/memory-worlds/admin.token \
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
   graph-rebuild WORLD_ID
 ```
 
-Add `--include-unprojected` to explicitly send source-only imports to the
-configured model providers. A rebuild creates an isolated graph generation and
+Rebuild normally includes every source. Use `--projected-only` to restrict a
+rebuild to sources already selected for extraction. A rebuild creates an isolated
+graph generation and
 activates it only after success. Changed model/embedding configuration requires
 a rebuild. Previous generations remain stored; automatic garbage collection
 and source erasure are not implemented in this release.
 
 ## Container and checks
 
-The [Helm chart](deploy/helm/memory-worlds/README.md) deploys the API and optional
-FalkorDB with separate retained volumes, existing Secrets, readiness checks,
+The [Helm chart](deploy/helm/memory-worlds/README.md) deploys the API and
+FalkorDB by default with separate retained volumes, existing Secrets, readiness checks,
 release-scoped networking, and optional TLS ingress. See the
-[installation and upgrade guide](docs/helm.md) for source-only, graph, shared
-OIDC/router, and experimental Neptune profiles.
+[installation and upgrade guide](docs/helm.md), [Okta/OIDC configuration](docs/oidc-okta.md),
+and [RDS/PostgreSQL assessment](docs/rds-postgresql.md).
 
 The private [GitHub repository](https://github.com/josephjohncox/memory-worlds)
 builds the Python wheel/source archive, Pi package, and Helm archive together,
@@ -262,27 +285,28 @@ The API can run in a container with persistent local storage:
 
 ```sh
 docker compose -f deploy/compose.yaml run --rm --no-deps api init --user alice
-docker compose -f deploy/compose.yaml up -d
+mise run graph:up
 ```
 
 Save the bootstrap credential securely. The image uses Python 3.15, current
 pinned uv, and the locked application dependencies. Its API port is published
-only on host loopback. The graph-only file above is a separate deployment for
-a host daemon; it does not automatically configure a containerized API.
+only on host loopback. The default Compose stack connects the API to its private FalkorDB service.
+Provider URLs must be reachable from the API container. The backend-only task
+is for a daemon running directly on the host.
 
 ```sh
-uv run --frozen --all-extras pytest -q
-uv run --frozen ruff check src tests
-uv run --frozen ruff format --check src tests
-MEMORY_WORLDS_RUN_FALKORDB_TEST=1 MEMORY_WORLDS_TEST_FALKORDB_PORT=16379 \
-  uv run --frozen --all-extras pytest tests/test_graph.py -q
+mise run check
+mise run pi:smoke
+MEMORY_WORLDS_TEST_FALKORDB_PORT=16379 mise run test:graph
+mise run kind:smoke
+mise run artifacts:build
 ```
 
 The live graph test uses real Graphiti and FalkorDB with deterministic extraction
 and embedding test clients. It proves backend wiring and scoping, not real-model
 recall quality. See [validation](docs/validation.md) for executed checks.
 
-Private conversation exports, runtime data, credentials, and local instructions
+Private conversation exports, runtime data, and credentials
 are excluded from package and container inputs. Public fixtures are synthetic.
 The Python library and native Pi package are licensed under [Apache-2.0](LICENSE).
 Packages have not been published to public registries.

@@ -1,4 +1,4 @@
-"""Opt-in Graphiti projection and conservative delivery of durable source episodes.
+"""Graphiti projection and conservative delivery of durable source episodes.
 
 Only the service resolves worlds and authorizes callers. This module accepts resolved
 World objects; it deliberately exposes neither arbitrary Cypher nor graph namespaces.
@@ -51,11 +51,11 @@ class GraphConfig:
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> GraphConfig | None:
         env = os.environ if environ is None else environ
-        backend = env.get(PREFIX + "GRAPH_BACKEND", "").strip()
-        if not backend:
+        backend = env.get(PREFIX + "GRAPH_BACKEND", "falkordb").strip()
+        if backend == "disabled":
             return None
         if backend not in {"falkordb", "neptune"}:
-            raise ValueError("MEMORY_WORLDS_GRAPH_BACKEND must be falkordb, neptune, or unset")
+            raise ValueError("MEMORY_WORLDS_GRAPH_BACKEND must be falkordb, neptune, or disabled")
 
         def required(name: str) -> str:
             value = env.get(PREFIX + name, "").strip()
@@ -196,7 +196,7 @@ class ProjectionAdapter(Protocol):
 
 
 class GraphitiAdapter:
-    """Optional Graphiti backend, imported only when used.
+    """Graphiti extraction and retrieval backend, imported when the daemon starts.
 
     Graphiti's Neptune implementation performs synchronous AWS/OpenSearch calls
     inside async methods. Give its entire client lifecycle one dedicated event
@@ -238,7 +238,9 @@ class GraphitiAdapter:
             from graphiti_core.llm_client.openai_client import OpenAIClient
             from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
         except ImportError as exc:
-            raise Unavailable("install memory-worlds[graph] to enable the graph backend") from exc
+            raise Unavailable(
+                "Graphiti dependencies are unavailable; reinstall Memory Worlds"
+            ) from exc
 
         class NoExternalReranker(CrossEncoderClient):
             async def rank(self, query: str, passages: list[str]) -> list[tuple[str, float]]:
@@ -624,6 +626,17 @@ class ProjectionWorker:
         # The caller authorizes the complete selection before invoking this method.
         # Validate every projection before querying any backend.
         resolved = [self._world(world.id, world.scope_id) for world in worlds]
+        # A scope with no extraction-eligible evidence has an empty graph. This
+        # does not query source text or conceal pending/unknown graph delivery.
+        resolved = [
+            world
+            for world in resolved
+            if not (
+                world.projection_state == "disabled"
+                and world.generation is None
+                and not self.store.projection_episodes(world.id, **self._scope(world))
+            )
+        ]
         if any(w.projection_state != "ready" or not w.generation for w in resolved):
             raise Unavailable(
                 "selected graph projection is unavailable; source search remains usable"

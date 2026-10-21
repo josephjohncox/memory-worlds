@@ -49,6 +49,8 @@ def test_container_private_context_restart_and_package_contents():
             container,
             "--publish",
             "127.0.0.1::8787",
+            "--env",
+            "MEMORY_WORLDS_GRAPH_BACKEND=disabled",
             "--read-only",
             "--tmpfs",
             "/tmp",
@@ -86,6 +88,7 @@ def test_container_private_context_restart_and_package_contents():
                 f"/v1/worlds/{world}/episodes",
                 json={
                     "source_id": "container-restart",
+                    "project": False,
                     "content": "Synthetic persistent container evidence",
                     "occurred_at": "2026-10-20T00:00:00Z",
                 },
@@ -102,6 +105,7 @@ def test_container_private_context_restart_and_package_contents():
                 json={
                     "world_ids": [world],
                     "query": "persistent container",
+                    "mode": "source",
                 },
             )
             assert [row["id"] for row in found.json()["results"]] == [episode_id]

@@ -91,6 +91,26 @@ def main():
         "memory-worlds-falkordb",
         f"--from-file=password={password}",
     )
+    # Lifecycle checks capture project=false records and query source search.
+    # Keep the standard Graphiti backend configured without calling any model.
+    runtime = args.state_dir / "helm-synthetic-runtime.env"
+    runtime.write_text(
+        "MEMORY_WORLDS_LLM_PROVIDER=openai-compatible\n"
+        "MEMORY_WORLDS_LLM_MODEL=synthetic-no-model-calls\n"
+        "MEMORY_WORLDS_LLM_BASE_URL=http://127.0.0.1:9/v1\n"
+        "MEMORY_WORLDS_EMBEDDING_PROVIDER=openai-compatible\n"
+        "MEMORY_WORLDS_EMBEDDING_MODEL=synthetic-no-model-calls\n"
+        "MEMORY_WORLDS_EMBEDDING_BASE_URL=http://127.0.0.1:9/v1\n"
+        "MEMORY_WORLDS_EMBEDDING_DIMENSIONS=1536\n"
+    )
+    runtime.chmod(0o600)
+    kubectl(
+        "create",
+        "secret",
+        "generic",
+        "memory-worlds-runtime",
+        f"--from-env-file={runtime}",
+    )
     repository, tag = args.image.rsplit(":", 1)
     values = args.state_dir / "helm-values.json"
     values.write_text(
@@ -98,6 +118,7 @@ def main():
             {
                 "image": {"repository": repository, "tag": tag, "pullPolicy": "Never"},
                 "falkordb": {"image": {"pullPolicy": "IfNotPresent"}},
+                "runtime": {"existingSecret": "memory-worlds-runtime"},
             }
         )
     )
@@ -293,6 +314,7 @@ def main():
         "network_policy_enforcement": "not tested; kindnet does not enforce policies",
         "node_or_volume_loss_recovery": "not tested",
         "real_model_quality": "not tested",
+        "graphiti_model_calls": "not requested; source records use project=false",
     }
     (args.state_dir / "helm-smoke.json").write_text(json.dumps(record, indent=2) + "\n")
     print(json.dumps(record, indent=2))

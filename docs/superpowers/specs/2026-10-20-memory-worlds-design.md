@@ -151,9 +151,10 @@ scores from different authorities as if they shared a calibrated scale.
 
 Extraction and embeddings use configured providers. Local storage alone does
 not imply that model inference is local. No provider is enabled implicitly,
-and imports default to source-only capture without runnable projection jobs,
-even when a provider is configured. Projecting imported data requires an
-explicit subsequent opt-in operation.
+and imports queue graph extraction by default. Scope identity, original evidence,
+and audit provenance remain durable independently from model delivery. Recovery
+never grants credentials or widens a private audience. Explicit source inspection
+is available while graph recovery proceeds.
 Assistant statements remain attributed evidence or proposed claims; repetition
 does not make them accepted decisions.
 

@@ -39,7 +39,7 @@ class Delivery(Model):
 class RouterSearch(Model):
     mount_ids: list[Identifier] = Field(min_length=1, max_length=20)
     query: str = Field(min_length=1, max_length=2000)
-    mode: Literal["source", "graph"] = "source"
+    mode: Literal["source", "graph"] = "graph"
     limit: int = Field(default=10, ge=1, le=100)
 
 

@@ -1,0 +1,28 @@
+# Combine with operator-owned image digest/storage values and existing Secrets.
+# See docs/oidc-okta.md. This file contains no tokens or client secrets.
+runtime:
+  existingSecret: memory-worlds-runtime
+graph:
+  backend: falkordb
+falkordb:
+  enabled: true
+  auth:
+    existingSecret: memory-worlds-falkordb
+ingress:
+  enabled: true
+  className: nginx
+  hosts: [memory.example.org]
+  tls:
+    - secretName: memory-worlds-tls
+      hosts: [memory.example.org]
+networkPolicy:
+  # Both selectors must match the actual trusted gateway installation.
+  clientNamespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: ingress-nginx
+  clientPodSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  # JWKS/Okta and external model endpoints use HTTPS. Restrict via enforcing egress.
+  allowExternalHTTPS: true

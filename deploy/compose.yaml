@@ -9,6 +9,23 @@ services:
       - "127.0.0.1:8787:8787"
     volumes:
       - memory-data:/data
+    depends_on:
+      falkordb:
+        condition: service_healthy
+    environment:
+      MEMORY_WORLDS_GRAPH_BACKEND: falkordb
+      MEMORY_WORLDS_FALKORDB_HOST: falkordb
+      MEMORY_WORLDS_FALKORDB_PORT: "6379"
+      MEMORY_WORLDS_FALKORDB_PASSWORD: "${MEMORY_WORLDS_FALKORDB_PASSWORD:?Set a private database password}"
+      MEMORY_WORLDS_LLM_PROVIDER: "${MEMORY_WORLDS_LLM_PROVIDER:?Select an extraction provider}"
+      MEMORY_WORLDS_LLM_MODEL: "${MEMORY_WORLDS_LLM_MODEL:?Select an extraction model}"
+      MEMORY_WORLDS_LLM_BASE_URL: "${MEMORY_WORLDS_LLM_BASE_URL:-}"
+      MEMORY_WORLDS_LLM_API_KEY: "${MEMORY_WORLDS_LLM_API_KEY:-${OPENAI_API_KEY:-}}"
+      MEMORY_WORLDS_EMBEDDING_PROVIDER: "${MEMORY_WORLDS_EMBEDDING_PROVIDER:?Select an embedding provider}"
+      MEMORY_WORLDS_EMBEDDING_MODEL: "${MEMORY_WORLDS_EMBEDDING_MODEL:?Select an embedding model}"
+      MEMORY_WORLDS_EMBEDDING_BASE_URL: "${MEMORY_WORLDS_EMBEDDING_BASE_URL:-}"
+      MEMORY_WORLDS_EMBEDDING_API_KEY: "${MEMORY_WORLDS_EMBEDDING_API_KEY:-${OPENAI_API_KEY:-}}"
+      MEMORY_WORLDS_EMBEDDING_DIMENSIONS: "${MEMORY_WORLDS_EMBEDDING_DIMENSIONS:-1536}"
     read_only: true
     tmpfs:
       - /tmp
@@ -21,5 +38,39 @@ services:
       timeout: 3s
       retries: 3
 
+  falkordb:
+    image: falkordb/falkordb-server:6.0.0@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        case "$$REDISCLI_AUTH" in
+          *[!0-9a-fA-F]*) echo 'Database password must be 64 hex characters' >&2; exit 1 ;;
+        esac
+        [ "$${#REDISCLI_AUTH}" -eq 64 ] || {
+          echo 'Database password must be 64 hex characters' >&2; exit 1;
+        }
+        {
+          printf '%s\n' 'protected-mode yes' 'dir /var/lib/falkordb/data' \
+            'loadmodule /var/lib/falkordb/bin/falkordb.so' \
+            'appendonly yes' 'appendfsync everysec'
+          printf 'requirepass %s\n' "$$REDISCLI_AUTH"
+        } > /run/memory-worlds/redis.conf
+        exec redis-server /run/memory-worlds/redis.conf
+    environment:
+      REDISCLI_AUTH: "${MEMORY_WORLDS_FALKORDB_PASSWORD:?Set a private database password}"
+    volumes:
+      - graph-data:/var/lib/falkordb/data
+    tmpfs:
+      - /run/memory-worlds:rw,noexec,nosuid,size=1m,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 30s
+
 volumes:
   memory-data:
+  graph-data:

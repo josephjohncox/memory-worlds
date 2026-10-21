@@ -20,7 +20,10 @@ AT = "2026-10-20T00:00:00+00:00"
 
 def _environment():
     # Tests never inherit graph provider configuration or live authority credentials.
-    return {key: value for key, value in os.environ.items() if not key.startswith("MEMORY_WORLDS_")}
+    return {
+        **{key: value for key, value in os.environ.items() if not key.startswith("MEMORY_WORLDS_")},
+        "MEMORY_WORLDS_GRAPH_BACKEND": "disabled",
+    }
 
 
 def _command(data_dir, *arguments, url=None):
@@ -138,7 +141,14 @@ def test_cli_agents_capture_search_idempotency_and_revocation(running_authority)
         captures = list(pool.map(capture, range(2)))
     assert {item["episode"]["agent_id"] for item in captures} == {"first", "second"}
     found = _invoke(
-        data_dir, "search", "Synthetic fixture", "--world", world, url=url, token=agents[1]
+        data_dir,
+        "search",
+        "--source",
+        "Synthetic fixture",
+        "--world",
+        world,
+        url=url,
+        token=agents[1],
     )
     assert {item["source_id"] for item in found["results"]} == {"cli-0", "cli-1"}
     repeated = capture(0)
@@ -200,6 +210,7 @@ def test_cli_export_restore_and_online_source_backup(running_authority, tmp_path
         found = _invoke(
             destination_dir,
             "search",
+            "--source",
             "portable evidence",
             "--world",
             destination_world,
@@ -212,7 +223,7 @@ def test_cli_export_restore_and_online_source_backup(running_authority, tmp_path
         assert (
             episode["metadata"]["memory_worlds_origin"]["episode_id"] == captured["episode"]["id"]
         )
-        assert episode["projection_state"] == "disabled"
+        assert episode["projection_state"] == "pending"
 
 
 def test_cli_acknowledged_capture_survives_daemon_restart(tmp_path):
@@ -235,7 +246,14 @@ def test_cli_acknowledged_capture_survives_daemon_restart(tmp_path):
         )
     with _daemon(data_dir) as url:
         found = _invoke(
-            data_dir, "search", "restart fixture", "--world", world, url=url, token=token
+            data_dir,
+            "search",
+            "--source",
+            "restart fixture",
+            "--world",
+            world,
+            url=url,
+            token=token,
         )
         assert [item["id"] for item in found["results"]] == [receipt["episode"]["id"]]
         status = _invoke(data_dir, "status", world, url=url, token=token)
@@ -304,12 +322,20 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
             {
                 "world_ids": [world],
                 "query": "stdio transport",
+                "graph": False,
                 "limit": 5,
             },
         )
         assert not found.is_error
         assert found.structured_content["results"][0]["source_id"] == "stdio-mcp-1"
     found = _invoke(
-        data_dir, "search", "stdio transport", "--world", world, url=url, token=administrator
+        data_dir,
+        "search",
+        "--source",
+        "stdio transport",
+        "--world",
+        world,
+        url=url,
+        token=administrator,
     )
     assert found["results"][0]["agent_id"] == "mcp-agent"

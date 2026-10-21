@@ -28,6 +28,7 @@ from .models import (
     ScopeKind,
     ScopeOperation,
     ScopeSelection,
+    UpdateAlias,
     UpdateScopeGrant,
     WorldKind,
 )
@@ -47,6 +48,14 @@ def world_shared_scope_id(authority_id: str, world_id: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"memory-worlds:{authority_id}:{world_id}:world-shared"))
 
 
+def _expiry_ceiling(timestamp: float) -> datetime:
+    """Represent an inherited expiry without rounding beyond its numeric bound."""
+    bound = datetime.fromtimestamp(timestamp, UTC)
+    if bound.timestamp() > timestamp:
+        bound -= timedelta(microseconds=1)
+    return bound
+
+
 class ScopedStore:
     def _initialize_scopes(self, db) -> None:
         db.executescript("""
@@ -54,7 +63,8 @@ class ScopedStore:
                 id TEXT PRIMARY KEY, world_id TEXT NOT NULL REFERENCES worlds(id),
                 kind TEXT NOT NULL, name TEXT NOT NULL, created_at TEXT NOT NULL,
                 creator_credential_id TEXT REFERENCES credentials(id),
-                run_id TEXT, agent_id TEXT, invocation_id TEXT, parent_invocation_id TEXT
+                run_id TEXT, agent_id TEXT, invocation_id TEXT, parent_invocation_id TEXT,
+                alias TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS world_shared_scope
                 ON scopes(world_id) WHERE kind='world-shared';
@@ -84,13 +94,14 @@ class ScopedStore:
     def _create_shared_scope(self, db, world):
         sid = world_shared_scope_id(self.authority_id, world.id)
         db.execute(
-            "INSERT INTO scopes (id,world_id,kind,name,created_at) VALUES (?,?,?,?,?)",
+            "INSERT INTO scopes (id,world_id,kind,name,created_at,alias) VALUES (?,?,?,?,?,?)",
             (
                 sid,
                 world.id,
                 ScopeKind.WORLD_SHARED.value,
                 "World shared",
                 world.created_at.isoformat(),
+                "shared",
             ),
         )
 
@@ -253,7 +264,7 @@ class ScopedStore:
                     raise Forbidden("Invocation identity must belong to an existing agent context")
             sid = str(uuid4())
             db.execute(
-                "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     sid,
                     world_id,
@@ -265,6 +276,7 @@ class ScopedStore:
                     str(agent_id) if agent_id else None,
                     str(invocation_id) if invocation_id else None,
                     str(principal.invocation_id) if principal.invocation_id else None,
+                    request.alias,
                 ),
             )
             for op in ALL_OPERATIONS:
@@ -277,6 +289,13 @@ class ScopedStore:
     def get_scope(self, principal: Principal, world_id: str, scope_id: str | UUID) -> Scope:
         with self._control() as db:
             row = self._scope_authorized(db, principal, world_id, scope_id)
+        return self._hydrate_scope(row)
+
+    def set_scope_alias(self, principal, world_id: str, scope_id, request: UpdateAlias) -> Scope:
+        with self._control() as db, self._transaction(db):
+            row = self._scope_authorized(db, principal, world_id, scope_id, "manage")
+            db.execute("UPDATE scopes SET alias=? WHERE id=?", (request.alias, row["id"]))
+            row = self._scope_row(db, world_id, scope_id)
         return self._hydrate_scope(row)
 
     def scope_flow(self, principal: Principal, request: ScopeFlow) -> bool:
@@ -502,18 +521,23 @@ class ScopedStore:
             if parent_context is not None:
                 if not parent_context["allow_delegation"]:
                     raise Forbidden("This invocation cannot delegate")
-                if request.expires_at is None:
-                    expires = min(
-                        expires, datetime.fromtimestamp(parent_context["expires_at"], UTC)
-                    )
+                if (
+                    request.expires_at is None
+                    and expires.timestamp() > parent_context["expires_at"]
+                ):
+                    expires = min(expires, _expiry_ceiling(parent_context["expires_at"]))
                 if expires.timestamp() > parent_context["expires_at"]:
                     raise Forbidden("A child cannot outlive its parent")
             identity_session = db.execute(
                 "SELECT expires_at FROM identity_sessions WHERE credential_id=?",
                 (principal.credential_id,),
             ).fetchone()
-            if identity_session is not None and request.expires_at is None:
-                expires = min(expires, datetime.fromtimestamp(identity_session["expires_at"], UTC))
+            if (
+                identity_session is not None
+                and request.expires_at is None
+                and expires.timestamp() > identity_session["expires_at"]
+            ):
+                expires = min(expires, _expiry_ceiling(identity_session["expires_at"]))
             if (
                 identity_session is not None
                 and expires.timestamp() > identity_session["expires_at"]
@@ -606,7 +630,7 @@ class ScopedStore:
             if request.private_world_id:
                 sid = str(uuid4())
                 db.execute(
-                    "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO scopes VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         sid,
                         request.private_world_id,
@@ -618,6 +642,7 @@ class ScopedStore:
                         str(agent_uuid),
                         str(invocation_id),
                         str(parent_invocation) if parent_invocation else None,
+                        None,
                     ),
                 )
                 operations = {"read", "write"}

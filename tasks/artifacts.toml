@@ -1,0 +1,19 @@
+["artifacts:build"]
+description = "Build and audit all four distributions with source and tool receipts"
+tools.helm = "4.3.1"
+raw_args = true
+run = "python scripts/build-artifacts.py --mise {{ mise_bin | quote }}"
+
+["artifacts:audit"]
+description = "Audit built distributions and receipts; pass the artifact directory"
+raw_args = true
+run = "python scripts/audit-artifacts.py"
+
+["artifacts:source"]
+description = "Audit tracked public build inputs"
+run = "python scripts/audit-artifacts.py --source-only"
+
+["artifacts:check"]
+description = "Verify package identities and source commit without building distributions"
+raw_args = true
+run = "python scripts/build-artifacts.py --check-only"

@@ -1,0 +1,33 @@
+["pi:deps"]
+description = "Install native Pi dependencies from package-lock.json without install scripts"
+run = "npm ci --ignore-scripts --prefix packages/pi >&2"
+
+["pi:build"]
+description = "Build the native Pi extension and typed SDK"
+depends = ["pi:deps"]
+run = "npm run build --prefix packages/pi"
+
+["pi:check"]
+description = "Type-check the native Pi extension"
+depends = ["pi:deps"]
+run = "npm run check --prefix packages/pi"
+
+["pi:test"]
+description = "Build and test native Pi scope and lifecycle behavior"
+depends = ["pi:deps"]
+run = "npm test --prefix packages/pi"
+
+["pi:verify"]
+description = "Type-check and test native Pi with one locked dependency install"
+depends = ["pi:check", "pi:test"]
+
+["pi:smoke"]
+description = "Exercise both the real Pi runtime and its real local service integration"
+depends = ["pi:deps", "python:deps"]
+run = ["npm run smoke --prefix packages/pi", "npm run smoke:service --prefix packages/pi"]
+
+["pi:pack"]
+description = "Build and package the native Pi extension; npm pack arguments are forwarded"
+depends = ["pi:deps"]
+raw_args = true
+run = "npm pack ./packages/pi"

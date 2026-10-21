@@ -24,6 +24,7 @@ def _environment(**extra):
         "PYTHONUNBUFFERED": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
         "GRAPHITI_TELEMETRY_ENABLED": "false",
+        "MEMORY_WORLDS_GRAPH_BACKEND": "disabled",
         **extra,
     }
 
@@ -157,6 +158,7 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
         denied = _cli(
             remote_data,
             "search",
+            "--source",
             "remoteprivateonlymarker",
             "--world",
             remote_init["world"]["id"],
@@ -260,6 +262,7 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
         denied = _cli(
             local_data,
             "route-search",
+            "--source",
             "capacity",
             "--mount",
             "work",
@@ -290,6 +293,7 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
             recalled = _cli(
                 local_data,
                 "route-search",
+                "--source",
                 "capacity",
                 "--mount",
                 "work",
@@ -314,6 +318,7 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
             remote_private_search = _cli(
                 remote_data,
                 "search",
+                "--source",
                 "localprivateonlymarker",
                 "--world",
                 team["id"],
@@ -324,6 +329,7 @@ def test_cli_daemons_queue_offline_recover_after_kill_and_deliver_once(tmp_path)
             local_private_search = _cli(
                 local_data,
                 "search",
+                "--source",
                 "localprivateonlymarker",
                 "--world",
                 local_init["world"]["id"],

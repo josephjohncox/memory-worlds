@@ -1,0 +1,22 @@
+{
+  "result": "pass",
+  "tested_at": "2026-10-21T03:34:15.640864+00:00",
+  "helm": "v4.3.1+gc0d08d0",
+  "kubernetes": "v1.37.0",
+  "api_image": "memory-worlds:kind-cad423e4",
+  "chart_tree_sha256": "fcd152f53cd22f16397d0f0f9b50519e959a267fb3c66de2e21641a158aca4b6",
+  "helm_test_authentication": true,
+  "source_replay_idempotent": true,
+  "source_and_graph_after_pod_replacement": true,
+  "source_and_graph_after_upgrade": true,
+  "source_and_graph_after_uninstall_reinstall": true,
+  "pvc_uids_retained": true,
+  "invocation_private_source_and_credentials_retained": true,
+  "parent_and_sibling_scope_isolation": true,
+  "delegated_credential_revocation": true,
+  "graph_authentication": true,
+  "network_policy_enforcement": "not tested; kindnet does not enforce policies",
+  "node_or_volume_loss_recovery": "not tested",
+  "real_model_quality": "not tested",
+  "graphiti_model_calls": "not requested; source records use project=false"
+}

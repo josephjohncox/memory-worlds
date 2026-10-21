@@ -8,6 +8,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .errors import Conflict, NotFound
 from .models import (
     AgentContext,
     BindContext,
@@ -21,6 +22,7 @@ from .models import (
     ScopedPublication,
     ScopeFlow,
     SearchRequest,
+    UpdateAlias,
     UpdateScopeGrant,
     World,
 )
@@ -67,6 +69,60 @@ class Client:
 
     def worlds(self) -> list[World]:
         return [World.model_validate(w) for w in self.request("GET", "/v1/worlds")]
+
+    @staticmethod
+    def _alias(items, reference: str, kind: str):
+        matches = [item for item in items if item.alias == reference[1:]]
+        if not matches:
+            raise NotFound(f"No accessible {kind} matches that alias")
+        if len(matches) != 1:
+            raise Conflict(f"Ambiguous {kind} alias; select a canonical ID from discovery")
+        return matches[0]
+
+    def resolve_world(self, reference: str) -> str:
+        """Resolve only explicit @aliases, among this credential's visible worlds."""
+        return (
+            str(self._alias(self.worlds(), reference, "world").id)
+            if reference.startswith("@")
+            else reference
+        )
+
+    def resolve_scope(self, world_id: str, reference: UUID | str) -> UUID:
+        value = str(reference)
+        if value.startswith("@"):
+            return self._alias(self.scopes(world_id), value, "scope").id
+        return UUID(value)
+
+    def set_world_alias(self, world_id: str, request: UpdateAlias) -> World:
+        return World.model_validate(
+            self.request(
+                "PUT", f"{scope_path(world_id)}/alias", json=request.model_dump(mode="json")
+            )
+        )
+
+    def set_scope_alias(self, world_id: str, scope_id: UUID, request: UpdateAlias) -> Scope:
+        return Scope.model_validate(
+            self.request(
+                "PUT",
+                f"{scope_path(world_id, scope_id)}/alias",
+                json=request.model_dump(mode="json"),
+            )
+        )
+
+    def discover(self, *, world: str | None = None, include_scopes: bool = False) -> dict:
+        worlds = self.worlds()
+        if world is not None:
+            selected = self.resolve_world(world)
+            worlds = [item for item in worlds if item.id == selected]
+            if not worlds:
+                raise NotFound("World not found")
+        return {
+            "worlds": worlds,
+            "scopes": {item.id: self.scopes(item.id) for item in worlds}
+            if include_scopes or world
+            else {},
+            "mounts": self.mounts(),
+        }
 
     def me(self) -> dict:
         return self.request("GET", "/v1/me")

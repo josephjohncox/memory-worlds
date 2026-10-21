@@ -1,4 +1,4 @@
-# Local graph backend only. Run the daemon on the host with the graph extra and
+# Local graph backend for a host daemon. Graphiti is included in the application; use
 # explicitly configured extraction/embedding providers. Agent clients use the
 # authenticated daemon API; this Redis protocol port is for the daemon alone.
 name: memory-worlds-graph

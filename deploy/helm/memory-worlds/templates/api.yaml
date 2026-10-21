@@ -71,7 +71,7 @@ spec:
             - name: GRAPHITI_TELEMETRY_ENABLED
               value: "false"
             - name: MEMORY_WORLDS_GRAPH_BACKEND
-              value: {{ if eq .Values.graph.backend "disabled" }}""{{ else }}{{ .Values.graph.backend | quote }}{{ end }}
+              value: {{ .Values.graph.backend | quote }}
             {{- if eq .Values.graph.backend "falkordb" }}
             - name: MEMORY_WORLDS_FALKORDB_HOST
               value: {{ include "memory-worlds.fullname" . }}-falkordb

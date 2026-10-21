@@ -1,0 +1,47 @@
+["graph:up"]
+description = "Build and start the configured API and Graphiti/FalkorDB Compose stack"
+run = "docker compose --file deploy/compose.yaml up --detach --build"
+
+["graph:down"]
+description = "Stop the API and graph Compose stack while retaining its named volumes"
+run = "docker compose --file deploy/compose.yaml down"
+
+["graph:backend-up"]
+description = "Start FalkorDB for a daemon running directly through mise"
+run = "docker compose --file deploy/compose.graph.yaml up --detach"
+
+["graph:backend-down"]
+description = "Stop the standalone graph backend while retaining its named volume"
+run = "docker compose --file deploy/compose.graph.yaml down"
+
+["helm:check"]
+description = "Validate all Helm profiles, isolation, and rejected unsafe settings"
+tools.helm = "4.3.1"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/check-helm.py'
+
+[helm]
+description = "Run pinned Helm; pass explicit cluster selection for deployment operations"
+tools.helm = "4.3.1"
+raw_args = true
+run = "helm"
+
+[kubectl]
+description = "Run pinned kubectl; select an explicit kubeconfig and context"
+tools.kubectl = "1.37.1"
+raw_args = true
+run = "kubectl"
+
+["kind:deploy"]
+description = "Create an isolated local cluster using an explicit --runtime-env file"
+tools.kind = "0.33.0"
+tools.kubectl = "1.37.1"
+tools.helm = "4.3.1"
+raw_args = true
+run = "scripts/deploy-kind.sh"
+
+["kind:smoke"]
+description = "Verify source, graph PVC, and scope persistence in an isolated cluster, then delete it"
+tools.kind = "0.33.0"
+tools.kubectl = "1.37.1"
+tools.helm = "4.3.1"
+run = "scripts/deploy-kind.sh --smoke --helm-smoke --delete"

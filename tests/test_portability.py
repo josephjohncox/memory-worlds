@@ -164,12 +164,12 @@ def test_archive_roundtrip_rebinds_importer_without_credentials_or_grants(author
     assert restored.actor_id == "bob" and restored.agent_id == importer.agent_id
     assert restored.source_id == original.source_id
     assert restored.content == original.content and restored.occurred_at == original.occurred_at
-    assert restored.project is False and restored.projection_state == "disabled"
+    assert restored.project is True and restored.projection_state == "pending"
     origin = restored.metadata["memory_worlds_origin"]
     assert origin["actor_id"] == "alice" and origin["world_id"] == world.id
     assert origin["authority_id"] == store.authority_id
     assert origin["audit"][0]["event"] == "capture"
-    assert target.pending_jobs(target_world.id) == []
+    assert [item.id for item in target.pending_jobs(target_world.id)] == [restored.id]
 
 
 def test_archive_export_does_not_overwrite_completed_artifact(authority, tmp_path):
@@ -334,7 +334,7 @@ def test_chatgpt_active_branch_dates_roles_and_all_branches_replay(authority, tm
     assert [item.role for item in episodes] == ["user", "assistant"]
     assert episodes[1].parent_entry_id == "question"
     assert episodes[0].occurred_at == datetime(2026, 1, 2, tzinfo=UTC)
-    assert all(not item.project for item in episodes)
+    assert all(item.project for item in episodes)
     result = import_chatgpt(store, principal, world.id, path, all_branches=True)
     assert result["imported"] == 1 and result["replayed"] == 2
     assert {item.source_entry_id for item in store.list_episodes(principal, world.id)} == {

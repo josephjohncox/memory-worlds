@@ -71,6 +71,9 @@ SOURCE_ROOTS = {
     ".python-version",
     ".dockerignore",
     ".gitattributes",
+    "mise.toml",
+    "mise.lock",
+    "tasks",
 }
 SIGNATURES = re.compile(
     rb"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"

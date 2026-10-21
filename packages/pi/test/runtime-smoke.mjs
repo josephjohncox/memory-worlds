@@ -84,8 +84,8 @@ try {
   assert.equal((await command({ type: "prompt", message: "/memory capture native-runtime-fixture" })).success, true);
   assert.equal(captured.length, 1);
   assert.equal(captured[0].content, "native-runtime-fixture");
-  assert.equal(captured[0].project, false);
-  assert.equal((await command({ type: "prompt", message: "/memory search fixture" })).success, true);
+  assert.equal(captured[0].project, true);
+  assert.equal((await command({ type: "prompt", message: "/memory source fixture" })).success, true);
   assert.equal((await command({ type: "prompt", message: "/memory publish team shared selected-runtime-publication" })).success, true);
   assert.equal((await command({ type: "prompt", message: "/memory publish team shared selected-runtime-publication" })).success, true);
   assert.equal(published.length, 2);

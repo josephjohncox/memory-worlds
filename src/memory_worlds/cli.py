@@ -29,6 +29,7 @@ from .models import (
     ScopeFlow,
     ScopeSelection,
     SearchRequest,
+    UpdateAlias,
     UpdateScopeGrant,
     WorldKind,
 )
@@ -72,12 +73,59 @@ def read_input(path: Path, model):
     return model.model_validate_json(value)
 
 
-def scope_selection(value: str) -> ScopeSelection:
+def scope_selection(value: str) -> tuple[str, str]:
     try:
         world_id, selected = value.rsplit(":", 1)
-        return ScopeSelection(world_id=world_id, scope_id=UUID(selected))
+        if not world_id or not selected:
+            raise ValueError("empty selection")
+        if not selected.startswith("@"):
+            UUID(selected)
+        return world_id, selected
     except (ValueError, ValidationError):
-        raise argparse.ArgumentTypeError("scope selection must be WORLD:UUID") from None
+        raise argparse.ArgumentTypeError(
+            "scope selection must be WORLD:UUID or WORLD:@ALIAS"
+        ) from None
+
+
+def scope_reference(value: str) -> UUID | str:
+    try:
+        if value.startswith("@"):
+            UpdateAlias(alias=value[1:])
+            return value
+        return UUID(value)
+    except (ValueError, ValidationError):
+        raise argparse.ArgumentTypeError("scope must be a UUID or @alias") from None
+
+
+def listing(items, kind: str):
+    columns = {
+        "worlds": (("ID", "id"), ("ALIAS", "alias"), ("NAME", "name"), ("KIND", "kind")),
+        "scopes": (("UUID", "id"), ("ALIAS", "alias"), ("NAME", "name"), ("KIND", "kind")),
+        "mounts": (("ID", "id"), ("NAME", "name"), ("WORLD_IDS", "world_ids"), ("URL", "url")),
+    }[kind]
+    print("\t".join(label for label, _ in columns))
+    for item in items:
+        row = item.model_dump(mode="json")
+        values = []
+        for _, key in columns:
+            value = row.get(key)
+            value = ",".join(value) if isinstance(value, list) else str(value or "-")
+            if key == "alias" and value != "-":
+                value = "@" + value
+            values.append("".join(c if c.isprintable() else " " for c in value))
+        print("\t".join(values))
+
+
+def resolve_local_selection(store, principal, args):
+    if args.world.startswith("@"):
+        args.world = Client._alias(store.list_worlds(principal), args.world, "world").id
+    if getattr(args, "scope", None) is not None:
+        if str(args.scope).startswith("@"):
+            args.scope = Client._alias(
+                store.list_scopes(principal, args.world), args.scope, "scope"
+            ).id
+        else:
+            args.scope = UUID(str(args.scope))
 
 
 def delegate_to_file(client: Client, request: DelegateCredential, destination: Path):
@@ -128,13 +176,40 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8787)
     serve.add_argument("--allow-network", action="store_true")
-    sub.add_parser("worlds", help="list accessible worlds through the daemon")
+    sub.add_parser("worlds", help="list accessible worlds and canonical IDs").add_argument(
+        "--table", action="store_true"
+    )
+    discover = sub.add_parser("discover", help="discover authorized worlds, scopes and mounts")
+    discover.add_argument("--world", help="world ID or @alias; includes that world's scopes")
+    discover.add_argument(
+        "--scopes", action="store_true", help="include accessible scopes in each world"
+    )
+    discover.add_argument("--json", action="store_true", help="machine-readable discovery")
+    resolve = sub.add_parser("resolve", help="resolve an authorized @alias to a canonical ID")
+    resolve.add_argument("kind", choices=["world", "scope", "mount"])
+    resolve.add_argument("reference")
+    resolve.add_argument("--world", help="world ID or @alias for scope resolution")
+    login = sub.add_parser("login", help="sign in to an OIDC provider using a native device flow")
+    login.add_argument("--issuer", required=True)
+    login.add_argument("--client-id", required=True)
+    login.add_argument("--scope", action="append")
+    login.add_argument("--token-output", type=Path, required=True)
     sub.add_parser("me", help="show the authenticated identity and accessible worlds")
     scopes = sub.add_parser("scopes", help="list explicitly accessible scopes in a world")
     scopes.add_argument("world")
+    scopes.add_argument("--table", action="store_true")
     scope = sub.add_parser("scope", help="inspect one authorized scope")
     scope.add_argument("world")
-    scope.add_argument("scope", type=UUID)
+    scope.add_argument("scope", type=scope_reference)
+    world_alias = sub.add_parser(
+        "world-alias", help="set or clear a world's operator-managed alias"
+    )
+    world_alias.add_argument("world")
+    world_alias.add_argument("alias", help="lowercase alias, or 'none' to clear")
+    scope_alias = sub.add_parser("scope-alias", help="set or clear an authorized scope alias")
+    scope_alias.add_argument("world")
+    scope_alias.add_argument("scope", type=scope_reference)
+    scope_alias.add_argument("alias", help="lowercase alias, or 'none' to clear")
     create_scope = sub.add_parser(
         "scope-create", help="create a scope from a CreateScope JSON file"
     )
@@ -144,7 +219,7 @@ def parser() -> argparse.ArgumentParser:
         "scope-grant", help="set explicit credential operations on a scope"
     )
     grant_scope.add_argument("world")
-    grant_scope.add_argument("scope", type=UUID)
+    grant_scope.add_argument("scope", type=scope_reference)
     grant_scope.add_argument("--input", type=Path, required=True)
     flow = sub.add_parser("scope-flow", help="check audience containment for private capture")
     flow.add_argument("--input", type=Path, required=True)
@@ -155,7 +230,9 @@ def parser() -> argparse.ArgumentParser:
     delegate = sub.add_parser("agent-delegate", help="issue an attenuated child credential")
     delegate.add_argument("--input", type=Path, required=True)
     delegate.add_argument("--token-output", type=Path, required=True)
-    sub.add_parser("mounts", help="list configured remote shared spaces")
+    sub.add_parser(
+        "mounts", help="list configured remote shared spaces and world IDs"
+    ).add_argument("--table", action="store_true")
     sub.add_parser("users", help="list shared-service identities (administrator)")
     user = sub.add_parser("user-set", help="enable or disable a shared-service identity")
     user.add_argument("user_id")
@@ -172,6 +249,7 @@ def parser() -> argparse.ArgumentParser:
     world.add_argument("name")
     world.add_argument("--kind", choices=list(WorldKind), default=WorldKind.PERSONAL)
     world.add_argument("--owner")
+    world.add_argument("--alias")
     token = sub.add_parser("token-create", help="create a separately revocable agent credential")
     token.add_argument("--user", required=True)
     token.add_argument("--agent", required=True)
@@ -182,13 +260,18 @@ def parser() -> argparse.ArgumentParser:
     for name in ("capture", "publish"):
         capture = sub.add_parser(name)
         capture.add_argument("world")
-        capture.add_argument("--scope", type=UUID)
+        capture.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
         capture.add_argument(
             "--context", type=UUID, help="bind invocation attribution and write target"
         )
         capture.add_argument("--source-id", required=True)
         capture.add_argument("--text", help="omit to read text from stdin")
-        capture.add_argument("--project", action="store_true")
+        capture.add_argument(
+            "--source-only",
+            action="store_false",
+            dest="project",
+            help="skip Graphiti extraction for this capture",
+        )
         capture.add_argument(
             "--at",
             type=datetime.fromisoformat,
@@ -199,20 +282,26 @@ def parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--world", action="append", default=[])
     selected_scopes = search.add_mutually_exclusive_group()
-    selected_scopes.add_argument("--scope", type=UUID)
+    selected_scopes.add_argument(
+        "--scope", type=scope_reference, help="scope UUID or @alias (select one world)"
+    )
     selected_scopes.add_argument("--select", type=scope_selection, action="append", default=[])
-    search.add_argument("--graph", action="store_true")
+    search.add_argument(
+        "--source", action="store_true", help="search source text instead of Graphiti"
+    )
     search.add_argument(
         "--entities", action="store_true", help="include entity summaries with graph facts"
     )
     search.add_argument("--limit", type=int, default=10)
     status = sub.add_parser("status")
     status.add_argument("world")
-    status.add_argument("--scope", type=UUID)
+    status.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
     routed = sub.add_parser("route-search", help="recall from explicit configured mounts")
     routed.add_argument("query")
     routed.add_argument("--mount", action="append", required=True)
-    routed.add_argument("--graph", action="store_true")
+    routed.add_argument(
+        "--source", action="store_true", help="search remote source text instead of Graphiti"
+    )
     routed.add_argument("--limit", type=int, default=10)
     publication = sub.add_parser("route-publish", help="queue selected text for remote publication")
     publication.add_argument("mount")
@@ -220,7 +309,7 @@ def parser() -> argparse.ArgumentParser:
     publication.add_argument("--source-id", required=True)
     publication.add_argument("--at", type=datetime.fromisoformat, required=True)
     publication.add_argument("--text", help="omit to read selected text from stdin")
-    publication.add_argument("--project", action="store_true")
+    publication.add_argument("--source-only", action="store_false", dest="project")
     sub.add_parser("deliveries", help="inspect your durable publication outbox")
     retry = sub.add_parser("delivery-retry", help="reauthorize and retry your queued publication")
     retry.add_argument("delivery_id")
@@ -229,16 +318,17 @@ def parser() -> argparse.ArgumentParser:
         cmd.add_argument("world")
         cmd.add_argument("path", type=Path)
         if name != "backup":
-            cmd.add_argument("--scope", type=UUID)
+            cmd.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
         if name.startswith("import-"):
             cmd.add_argument("--all-branches", action="store_true")
     rebuild = sub.add_parser("graph-rebuild", help="rebuild while the daemon is stopped")
     rebuild.add_argument("world")
-    rebuild.add_argument("--scope", type=UUID)
+    rebuild.add_argument("--scope", type=scope_reference, help="scope UUID or @alias")
     rebuild.add_argument(
-        "--include-unprojected",
-        action="store_true",
-        help="explicitly consent to model processing of imported sources",
+        "--projected-only",
+        action="store_false",
+        dest="include_unprojected",
+        help="rebuild only sources already selected for extraction",
     )
     sub.add_parser("mcp", help="serve stdio MCP tools as a client of the HTTP daemon")
     return p
@@ -285,6 +375,19 @@ def backup_source(store, principal, world_id: str, target: Path):
 
 
 def run(args):
+    if args.command == "login":
+        from .login import device_login
+
+        emit(
+            device_login(
+                args.url,
+                issuer=args.issuer,
+                client_id=args.client_id,
+                scopes=tuple(args.scope or ["openid", "memory-worlds"]),
+                token_output=args.token_output,
+            )
+        )
+        return
     if args.command == "init":
         from .store import MemoryStore
 
@@ -322,6 +425,7 @@ def run(args):
         from . import portability
 
         store, principal = local_store(args)
+        resolve_local_selection(store, principal, args)
         if args.command == "export":
             emit(
                 {
@@ -367,6 +471,7 @@ def run(args):
         from .graph import GraphConfig, GraphitiAdapter, ProjectionWorker
 
         store, principal = local_store(args)
+        resolve_local_selection(store, principal, args)
         if not principal.admin:
             raise MemoryError("graph rebuild requires an administrator")
         config = GraphConfig.from_env()
@@ -391,14 +496,80 @@ def run(args):
         run_mcp(args.url, token)
         return
     with Client(args.url, token) as client:
+        if args.command not in {"discover", "resolve", "route-publish"}:
+            if hasattr(args, "world"):
+                args.world = (
+                    [client.resolve_world(w) for w in args.world]
+                    if isinstance(args.world, list)
+                    else client.resolve_world(args.world)
+                )
+            if getattr(args, "scope", None) is not None:
+                selected_world = args.world
+                if isinstance(selected_world, list):
+                    if len(selected_world) != 1:
+                        raise MemoryError("--scope requires exactly one --world")
+                    selected_world = selected_world[0]
+                args.scope = client.resolve_scope(selected_world, args.scope)
+        if getattr(args, "select", None):
+            args.select = [
+                ScopeSelection(
+                    world_id=(wid := client.resolve_world(world)),
+                    scope_id=client.resolve_scope(wid, sid),
+                )
+                for world, sid in args.select
+            ]
         if args.command == "worlds":
-            emit(client.worlds())
+            listing(client.worlds(), "worlds") if args.table else emit(client.worlds())
+        elif args.command == "discover":
+            found = client.discover(world=args.world, include_scopes=args.scopes)
+            if args.json:
+                emit(found)
+            else:
+                for kind in ("worlds", "mounts"):
+                    print(kind.upper())
+                    listing(found[kind], kind)
+                for world_id, scopes in found["scopes"].items():
+                    print(f"SCOPES {world_id}")
+                    listing(scopes, "scopes")
+        elif args.command == "resolve":
+            if args.kind == "world":
+                wid = client.resolve_world(args.reference)
+                matches = [w for w in client.worlds() if w.id == wid]
+                if not matches:
+                    raise MemoryError("No accessible world matches that ID")
+                emit(matches[0])
+            elif args.kind == "scope":
+                if not args.world:
+                    raise MemoryError("resolve scope requires --world")
+                wid = client.resolve_world(args.world)
+                emit(client.get_scope(wid, client.resolve_scope(wid, args.reference)))
+            else:
+                matches = [m for m in client.mounts() if m.id == args.reference.removeprefix("@")]
+                if not matches:
+                    raise MemoryError("No accessible mount matches that ID")
+                emit(matches[0])
         elif args.command == "me":
             emit(client.me())
         elif args.command == "scopes":
-            emit(client.scopes(args.world))
+            listing(client.scopes(args.world), "scopes") if args.table else emit(
+                client.scopes(args.world)
+            )
         elif args.command == "scope":
             emit(client.get_scope(args.world, args.scope))
+        elif args.command == "world-alias":
+            emit(
+                client.set_world_alias(
+                    args.world, UpdateAlias(alias=None if args.alias == "none" else args.alias)
+                )
+            )
+        elif args.command == "scope-alias":
+            emit(
+                client.set_scope_alias(
+                    args.world,
+                    args.scope,
+                    UpdateAlias(alias=None if args.alias == "none" else args.alias),
+                )
+            )
         elif args.command == "scope-create":
             emit(client.create_scope(args.world, read_input(args.input, CreateScope)))
         elif args.command == "scope-grant":
@@ -417,7 +588,7 @@ def run(args):
                 )
             )
         elif args.command == "mounts":
-            emit(client.mounts())
+            listing(client.mounts(), "mounts") if args.table else emit(client.mounts())
         elif args.command == "route-search":
             emit(
                 client.routed_search(
@@ -425,11 +596,13 @@ def run(args):
                         mount_ids=args.mount,
                         query=args.query,
                         limit=args.limit,
-                        mode="graph" if args.graph else "source",
+                        mode="source" if args.source else "graph",
                     )
                 )
             )
         elif args.command == "route-publish":
+            if args.world.startswith("@"):
+                raise MemoryError("remote publication requires a mounted world ID; see discover")
             emit(
                 client.publish_remote(
                     RoutedPublication(
@@ -467,7 +640,7 @@ def run(args):
                     "POST",
                     "/v1/worlds",
                     json=CreateWorld(
-                        name=args.name, kind=args.kind, owner_id=args.owner
+                        name=args.name, alias=args.alias, kind=args.kind, owner_id=args.owner
                     ).model_dump(mode="json"),
                 )
             )
@@ -475,7 +648,7 @@ def run(args):
             grants = {}
             for grant in args.grant:
                 world, role = grant.rsplit(":", 1)
-                grants[world] = Role(role)
+                grants[client.resolve_world(world)] = Role(role)
             emit(
                 client.request(
                     "POST",
@@ -524,7 +697,7 @@ def run(args):
                         include_entities=args.entities,
                         query=args.query,
                         limit=args.limit,
-                        mode="graph" if args.graph else "source",
+                        mode="source" if args.source else "graph",
                     )
                 )
             )

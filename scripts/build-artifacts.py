@@ -86,6 +86,7 @@ def main() -> None:
     parser.add_argument("--uv", default="uv")
     parser.add_argument("--npm", default="npm")
     parser.add_argument("--helm", default="helm")
+    parser.add_argument("--mise", default="mise")
     parser.add_argument("--source-sha", help="Require this immutable 40-character source commit")
     parser.add_argument("--require-clean", action="store_true")
     parser.add_argument(
@@ -107,6 +108,7 @@ def main() -> None:
     os.environ["SOURCE_DATE_EPOCH"] = str(source["commit_timestamp"])
     command([sys.executable, str(ROOT / "scripts/audit-artifacts.py"), "--source-only"])
     tool_versions = {
+        "mise": command([args.mise, "--version"], capture=True),
         "python": sys.version.split()[0],
         "python_build_backend": tomllib.loads((ROOT / "pyproject.toml").read_text())[
             "build-system"
@@ -135,7 +137,16 @@ def main() -> None:
         [args.npm, "pack", "--ignore-scripts", "--pack-destination", str(output)],
         cwd=ROOT / "packages/pi",
     )
-    command([args.helm, "lint", "--strict", str(CHART)])
+    command(
+        [
+            args.helm,
+            "lint",
+            "--strict",
+            str(CHART),
+            "--set-string",
+            "runtime.existingSecret=artifact-validation-runtime",
+        ]
+    )
     command([args.helm, "package", str(CHART), "--destination", str(output)])
     files = sorted(path for path in output.iterdir() if path.is_file())
     manifest = {

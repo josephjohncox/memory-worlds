@@ -8,14 +8,28 @@ kubectl_bin=${KUBECTL:-kubectl}
 smoke=false
 helm_smoke=false
 delete=false
-for option in "$@"; do
-  case "$option" in
-    --smoke) smoke=true ;;
-    --helm-smoke) helm_smoke=true ;;
-    --delete) delete=true ;;
-    *) echo "Usage: $0 [--smoke] [--helm-smoke] [--delete]" >&2; exit 2 ;;
+runtime_env=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --smoke) smoke=true; shift ;;
+    --helm-smoke) helm_smoke=true; shift ;;
+    --delete) delete=true; shift ;;
+    --runtime-env)
+      if [ "$#" -lt 2 ]; then echo '--runtime-env requires a file' >&2; exit 2; fi
+      runtime_env=$2
+      shift 2
+      ;;
+    *) echo "Usage: $0 [--runtime-env FILE] [--smoke] [--helm-smoke] [--delete]" >&2; exit 2 ;;
   esac
 done
+if [ -n "$runtime_env" ] && [ ! -f "$runtime_env" ]; then
+  echo 'The runtime env file must be an existing regular file' >&2
+  exit 2
+fi
+if [ -z "$runtime_env" ] && [ "$smoke" = false ] && [ "$helm_smoke" = false ]; then
+  echo 'Supply --runtime-env FILE with the required Graphiti model/provider configuration' >&2
+  exit 2
+fi
 state=${MEMORY_WORLDS_KIND_STATE:-$(mktemp -d "${TMPDIR:-/tmp}/memory-worlds-kind.XXXXXXXX")}
 mkdir -p "$state"
 state=$(cd "$state" && pwd)
@@ -25,6 +39,21 @@ if [ -e "$state/kubeconfig" ]; then
   exit 2
 fi
 chmod 700 "$state"
+if [ -z "$runtime_env" ]; then
+  # Persistence checks submit project=false records and never request extraction.
+  # The daemon still runs the normal configured Graphiti backend.
+  runtime_env="$state/synthetic-runtime.env"
+  cat > "$runtime_env" <<'ENV'
+MEMORY_WORLDS_LLM_PROVIDER=openai-compatible
+MEMORY_WORLDS_LLM_MODEL=synthetic-no-model-calls
+MEMORY_WORLDS_LLM_BASE_URL=http://127.0.0.1:9/v1
+MEMORY_WORLDS_EMBEDDING_PROVIDER=openai-compatible
+MEMORY_WORLDS_EMBEDDING_MODEL=synthetic-no-model-calls
+MEMORY_WORLDS_EMBEDDING_BASE_URL=http://127.0.0.1:9/v1
+MEMORY_WORLDS_EMBEDDING_DIMENSIONS=1536
+ENV
+  chmod 600 "$runtime_env"
+fi
 cluster="memory-worlds-$(python3 -c 'import secrets; print(secrets.token_hex(4))')"
 kubeconfig="$state/kubeconfig"
 context="kind-$cluster"
@@ -56,7 +85,8 @@ kube=("$kubectl_bin" --kubeconfig "$kubeconfig" --context "$context")
 python3 -c 'import secrets,sys; open(sys.argv[1], "w").write(secrets.token_hex(32))' "$state/falkordb-password"
 "${kube[@]}" -n memory-worlds create secret generic memory-worlds-falkordb \
   --from-file="password=$state/falkordb-password"
-"${kube[@]}" -n memory-worlds create secret generic memory-worlds-runtime
+"${kube[@]}" -n memory-worlds create secret generic memory-worlds-runtime \
+  --from-env-file="$runtime_env"
 "$kubectl_bin" kustomize "$root/deploy/k8s/base" > "$state/manifests.yaml"
 python3 - "$state/manifests.yaml" "$image" <<'PY'
 import pathlib, sys

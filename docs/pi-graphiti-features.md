@@ -198,7 +198,7 @@ memory-worlds context-bind --input context.json
 memory-worlds context CONTEXT_UUID
 memory-worlds agent-delegate --input child.json --token-output child.token
 memory-worlds search QUERY --select WORLD:SCOPE_UUID --select WORLD:SCOPE_UUID
-memory-worlds search QUERY --world WORLD --scope SCOPE_UUID --graph --entities
+memory-worlds search QUERY --world WORLD --scope SCOPE_UUID --entities
 ```
 
 `capture`, `publish`, `status`, `graph-rebuild`, `export`, `restore`,

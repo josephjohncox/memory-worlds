@@ -2,7 +2,7 @@
 
 Importers validate complete inputs before asking the store for one transaction.
 Archives carry evidence and attribution, never live credentials or membership.
-Graph projections are deliberately rebuilt separately from these source records.
+Restored and imported evidence queues scope-isolated Graphiti extraction by default.
 """
 
 from __future__ import annotations
@@ -415,7 +415,7 @@ def restore_world(
         metadata["memory_worlds_origin"] = origin
         fields.update(
             metadata=metadata,
-            project=False,
+            project=True,
             scope_id=destination_scope.id,
             context_id=None,
         )
@@ -619,7 +619,7 @@ def import_chatgpt(
                         "role": role,
                         "source_ref": f"chatgpt:{conversation_id}/{node_id}",
                         "metadata": metadata,
-                        "project": False,
+                        "project": True,
                     }
                 )
             )
@@ -757,7 +757,7 @@ def import_pi(
                             **raw,
                         }
                     },
-                    "project": False,
+                    "project": True,
                 }
             )
         )

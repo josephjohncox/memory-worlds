@@ -26,7 +26,7 @@ with Client(os.environ["MEMORY_WORLDS_URL"], os.environ["MEMORY_WORLDS_TOKEN"]) 
 ```
 
 Preserve the original timestamp and source identity on retries. A successful
-capture returns the stored episode and `replayed`; its projection state is
+capture queues Graphiti extraction and returns the stored episode and `replayed`; its projection state is
 independent from durable receipt. Each read request names its worlds explicitly.
 
 For MCP clients, install the MCP extra and configure a stdio server command:
@@ -57,3 +57,6 @@ Its client is also exported as `memory-worlds-pi/client` for other native Pi cod
 It does not need MCP or a Pi fork. Automatic capture is off by default;
 publication is an explicit user slash command. See [sharing](sharing.md) for
 remote mount configuration, OIDC membership, and outbox receipts.
+
+Use [discovery](../README.md#discover-worlds-scopes-and-mounts) to find canonical IDs
+and aliases. For native user login and team mappings, see [OIDC and Okta](oidc-okta.md).

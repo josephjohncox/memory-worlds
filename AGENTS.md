@@ -44,3 +44,15 @@ repository must preserve.
 - Keep project names and documentation independent of any employer.
 - Prefer current stable dependencies and reproducible lockfiles. Run the checks
   appropriate to the change and report the results accurately.
+
+## Development commands
+
+- Use the checked-in mise toolchain and tasks: `mise install --locked`,
+  `mise run deps`, and `mise run check`. Run `mise tasks` to discover targets.
+  CI invokes these same tasks. uv and npm remain the locked dependency installers
+  underneath mise; do not introduce a second tool bootstrap path.
+- Keep exact tool versions and platform checksums in `mise.toml` and the generated
+  `mise.lock`. Update the lock with `mise lock --platform linux-x64,linux-arm64,macos-arm64`.
+- Use `mise run cli -- ...` for service/CLI commands, `mise run helm:check` for
+  chart validation, and `mise run kind:smoke` for the isolated lifecycle check.
+  Select Kubernetes contexts explicitly and retain unrelated clusters and data.

@@ -9,23 +9,32 @@ The repository builds four versioned distributions together:
 | `memory-worlds-pi-<version>.tgz` | Compiled native Pi extension and typed client |
 | `memory-worlds-<version>.tgz` | Helm chart, schema, templates and Apache-2.0 license |
 
-`manifest.json` records the full source commit, whether the checkout was clean, the tracked working-tree digest, tool versions, and each distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the manifest. The manifest is a build receipt; it is not a cryptographic signature. Archive timestamps may differ between builds, so matching source commits do not imply byte-identical archives.
+`manifest.json` records the full source commit, whether the checkout was clean, the tracked working-tree digest, the actual mise and build-tool versions, and each distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the manifest. The manifest is a build receipt; it is not a cryptographic signature. Archive timestamps may differ between builds, so matching source commits do not imply byte-identical archives.
 
 Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.2.0`. Builds fail if these identities differ.
 
 ## Build locally
 
-Use Python 3.15, uv 0.13.4, Node 26.12.0, and Helm 4.3.1. The checked-in npm and uv lockfiles define dependency resolution. The build script records the versions actually used.
+Use the checked-in [mise toolchain and targets](development.md). `mise.lock`
+pins tool downloads and checksums; the npm and uv lockfiles define library
+dependency resolution. The build script records the versions actually used.
 
 From a clean Git checkout:
 
 ```sh
-python scripts/build-artifacts.py --require-clean
-python scripts/audit-artifacts.py dist/artifacts
+mise trust
+mise install --locked
+mise run artifacts:build -- --require-clean
+mise run artifacts:audit -- dist/artifacts
 (cd dist/artifacts && sha256sum --check SHA256SUMS)
 ```
 
-The output directory must be empty. Select a fresh directory with `--output /tmp/memory-worlds-build`. Use `--uv`, `--npm` and `--helm` to select tool executables. `--skip-npm-install` uses an existing installation from the checked-in npm lockfile. Without `--require-clean`, local development builds are permitted and the receipt records that their commit alone does not identify the working tree.
+The output directory must be empty. Select a fresh directory with
+`mise run artifacts:build -- --output /tmp/memory-worlds-build`. The task loads
+the locked Python, uv, Node, and Helm tools; it installs npm dependencies from
+the checked-in lockfile. Without `--require-clean`, local development builds
+are permitted and the receipt records that their commit alone does not identify
+the working tree.
 
 The builder requires a Git commit. It never fabricates source identity for an unversioned directory. `--source-sha <40-character-commit>` also verifies that the checkout is the expected immutable commit.
 

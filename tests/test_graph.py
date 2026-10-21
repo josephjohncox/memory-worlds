@@ -14,7 +14,14 @@ from memory_worlds.graph import (
     graph_episode_id,
     graph_namespace,
 )
-from memory_worlds.models import CreateScope, CreateWorld, EpisodeInput, ScopeKind
+from memory_worlds.models import (
+    CreateScope,
+    CreateWorld,
+    EpisodeInput,
+    Publication,
+    ScopeKind,
+    SearchRequest,
+)
 from memory_worlds.store import MemoryStore
 
 
@@ -36,6 +43,30 @@ def capture(store, world, principal, source_id="entry-1", project=True):
             project=project,
         ),
     ).episode
+
+
+def test_normal_capture_queues_graphiti_and_source_only_is_explicit(local):
+    store, world, principal = local
+    receipt = store.capture(
+        principal,
+        world.id,
+        EpisodeInput(
+            source_id="default-graph-memory",
+            content="Ada operates the lathe",
+            occurred_at=datetime(2026, 10, 20, tzinfo=UTC),
+        ),
+    )
+    assert receipt.episode.projection_state == "pending"
+    assert store.pending_jobs(world.id) == [receipt.episode]
+    assert SearchRequest(world_ids=[world.id], query="Ada").mode == "graph"
+    assert Publication(
+        source_id="published",
+        content="Selected fact",
+        occurred_at=datetime(2026, 10, 20, tzinfo=UTC),
+    ).project
+    explicit_source = capture(store, world, principal, "maintenance-source", project=False)
+    assert explicit_source.projection_state == "disabled"
+    assert store.pending_jobs(world.id) == [receipt.episode]
 
 
 class RecordingAdapter:
@@ -84,7 +115,14 @@ def local_graph_environment():
 
 
 def test_graph_requires_explicit_configuration_and_excludes_secrets():
-    assert GraphConfig.from_env({"OPENAI_API_KEY": "not-enough-to-enable"}) is None
+    assert GraphConfig.from_env({"MEMORY_WORLDS_GRAPH_BACKEND": "disabled"}) is None
+    with pytest.raises(ValueError, match="LLM_PROVIDER"):
+        GraphConfig.from_env({"OPENAI_API_KEY": "not-enough-to-configure"})
+    implicit_backend = local_graph_environment()
+    implicit_backend.pop("MEMORY_WORLDS_GRAPH_BACKEND")
+    assert GraphConfig.from_env(implicit_backend).backend == "falkordb"
+    with pytest.raises(ValueError, match="GRAPH_BACKEND"):
+        GraphConfig.from_env({"MEMORY_WORLDS_GRAPH_BACKEND": ""})
     with pytest.raises(ValueError, match="LLM_PROVIDER"):
         GraphConfig.from_env({"MEMORY_WORLDS_GRAPH_BACKEND": "falkordb"})
     env = local_graph_environment()
@@ -111,6 +149,20 @@ def test_server_namespaces_separate_authorities_worlds_and_generations(local):
     assert first != graph_namespace(world.model_copy(update={"authority_id": "other"}), "one")
     assert first != graph_namespace(world.model_copy(update={"id": "other"}), "one")
     assert first.startswith("mw_") and first[3:].isalnum()
+
+
+async def test_empty_scope_graph_search_needs_no_backend_or_source_fallback(local):
+    store, world, principal = local
+    adapter = RecordingAdapter()
+    worker = ProjectionWorker(store, adapter)
+    assert await worker.search([world], "Ada") == []
+    capture(store, world, principal, "source-maintenance", project=False)
+    assert await worker.search([world], "Ada") == []
+    assert adapter.searches == []
+    capture(store, world, principal, "pending-extraction")
+    with pytest.raises(Unavailable):
+        await worker.search([world], "Ada")
+    assert adapter.searches == []
 
 
 async def test_capture_receipt_precedes_projection_and_repeated_worker_is_idempotent(local):
@@ -293,7 +345,10 @@ async def test_search_joins_provenance_and_validates_all_worlds_before_query(loc
     result = await worker.search([world], "Evidence")
     assert result[0]["source_episode_ids"] == [episode.id]
     assert "graph_episode_ids" not in result[0]
+    empty = store.create_world(principal, CreateWorld(name="Empty graph"))
+    assert len(await worker.search([world, empty], "Evidence")) == 1
     unavailable = store.create_world(principal, CreateWorld(name="Not projected"))
+    capture(store, unavailable, principal, "pending-extraction")
     adapter.searches.clear()
     with pytest.raises(Unavailable):
         await worker.search([world, unavailable], "Evidence")

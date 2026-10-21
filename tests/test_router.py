@@ -103,9 +103,12 @@ async def test_publication_is_explicit_durable_idempotent_and_search_has_origin(
     rows = e.remote.list_episodes(e.remote_admin, e.team.id)
     assert len(rows) == 1
     assert rows[0].source_type == "publication"
+    assert rows[0].project is True and rows[0].projection_state == "pending"
     assert rows[0].source_ref is None and rows[0].metadata == {}
     assert rows[0].source_id == f"publication:{e.local.authority_id}:{queued.id}"
-    found = await e.router.search(e.alice, RouterSearch(mount_ids=["work"], query="evidence"))
+    found = await e.router.search(
+        e.alice, RouterSearch(mode="source", mount_ids=["work"], query="evidence")
+    )
     assert found["complete"] and not found["failures"]
     assert found["results"][0]["authority_id"] == e.remote.authority_id
     assert found["results"][0]["mount_id"] == "work"
@@ -127,7 +130,9 @@ async def test_mount_authorization_is_complete_before_any_remote_request(federat
     other = e.mount.model_copy(update={"id": "other", "user_grants": {}})
     e.router.mounts["other"] = other
     with pytest.raises(Forbidden):
-        await e.router.search(e.alice, RouterSearch(mount_ids=["work", "other"], query="private"))
+        await e.router.search(
+            e.alice, RouterSearch(mode="source", mount_ids=["work", "other"], query="private")
+        )
     with pytest.raises(Forbidden):
         e.router.publish(e.bob, publication(e))
     assert count == []
@@ -150,7 +155,9 @@ async def test_private_remote_worlds_cannot_be_federated_or_receive_publications
         return response
 
     e.router.transport = InterceptTransport(e.transport, record)
-    result = await e.router.search(e.alice, RouterSearch(mount_ids=["work"], query="secret"))
+    result = await e.router.search(
+        e.alice, RouterSearch(mode="source", mount_ids=["work"], query="secret")
+    )
     assert result == {
         "results": [],
         "failures": [{"mount_id": "work", "error": "remote_world_is_private"}],
@@ -326,11 +333,15 @@ async def test_remote_authority_and_result_world_are_checked(federation):
         return httpx.Response(200, json=body)
 
     e.router.transport = InterceptTransport(e.transport, tamper)
-    found = await e.router.search(e.alice, RouterSearch(mount_ids=["work"], query="evidence"))
+    found = await e.router.search(
+        e.alice, RouterSearch(mode="source", mount_ids=["work"], query="evidence")
+    )
     assert not found["results"]
     assert found["failures"][0]["error"] == "remote_scope_mismatch"
     e.mount.authority_id = "wrong-authority"
-    found = await e.router.search(e.alice, RouterSearch(mount_ids=["work"], query="evidence"))
+    found = await e.router.search(
+        e.alice, RouterSearch(mode="source", mount_ids=["work"], query="evidence")
+    )
     assert found["failures"][0]["error"] == "remote_authority_mismatch"
 
 
@@ -410,7 +421,9 @@ async def test_real_loopback_http_publication_and_recall(federation):
         router.publish(e.alice, publication(e))
         await router.run_once()
         assert router.deliveries(e.alice)[0].state == "delivered"
-        found = await router.search(e.alice, RouterSearch(mount_ids=["work"], query="evidence"))
+        found = await router.search(
+            e.alice, RouterSearch(mode="source", mount_ids=["work"], query="evidence")
+        )
         assert found["complete"] and len(found["results"]) == 1
     finally:
         server.should_exit = True
@@ -433,7 +446,7 @@ async def test_partial_federated_recall_reports_remote_outage_without_hiding_res
 
     e.router.transport = httpx.MockTransport(handle)
     found = await e.router.search(
-        e.alice, RouterSearch(mount_ids=["work", "offline"], query="evidence")
+        e.alice, RouterSearch(mode="source", mount_ids=["work", "offline"], query="evidence")
     )
     assert not found["complete"] and len(found["results"]) == 1
     assert found["results"][0]["mount_id"] == "work"
@@ -468,7 +481,7 @@ async def test_nested_remote_json_cannot_stop_other_deliveries_or_recall(federat
     assert await e.router.run_once() == 1
     assert len(e.remote.list_episodes(e.remote_admin, e.team.id)) == 2
     found = await e.router.search(
-        e.alice, RouterSearch(mount_ids=["malformed", "work"], query="evidence")
+        e.alice, RouterSearch(mode="source", mount_ids=["malformed", "work"], query="evidence")
     )
     assert len(found["results"]) == 2
     assert not found["complete"]
@@ -500,7 +513,8 @@ async def test_graph_recall_preserves_origin_and_rejects_wrong_authority(federat
         return response
 
     e.router.transport = InterceptTransport(e.transport, graph)
-    request = RouterSearch(mount_ids=["work"], query="evidence", mode="graph")
+    request = RouterSearch(mount_ids=["work"], query="evidence")
+    assert request.mode == "graph"
     found = await e.router.search(e.alice, request)
     assert found["complete"]
     assert found["results"][0]["generation"] == "generation-id"

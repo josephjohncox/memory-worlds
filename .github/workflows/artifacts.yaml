@@ -28,33 +28,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          python-version: "3.15"
-          check-latest: true
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          version: "0.13.4"
-      - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "26.12.0"
-          cache: npm
-          cache-dependency-path: packages/pi/package-lock.json
-      - name: Install verified Helm
-        run: |
-          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
-          printf '%s  %s\n' 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check
-          tar --extract --gzip --file "$RUNNER_TEMP/helm.tar.gz" --directory "$RUNNER_TEMP" linux-amd64/helm
-          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv node"
       - name: Check release tag
         if: startsWith(github.ref, 'refs/tags/')
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          python - <<'PY'
+          mise exec -- python - <<'PY'
           import os, tomllib
           from pathlib import Path
           version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
@@ -64,7 +49,7 @@ jobs:
       - name: Build and audit all distributions
         env:
           PUBLIC_CONTENT_DENY_PATTERN: ${{ vars.PUBLIC_CONTENT_DENY_PATTERN }}
-        run: python scripts/build-artifacts.py --require-clean --source-sha "$GITHUB_SHA"
+        run: mise run artifacts:build --require-clean --source-sha "$GITHUB_SHA"
       - name: Upload private workflow artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -100,18 +85,20 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          python-version: "3.15"
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv"
       - name: Audit tracked inputs and validate image references
         id: references
         env:
           PUBLIC_CONTENT_DENY_PATTERN: ${{ vars.PUBLIC_CONTENT_DENY_PATTERN }}
         run: |
-          python scripts/audit-artifacts.py --source-only
-          python scripts/build-artifacts.py --check-only --require-clean --source-sha "$SOURCE_SHA"
-          python - <<'PY'
+          mise run artifacts:source
+          mise run artifacts:check --require-clean --source-sha "$SOURCE_SHA"
+          mise exec -- python - <<'PY'
           import os, re, tomllib
           from pathlib import Path
           sha = os.environ["SOURCE_SHA"]
@@ -131,7 +118,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python - <<'PY'
+          mise exec -- python - <<'PY'
           import json, os, urllib.error, urllib.request
           def get(path):
               request = urllib.request.Request("https://api.github.com/" + path, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
@@ -199,7 +186,7 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_TAGS: ${{ steps.references.outputs.tags }}
         run: |
-          python - <<'PY'
+          mise exec -- python - <<'PY'
           import json, os, re, urllib.request
           from pathlib import Path
           request = urllib.request.Request("https://api.github.com/users/josephjohncox/packages/container/memory-worlds", headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})

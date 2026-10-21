@@ -1,0 +1,36 @@
+min_version = "2026.10.17"
+
+[task_config]
+includes = ["tasks/python.toml", "tasks/pi.toml", "tasks/deploy.toml", "tasks/artifacts.toml"]
+
+[tool_config]
+locked = true
+
+[settings]
+lockfile = true
+
+[tools]
+python = ["3.15.0", "3.14.8"]
+uv = "0.13.4"
+node = "26.12.0"
+
+[env]
+_.file = { path = ".env", redact = true }
+PYTHONUTF8 = "1"
+UV_PROJECT_ENVIRONMENT = "{{ config_root }}/.venv"
+UV_PYTHON_DOWNLOADS = "never"
+MEMORY_WORLDS_PYTHON = "{{ env.MEMORY_WORLDS_PYTHON | default(value='3.15.0') }}"
+GRAPHITI_TELEMETRY_ENABLED = "false"
+OTEL_SDK_DISABLED = "true"
+
+[tasks.deps]
+description = "Install locked service and native Pi dependencies"
+depends = ["python:deps", "pi:deps"]
+
+[tasks.check]
+description = "Check Python, native Pi, and deployment contracts"
+depends = ["python:check", "pi:check", "pi:test", "helm:check"]
+
+[tasks.ci]
+description = "Run local checks and both actual Pi runtime smokes"
+run = [{ task = "check" }, { task = "pi:smoke" }]

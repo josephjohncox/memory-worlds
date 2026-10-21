@@ -113,14 +113,14 @@ export async function createIsolatedPiSession(runtime: SubagentRuntime, options:
     { name: "memory_search", label: "Search delegated memory", description: "Search only the invocation's delegated readable scopes", parameters: Type.Object({ query: Type.String({ minLength: 1, maxLength: 2000 }), mode: Type.Optional(Type.Union([Type.Literal("source"), Type.Literal("graph")])) }),
       execute: async (_id, raw, signal) => {
         const input = raw as { query: string; mode?: "source" | "graph" };
-        const result = runtime.context.read_scopes.length ? await runtime.client.searchScopes(runtime.context.read_scopes, input.query, input.mode ?? "source", 10, signal, input.mode === "graph") : { results: [], failures: [], complete: true };
+        const result = runtime.context.read_scopes.length ? await runtime.client.searchScopes(runtime.context.read_scopes, input.query, input.mode ?? "graph", 10, signal, input.mode !== "source") : { results: [], failures: [], complete: true };
         return { content: [{ type: "text", text: memoryContext(result, 16000) }], details: { records: result.results.length } };
       },
     },
     { name: "memory_capture", label: "Save invocation-private note", description: "Capture selected working notes only in this child invocation's private scope", parameters: Type.Object({ text: Type.String({ minLength: 1, maxLength: 200000 }) }),
       execute: async (id, raw, signal) => {
         const input = raw as { text: string };
-        const receipt = await runtime.client.captureScope({ world_id: runtime.privateScope.world_id, scope_id: runtime.privateScope.id }, { context_id: runtime.context.id, source_id: `pi:child:${runtime.context.invocation_id}:${id}`, occurred_at: runtime.context.created_at, content: input.text, source_type: "pi", project: false }, signal);
+        const receipt = await runtime.client.captureScope({ world_id: runtime.privateScope.world_id, scope_id: runtime.privateScope.id }, { context_id: runtime.context.id, source_id: `pi:child:${runtime.context.invocation_id}:${id}`, occurred_at: runtime.context.created_at, content: input.text, source_type: "pi", project: true }, signal);
         return { content: [{ type: "text", text: `Stored private episode ${receipt.episode.id}` }], details: { episodeId: receipt.episode.id } };
       },
     },

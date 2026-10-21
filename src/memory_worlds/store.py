@@ -30,6 +30,7 @@ from memory_worlds.models import (
     Principal,
     Receipt,
     Role,
+    UpdateAlias,
     World,
     WorldKind,
 )
@@ -66,7 +67,7 @@ class MemoryStore(ScopedStore):
                 CREATE TABLE IF NOT EXISTS worlds (
                     id TEXT PRIMARY KEY, authority_id TEXT NOT NULL,
                     name TEXT NOT NULL, kind TEXT NOT NULL,
-                    owner_id TEXT NOT NULL, created_at TEXT NOT NULL
+                    owner_id TEXT NOT NULL, created_at TEXT NOT NULL, alias TEXT
                 );
                 CREATE TABLE IF NOT EXISTS credentials (
                     id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE,
@@ -255,6 +256,24 @@ class MemoryStore(ScopedStore):
                 (active_issuer, active_issuer),
             )
 
+    def reconcile_oidc_policy(self, issuer: str, policy_digest: str) -> None:
+        """Invalidate sessions and descendants when the trusted token policy changes."""
+        key = "oidc-policy:" + issuer
+        with self._control() as db, self._transaction(db):
+            previous = db.execute("SELECT value FROM metadata WHERE key=?", (key,)).fetchone()
+            if previous is None or previous[0] != policy_digest:
+                db.execute(
+                    "UPDATE credentials SET revoked=1 WHERE id IN ("
+                    "SELECT s.credential_id FROM identity_sessions s "
+                    "JOIN identities i ON i.user_id=s.user_id WHERE i.issuer=?)",
+                    (issuer,),
+                )
+            db.execute(
+                "INSERT INTO metadata VALUES (?,?) ON CONFLICT(key) "
+                "DO UPDATE SET value=excluded.value",
+                (key, policy_digest),
+            )
+
     def reconcile_oidc_mappings(
         self, issuer: str, group_mappings: dict[str, dict[str, Role]]
     ) -> None:
@@ -266,6 +285,13 @@ class MemoryStore(ScopedStore):
         """
         digest = hashlib.sha256(_canonical(group_mappings).encode()).hexdigest()
         with self._control() as db, self._transaction(db):
+            for mappings in group_mappings.values():
+                for world_id in mappings:
+                    world = db.execute("SELECT kind FROM worlds WHERE id=?", (world_id,)).fetchone()
+                    if world is None or WorldKind(world["kind"]) in _PRIVATE:
+                        raise ValueError(
+                            "OIDC group mappings must target existing shared world IDs"
+                        )
             db.execute(
                 "DELETE FROM memberships WHERE source=? AND user_id IN ("
                 "SELECT i.user_id FROM identities i "
@@ -302,6 +328,7 @@ class MemoryStore(ScopedStore):
             id=world_id,
             authority_id=self.authority_id,
             name=request.name,
+            alias=request.alias,
             kind=request.kind,
             owner_id=owner_id,
             created_at=datetime.now(UTC),
@@ -309,7 +336,7 @@ class MemoryStore(ScopedStore):
         )
         self._initialize_world(world.id)
         db.execute(
-            "INSERT INTO worlds VALUES (?,?,?,?,?,?)",
+            "INSERT INTO worlds VALUES (?,?,?,?,?,?,?)",
             (
                 world.id,
                 world.authority_id,
@@ -317,6 +344,7 @@ class MemoryStore(ScopedStore):
                 world.kind.value,
                 world.owner_id,
                 world.created_at.isoformat(),
+                world.alias,
             ),
         )
         self._create_shared_scope(db, world)
@@ -527,6 +555,14 @@ class MemoryStore(ScopedStore):
         with self._control() as db, self._transaction(db):
             self._admin(db, principal)
             return self._new_world(db, request, request.owner_id or principal.user_id)
+
+    def set_world_alias(self, principal: Principal, world_id: str, request: UpdateAlias) -> World:
+        with self._control() as db, self._transaction(db):
+            self._admin(db, principal)
+            self._authorized(db, principal, world_id)
+            db.execute("UPDATE worlds SET alias=? WHERE id=?", (request.alias, world_id))
+            row = db.execute("SELECT * FROM worlds WHERE id=?", (world_id,)).fetchone()
+        return self._hydrate(row)
 
     def _authorized(
         self, db: sqlite3.Connection, principal: Principal, world_id: str, write: bool = False

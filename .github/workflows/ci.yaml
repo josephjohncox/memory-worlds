@@ -20,13 +20,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.14", "3.15"]
+        python: ["3.14.8", "3.15.0"]
     env:
-      GRAPHITI_TELEMETRY_ENABLED: "false"
-      OTEL_SDK_DISABLED: "true"
+      MEMORY_WORLDS_PYTHON: ${{ matrix.python }}
       MEMORY_WORLDS_RUN_FALKORDB_TEST: "1"
       MEMORY_WORLDS_TEST_FALKORDB_PORT: "16379"
-      UV_PYTHON_DOWNLOADS: never
     services:
       falkordb:
         image: falkordb/falkordb-server:6.0.0@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
@@ -42,36 +40,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          python-version: ${{ matrix.python }}
-          check-latest: true
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          version: "0.13.4"
-          enable-cache: true
-          cache-dependency-glob: uv.lock
-      - name: Install locked dependencies
-        run: uv sync --frozen --all-extras --python "${{ matrix.python }}"
-      - name: Check Python and dependency consistency
-        run: |
-          uv run --frozen --all-extras --python "${{ matrix.python }}" python --version
-          uv pip check
-      - name: Check lint
-        run: uv run --frozen --all-extras --python "${{ matrix.python }}" ruff check .
-      - name: Check formatting
-        run: uv run --frozen --all-extras --python "${{ matrix.python }}" ruff format --check .
-      - name: Test with the real graph backend
-        run: uv run --frozen --all-extras --python "${{ matrix.python }}" pytest -q
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv"
+      - name: Check Python with the real graph backend
+        run: mise run python:check
       - name: Build source archive and wheel
-        run: uv build --no-sources --python "${{ matrix.python }}"
+        run: mise run python:build
       - name: Audit public distribution contents
         env:
-          # Optional extra names/patterns can stay outside the public source tree.
           PUBLIC_CONTENT_DENY_PATTERN: ${{ vars.PUBLIC_CONTENT_DENY_PATTERN }}
-        run: uv run --frozen --all-extras --python "${{ matrix.python }}" python scripts/audit-artifacts.py --python-only dist
+        run: mise run artifacts:audit --python-only dist
 
   pi:
     name: Native Pi
@@ -82,38 +64,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          node-version: "26.12.0"
-          cache: npm
-          cache-dependency-path: packages/pi/package-lock.json
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.15"
-          check-latest: true
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          version: "0.13.4"
-      - name: Install service and native dependencies
-        run: |
-          uv sync --frozen --no-dev
-          npm ci --ignore-scripts --prefix packages/pi
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv node"
       - name: Type check and test native hooks
-        run: |
-          npm run check --prefix packages/pi
-          npm test --prefix packages/pi
+        run: mise run pi:verify
       - name: Exercise the real Pi runtime
-        run: |
-          npm run smoke --prefix packages/pi
-          npm run smoke:service --prefix packages/pi
+        run: mise run pi:smoke
       - name: Audit native package contents
         run: |
           mkdir -p /tmp/memory-worlds-pi-package
-          npm pack ./packages/pi --json --pack-destination /tmp/memory-worlds-pi-package > /tmp/memory-worlds-pi-pack.json
-          python - <<'PY'
+          mise run pi:pack --json --pack-destination /tmp/memory-worlds-pi-package > /tmp/memory-worlds-pi-pack.json
+          mise exec -- python - <<'PYTHON'
           import json
           from pathlib import Path, PurePosixPath
           result = json.loads(Path("/tmp/memory-worlds-pi-pack.json").read_text())[0]
@@ -125,7 +90,7 @@ jobs:
               assert not {"node_modules", ".git", ".env"}.intersection(parts), path
           assert Path("packages/pi/LICENSE").read_bytes() == Path("LICENSE").read_bytes()
           print("Native package contains compiled extension/client, documentation and Apache-2.0 license")
-          PY
+          PYTHON
 
   helm:
     name: Helm deployment contract
@@ -136,24 +101,14 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
         with:
-          python-version: "3.15"
-      - name: Set up uv
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          version: "0.13.4"
-      - name: Install verified Helm
-        run: |
-          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
-          printf '%s  %s\n' 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check
-          tar --extract --gzip --file "$RUNNER_TEMP/helm.tar.gz" --directory "$RUNNER_TEMP" linux-amd64/helm
-          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv"
       - name: Validate profiles and rejected unsafe values
-        run: |
-          uv sync --frozen
-          uv run --frozen python scripts/check-helm.py
+        run: mise run helm:check
 
   kind:
     name: Kubernetes persistence
@@ -164,16 +119,11 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install verified deployment tools
-        run: scripts/install-deploy-tools.sh /tmp/memory-worlds-tools
-      - name: Install verified Helm
-        run: |
-          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
-          printf '%s  %s\n' 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check
-          tar --extract --gzip --file "$RUNNER_TEMP/helm.tar.gz" --directory "$RUNNER_TEMP" linux-amd64/helm
-          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
-      - name: Deploy and verify pod replacement
-        env:
-          KIND: /tmp/memory-worlds-tools/kind
-          KUBECTL: /tmp/memory-worlds-tools/kubectl
-        run: scripts/deploy-kind.sh --smoke --helm-smoke --delete
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        with:
+          version: "2026.10.17"
+          cache: false
+          install_args: "python uv"
+      - name: Deploy and verify pod replacement and Helm lifecycle
+        run: mise run kind:smoke

@@ -3,3 +3,5 @@ persistence:
 falkordb:
   persistence:
     existingClaim: synthetic-graph-pvc
+runtime:
+  existingSecret: synthetic-runtime

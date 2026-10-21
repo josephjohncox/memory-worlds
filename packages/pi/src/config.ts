@@ -34,7 +34,7 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   if (!retrieval || typeof retrieval !== "object" || Array.isArray(retrieval)) throw new Error("Invalid retrieval config");
   if (Object.keys(retrieval).some(key => !["enabled", "mode", "limit", "maxChars"].includes(key))) throw new Error("Unknown retrieval config key");
   if (retrieval.enabled !== undefined && typeof retrieval.enabled !== "boolean") throw new Error("retrieval.enabled must be boolean");
-  const mode = retrieval.mode ?? "source";
+  const mode = retrieval.mode ?? "graph";
   const limit = retrieval.limit ?? 5;
   const maxChars = retrieval.maxChars ?? 8000;
   if (!["source", "graph"].includes(String(mode)) || !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 20 || !Number.isInteger(maxChars) || Number(maxChars) < 256 || Number(maxChars) > 32000) {
@@ -53,7 +53,7 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   if (spoolDirectory !== undefined && (typeof spoolDirectory !== "string" || !isAbsolute(spoolDirectory))) throw new Error("spoolDirectory must be an absolute private directory");
   return {
     url: serviceURL(url), tokenFile, readMountIds,
-    readScopes, writeScope, graphAliases, spoolDirectory, reviewCorrections: config.reviewCorrections === true, projectCaptured: config.projectCaptured === true, correctionHints: config.correctionHints !== false,
+    readScopes, writeScope, graphAliases, spoolDirectory, reviewCorrections: config.reviewCorrections === true, projectCaptured: config.projectCaptured !== false, correctionHints: config.correctionHints !== false,
     automaticCapture: Boolean(writeScope && config.automaticCapture === true),
     retrieval: { enabled: retrieval.enabled === true, mode: mode as "source" | "graph", limit: Number(limit), maxChars: Number(maxChars) },
   };

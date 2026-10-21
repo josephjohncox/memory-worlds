@@ -30,6 +30,7 @@ from .models import (
     ScopedPublication,
     ScopeFlow,
     SearchRequest,
+    UpdateAlias,
     UpdateScopeGrant,
     UserUpdate,
     World,
@@ -149,6 +150,10 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     def create_world(body: CreateWorld, user: User):
         return store.create_world(user, body)
 
+    @app.put("/v1/worlds/{world_id}/alias", response_model=World)
+    def world_alias(world_id: str, body: UpdateAlias, user: User):
+        return store.set_world_alias(user, world_id, body)
+
     @app.post("/v1/credentials", status_code=201)
     def credentials(body: CreateToken, user: User):
         token = store.issue_token(user, body)
@@ -185,6 +190,10 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     @app.get("/v1/worlds/{world_id}/scopes/{scope_id}", response_model=Scope)
     def scope(world_id: str, scope_id: UUID, user: User):
         return store.get_scope(user, world_id, scope_id)
+
+    @app.put("/v1/worlds/{world_id}/scopes/{scope_id}/alias", response_model=Scope)
+    def scope_alias(world_id: str, scope_id: UUID, body: UpdateAlias, user: User):
+        return store.set_scope_alias(user, world_id, scope_id, body)
 
     @app.put("/v1/worlds/{world_id}/scopes/{scope_id}/grants", status_code=204)
     def scope_grant(world_id: str, scope_id: UUID, body: UpdateScopeGrant, user: User):

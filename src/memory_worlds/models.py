@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")]
+Alias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
 
 
 class Model(BaseModel):
@@ -49,6 +50,7 @@ class World(Model):
     id: Identifier
     authority_id: str
     name: str
+    alias: Alias | None = None
     kind: WorldKind
     owner_id: str
     created_at: datetime
@@ -59,8 +61,13 @@ class World(Model):
 
 class CreateWorld(Model):
     name: str = Field(min_length=1, max_length=200)
+    alias: Alias | None = None
     kind: WorldKind = WorldKind.PERSONAL
     owner_id: Identifier | None = None
+
+
+class UpdateAlias(Model):
+    alias: Alias | None
 
 
 class CreateToken(Model):
@@ -83,7 +90,7 @@ class EpisodeInput(Model):
     role: str | None = Field(default=None, max_length=100)
     source_ref: str | None = Field(default=None, max_length=2000)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    project: bool = False
+    project: bool = True
 
     @field_validator("content")
     @classmethod
@@ -117,7 +124,7 @@ class SearchRequest(Model):
     world_ids: list[Identifier] = Field(default_factory=list, max_length=50)
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=10, ge=1, le=100)
-    mode: Literal["source", "graph"] = "source"
+    mode: Literal["source", "graph"] = "graph"
     include_entities: bool = False
     scope_id: UUID | None = None
     scopes: list["ScopeSelection"] = Field(default_factory=list, max_length=50)
@@ -136,7 +143,7 @@ class Publication(Model):
     source_id: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=200_000)
     occurred_at: AwareDatetime
-    project: bool = False
+    project: bool = True
 
 
 class ScopeKind(StrEnum):
@@ -169,6 +176,7 @@ class Scope(Model):
     world_id: Identifier
     kind: ScopeKind
     name: str
+    alias: Alias | None = None
     created_at: AwareDatetime
     creator_credential_id: str | None = None
     coordinator_credential_id: str | None = None
@@ -183,6 +191,7 @@ class Scope(Model):
 class CreateScope(Model):
     kind: ScopeKind
     name: str = Field(min_length=1, max_length=200)
+    alias: Alias | None = None
     run_id: UUID | None = None
     agent_id: UUID | None = None
     invocation_id: UUID | None = None

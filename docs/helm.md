@@ -2,7 +2,7 @@
 
 The chart at `deploy/helm/memory-worlds` packages the existing Kubernetes
 topology: one Memory Worlds API process owns the SQLite source, control, and
-router databases, and one optional FalkorDB process owns graph storage. Both use
+router databases, and one authenticated FalkorDB process owns graph storage. Both use
 retained PVCs. API and graph replicas are fixed at one by the values schema.
 This is persistent single-instance storage, with the same availability and
 recovery limits described in [deployments.md](deployments.md).
@@ -13,7 +13,7 @@ required. Helm 4.3.1 was verified against the
 The chart uses the stable StatefulSet PVC retention policy available since
 [Kubernetes 1.32](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention).
 
-## Source-only installation
+## Installation with Graphiti
 
 Use an explicit context on every command. The examples use a release and
 namespace both named `memory-worlds`, making the API pod `memory-worlds-0`.
@@ -25,11 +25,16 @@ by the artifact pipeline. A private registry requires an existing pull Secret.
 The example local tag is suitable only when the image is already present on
 the cluster's nodes.
 
+Create the runtime and FalkorDB password Secrets before installing, using the
+commands below. Graphiti/FalkorDB is the default; the chart requires an existing
+runtime Secret naming explicit extraction and embedding providers.
+
 ```sh
-helm --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
+mise run helm -- --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
   deploy/helm/memory-worlds --namespace memory-worlds --create-namespace \
-  --set falkordb.enabled=false --wait --timeout 5m
-helm --kube-context YOUR_CONTEXT -n memory-worlds test memory-worlds
+  --set runtime.existingSecret=memory-worlds-runtime \
+  --set networkPolicy.allowExternalHTTPS=true --wait --timeout 5m
+mise run helm -- --kube-context YOUR_CONTEXT -n memory-worlds test memory-worlds
 ```
 
 For registry deployment, use an installation values file with an immutable
@@ -42,8 +47,8 @@ image:
   digest: sha256:REPLACE_WITH_THE_PUBLISHED_64_HEX_DIGEST
 imagePullSecrets:
   - name: existing-registry-credential
-falkordb:
-  enabled: false
+runtime:
+  existingSecret: memory-worlds-runtime
 persistence:
   storageClass: YOUR_BLOCK_STORAGE_CLASS
   size: 20Gi
@@ -62,9 +67,9 @@ Helm hook, pod log, or release value.
 ```sh
 umask 077
 mkdir -p /private/operator
-kubectl --context YOUR_CONTEXT -n memory-worlds exec memory-worlds-0 -- \
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds exec memory-worlds-0 -- \
   memory-worlds init > /private/operator/bootstrap.json
-kubectl --context YOUR_CONTEXT -n memory-worlds port-forward \
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds port-forward \
   --address=127.0.0.1 service/memory-worlds 8787:8787
 ```
 
@@ -76,7 +81,7 @@ need an agent credential.
 
 ## FalkorDB and graph projection
 
-The default chart includes FalkorDB with its pinned 6.0.0 image. Create its
+The default chart builds on Graphiti with FalkorDB's pinned 6.0.0 image. Create its
 password Secret before installing the default profile. Generate a 64-character
 hexadecimal password into a private file and provide that file to kubectl;
 the secret value never enters command-line arguments:
@@ -85,19 +90,19 @@ the secret value never enters command-line arguments:
 umask 077
 python -c 'import secrets; print(secrets.token_hex(32), end="")' \
   > /private/operator/falkordb-password
-kubectl --context YOUR_CONTEXT create namespace memory-worlds
-kubectl --context YOUR_CONTEXT -n memory-worlds create secret generic \
+mise run kubectl -- --context YOUR_CONTEXT create namespace memory-worlds
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
   memory-worlds-falkordb --from-file=password=/private/operator/falkordb-password
 ```
 
-Omit namespace creation when it already exists. To enable extraction, copy
+Omit namespace creation when it already exists. For extraction, copy
 `deploy/k8s/runtime.env.example` outside the repository, fill in explicit model
 and embedding provider settings, and create the runtime Secret:
 
 ```sh
-kubectl --context YOUR_CONTEXT -n memory-worlds create secret generic \
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
   memory-worlds-runtime --from-env-file=/private/operator/runtime.env
-helm --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
+mise run helm -- --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
   deploy/helm/memory-worlds --namespace memory-worlds \
   --set graph.backend=falkordb \
   --set runtime.existingSecret=memory-worlds-runtime \
@@ -106,8 +111,11 @@ helm --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
 
 `graph.backend` is authoritative even if the runtime Secret contains
 `MEMORY_WORLDS_GRAPH_BACKEND`. Provider/model settings belong in the runtime
-Secret. Creating a graph pod alone leaves projection disabled; source capture
-and source search remain usable without a model.
+Secret. The daemon requires this configuration before starting. Capture, publication,
+and imports queue scope-isolated graph extraction by default. Source retrieval
+and `project=false` captures are explicit maintenance/recovery options. Graph
+outages retain durable source receipts and surface unavailable graph queries;
+they never silently switch recall to source search.
 
 The API and graph PVCs have independent storage settings. An empty
 `storageClass` selects the cluster default; `"-"` sets an explicitly empty class.
@@ -166,6 +174,20 @@ default CIDRs allow all IPv4/IPv6 destinations on TCP 443. Standard policies lac
 FQDN matching; use an egress gateway or the target CNI's DNS-aware policy where
 required. `extraAPIEgress` accepts explicit peer and port rules for in-cluster
 models or private Neptune endpoints.
+
+## PostgreSQL and RDS
+
+Use the normal FalkorDB/PVC topology on EKS when avoiding Neptune. RDS PostgreSQL
+with pgvector is not a supported Graphiti backend, and this service has no
+PostgreSQL source/control store. See the [RDS assessment](rds-postgresql.md) for
+verified support, extension preflight, and the missing implementation work.
+
+## Explicit maintenance or recovery mode
+
+Set `graph.backend=disabled` and `falkordb.enabled=false` only for deliberate
+source maintenance or recovery. Capture still records extraction intent by
+default; pending jobs wait for a configured Graphiti daemon. Use explicit source
+queries while the graph is disabled. This mode does not provide graph memory.
 
 ## Experimental external Neptune
 
