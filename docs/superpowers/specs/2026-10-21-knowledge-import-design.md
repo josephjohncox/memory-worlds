@@ -19,6 +19,8 @@ and labels. Each document supplies an object ID, title, exact normalized text,
 an immutable revision or content-derived revision, and an aware source timestamp
 or explicitly supplied snapshot timestamp. Optional fields preserve source URI,
 authors, hierarchy, content kind and source-reported access restrictions.
+Project and collection identifiers qualify entity context; labels do not create
+an authorization boundary. Use separate scopes when separation must be enforced.
 
 Content kinds distinguish reference material, policy, code, discussion and
 decision records. These are source classifications, not assertions of correctness
@@ -44,6 +46,8 @@ scope publication does not itself publish anything.
 - Selected files from a pinned commit in an existing local Git repository.
   Read tree/blob objects, never execute content, check out files, fetch, invoke
   filters or traverse submodules. Disable lazy fetching and optional locks.
+  Require a Git version that supports explicit lazy-fetch suppression; fail
+  closed when that capability is unavailable. Pin Git in the mise toolchain.
   Require explicit file selection and retain commit, blob and repository-relative
   path context. Remote Git operations stay with the user's Git tooling.
 
@@ -101,6 +105,12 @@ explicit world, scope and private/shared mode. Generic bundle input works throug
 files or stdin; provider adapters perform only local conversion. Add typed Python
 and TypeScript submission, and a bounded MCP bundle tool. Native Pi uses the
 installed Python planner instead of maintaining a second parser implementation.
+Plans can be saved as private bounded files with a canonical SHA-256 digest.
+Applying a reviewed plan verifies the requested digest and submits the exact
+saved records, without reopening source files or regenerating timestamps. Plan
+files contain source content and must not appear in preview output or artifacts.
+MCP accepts supplied bundles; filesystem access is not implicitly granted by
+enabling the MCP server. Native SDK callers can explicitly invoke local planning.
 Preview metadata and source citations remain separate from chat capture, ambient
 retrieval, write selection and automatic sharing settings.
 
