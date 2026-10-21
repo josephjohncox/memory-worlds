@@ -442,7 +442,7 @@ def parser() -> argparse.ArgumentParser:
     retention.add_argument("--preview", action="store_true")
     sub.add_parser("retention-receipt").add_argument("operation_id", type=UUID)
     sub.add_parser("mcp", help="serve stdio MCP tools as a client of the HTTP daemon")
-    from .setup import add_setup_parser
+    from .setup_cli import add_setup_parser
 
     add_setup_parser(sub)
     return p
@@ -502,7 +502,7 @@ def download_backup(client, artifact_id: str, target: Path):
 
 def run(args):
     if args.command == "setup":
-        from .setup import run_setup_command
+        from .setup_cli import run_setup_command
 
         result = run_setup_command(args)
         if result is not None:

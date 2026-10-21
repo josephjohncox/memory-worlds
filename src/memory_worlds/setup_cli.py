@@ -1,4 +1,4 @@
-"""Guided setup command dispatch; runtime and provisioning remain separate."""
+"""Guided setup CLI dispatch; runtime and provisioning remain separate."""
 
 from __future__ import annotations
 

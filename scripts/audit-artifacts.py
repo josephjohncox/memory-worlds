@@ -227,7 +227,7 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             fail("Unexpected wheel path")
         required = {
             "memory_worlds/__init__.py",
-            "memory_worlds/setup.py",
+            "memory_worlds/setup_cli.py",
             "memory_worlds/templates/setup-graph.compose.yaml",
             f"{prefix}/METADATA",
             f"{prefix}/licenses/LICENSE",

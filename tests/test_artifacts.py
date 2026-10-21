@@ -128,7 +128,7 @@ def test_wheel_license_must_match_approved_license(tmp_path: Path, monkeypatch) 
     prefix = "memory_worlds-0.1.0.dist-info"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("memory_worlds/__init__.py", "")
-        archive.writestr("memory_worlds/setup.py", "")
+        archive.writestr("memory_worlds/setup_cli.py", "")
         archive.writestr("memory_worlds/templates/setup-graph.compose.yaml", "services: {}\n")
         archive.writestr(
             f"{prefix}/METADATA",
@@ -144,7 +144,7 @@ def test_wheel_requires_installed_setup_runtime_template(tmp_path: Path) -> None
     prefix = "memory_worlds-0.3.0.dist-info"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("memory_worlds/__init__.py", "")
-        archive.writestr("memory_worlds/setup.py", "")
+        archive.writestr("memory_worlds/setup_cli.py", "")
         archive.writestr(f"{prefix}/METADATA", "Name: memory-worlds\nVersion: 0.3.0\n")
         archive.writestr(f"{prefix}/licenses/LICENSE", (audit.ROOT / "LICENSE").read_bytes())
     with pytest.raises(audit.AuditFailure, match="setup template"):

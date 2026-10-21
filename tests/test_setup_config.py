@@ -9,7 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from memory_worlds.errors import Conflict, MemoryError
-from memory_worlds.setup import plan_setup, validate_setup
+from memory_worlds.setup_cli import plan_setup, validate_setup
 from memory_worlds.setup_config import SetupConfig, load_config, save_config
 from memory_worlds.setup_files import (
     ensure_private_dir,
