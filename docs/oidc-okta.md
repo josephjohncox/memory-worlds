@@ -1,10 +1,12 @@
 # OIDC and Okta shared deployments
 
-Memory Worlds verifies OAuth access tokens itself. Identity is the pair of signed
-issuer and subject claims. Each identity receives a private-work world; team,
-company, and ad-hoc membership must come from an operator mapping or an explicit
-membership grant. Native agent delegation then narrows that access to selected
-UUID scopes. An authenticated user does not become an authority administrator.
+Use Okta to sign users into a shared Memory Worlds service and map selected
+groups to team, company or ad-hoc worlds. Each signed-in identity also receives
+a private-work world. Authentication does not grant administration.
+
+This guide covers operator setup and a user sign-in check. For the exact token,
+delegation and revocation rules, see [OIDC security](reference/oidc-security.md).
+For a personal daemon connected to this service, use [hybrid setup](hybrid.md).
 
 ## Configure the Okta authorization server
 
@@ -46,12 +48,11 @@ secret belongs in a CLI or Pi extension. See
 
 ## Configure the deployment
 
-The operator pins issuer, JWKS URL, audience, and accepted signing algorithms.
-For the usual custom Okta server, JWKS is
-`https://YOUR_OKTA_DOMAIN/oauth2/YOUR_AUTHORIZATION_SERVER_ID/v1/keys`. Check it
-against that server's `/.well-known/openid-configuration`; tokens cannot choose a
-key URL. The verifier checks signature, issuer, audience, subject, expiry, and
-configured application/scope policy. See
+Configure issuer, audience and JWKS URL together. For a custom Okta server,
+JWKS is usually
+`https://YOUR_OKTA_DOMAIN/oauth2/YOUR_AUTHORIZATION_SERVER_ID/v1/keys`; check it
+against that server's `/.well-known/openid-configuration`. Also configure the
+accepted signing algorithms and client/scope policy. See
 [Okta access-token validation](https://developer.okta.com/docs/guides/validate-access-tokens/main/).
 
 Start with `MEMORY_WORLDS_OIDC_GROUP_MAPPINGS={}`. Initialize the authority and
@@ -107,10 +108,9 @@ above applies changed group mappings and verifier configuration. During initial
 setup, use an empty map until the operator has created the target worlds; apply
 the final map in a second rollout.
 
-Changing the trusted issuer/audience/JWKS/signature/client/scope policy revokes
-that issuer's existing sessions and their delegated descendants at startup.
-Users must obtain fresh tokens. Group-map changes instead reconcile memberships
-as described below.
+Use `deployment/memory-worlds` in the rollout commands for the PostgreSQL profile.
+Verifier-policy changes revoke existing sessions; [the security reference](reference/oidc-security.md#identity-and-verifier-policy)
+describes that boundary.
 
 ## Map company, team, and ad-hoc sharing
 
@@ -129,28 +129,14 @@ operator's configured map selects destinations; token group strings cannot name
 arbitrary worlds. A writer publishes selected evidence through an explicit
 publication action. Group mapping does not copy a private transcript.
 
-The boundaries are independent:
-
-- A shared-world membership permits that world's world-shared audience.
-- Run-shared, agent-persistent, and invocation-private scopes still require their
-  own explicit live grants. Parent agents and team members receive no implicit
-  access to another invocation's scratch memory.
-- Every identity's private-work world remains separate. Group maps cannot target
-  personal or private-work worlds.
-- OIDC sessions use live user membership. Delegated agent credentials have
-  selected scopes, check their parent chain, and cannot outlive the issuing SSO
-  session. Separately operator-issued local credentials retain only their own
-  explicit grants and must be revoked separately.
-
-For a temporary space without a permanent IdP group, create an ad-hoc world and
-use `membership-set WORLD_ID USER_ID writer`; remove the manual membership with
-`membership-set WORLD_ID USER_ID none`. Manual and mapped memberships are
-independent: removing a group does not erase an intentional manual grant.
+Shared-world memberships grant the world-shared audience. Run, agent and
+invocation scopes still need explicit live grants; group maps cannot target
+personal or private-work worlds. Manual memberships remain independent of
+mapped memberships. See [membership and delegation rules](reference/oidc-security.md#world-membership-and-scoped-delegation).
 
 ## Sign in from a workstation or SSH session
 
-Install the repository's pinned tools and dependencies with `mise install
---locked` and `mise run deps`, then run:
+With the [repository tools](development.md) installed, run:
 
 ```sh
 umask 077
@@ -164,53 +150,25 @@ mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token me
 mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token discover --scopes --json
-mise run cli -- --url https://memory.example.org \
-  --token-file /private/memory-worlds/session.token worlds
-mise run cli -- --url https://memory.example.org \
-  --token-file /private/memory-worlds/session.token scopes WORLD_ID
-mise run cli -- --url https://memory.example.org \
-  --token-file /private/memory-worlds/session.token mounts
 ```
 
-These discovery commands require only the signed-in user's API access token.
-Company/team memberships come from the configured group map or explicit user
-membership; private scopes still require their own grants. A user can discover
-their accessible world IDs without an operator credential or an operator
-listing the worlds for them. Native Pi and MCP expose the same filtered catalog
-through `memory_discover`; see [user and harness discovery](discovery.md).
+Complete the printed verification URL/code in a browser; an SSH session needs
+no callback listener. The returned access token must pass this API before the
+CLI creates its private file. Discovery uses the user's token and returns only
+authorized worlds/scopes; no administrator token is needed. Pi and MCP expose
+the same catalog through `memory_discover`. See [discovery](discovery.md).
 
-The CLI prints the verification URL and short code to stderr. Complete login in
-a browser on any suitable device; an SSH session needs no callback listener.
-Polling honors pending/slow-down responses and the device lifetime. Discovery,
-token, and verification endpoints must stay on the configured issuer origin;
-remote plaintext HTTP and redirects are rejected. Returned access tokens must
-pass the target Memory Worlds API before the CLI creates its mode-0600 file.
-Existing files are never overwritten. Only nonsecret identity/file metadata is
-printed to stdout.
-
-Login keeps neither an ID token nor a refresh token, and rejects requests for
-`offline_access`. On expiry, run login again with a fresh output filename and
-point the client at that file. Use scoped delegation for agents; do not pass the
-user's broad SSO token into a child process. See [scopes.md](scopes.md) and
-[sharing.md](sharing.md) for delegation and per-user remote mount credentials.
+Login stores neither ID nor refresh tokens and rejects `offline_access`. When
+the token expires, sign in to a fresh output filename and point the client at it.
+Use scoped delegation for agents rather than passing the user's SSO token into
+a child process. See [device-flow details](reference/oidc-security.md#device-login-behavior).
 
 ## Membership changes and revocation
 
-Okta group changes are observed through newly minted, verified access tokens.
-The service rejects older signed group states after accepting newer claims and
-rejects conflicting group states at the same `iat`. Changing the operator map
-clears obsolete mapped memberships at startup; the next accepted token applies
-the new map. This does not turn an old token into fresh IdP evidence.
+New verified access tokens carry updated Okta group evidence. An already issued
+JWT remains valid until expiry unless this service disables the user or revokes
+the session. Use short access-token lifetimes and the service's immediate
+revocation controls; see [revocation behavior](reference/oidc-security.md#membership-changes-and-revocation).
 
-Local signature validation does not query Okta on every request. Removing a user
-from an Okta group, disabling them in Okta, or revoking a token in Okta therefore
-does not instantly invalidate an already issued JWT here. Bound this window with
-short access-token lifetimes. For immediate service-side removal, the operator
-can disable the Memory Worlds identity with `user-set USER_ID --disable` or
-revoke a known session using `token-revoke CREDENTIAL_ID`. This also blocks its
-delegated descendants. Re-enabling a disabled user requires a fresh external
-token; revoked credentials stay revoked.
-
-The implementation is covered by signed local JWT/JWKS tests, HTTP authorization
-tests, and native device-flow tests. A live Okta tenant has not been provisioned
-or exercised by this repository's automated checks.
+Signed local JWT/JWKS, authorization and device-flow tests cover this integration.
+The automated checks do not provision or exercise a live Okta tenant.

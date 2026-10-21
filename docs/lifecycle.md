@@ -1,146 +1,64 @@
-# Retraction, erasure and retention
+# Retract, erase and retain memory
 
-Every lifecycle operation names one authority, world, scope and explicit episode
-IDs. A live world manager also needs the scope's `manage` permission. An
-administrative credential can perform operator maintenance across that authority.
-An episode's private source reference gives no authority over an independently
-published copy in another scope or service.
+[Documentation](README.md)
 
-Retraction removes evidence from ordinary episode lookup, listing, search,
-exports and graph extraction. Its original source record remains retained for
-authorized lifecycle maintenance. Erasure deletes the retained episode payload,
-metadata and projection job. Both actions write a minimal tombstone containing
-the source and episode identities, owner, action time and operation ID. Capture,
-import and exact replay reject a tombstoned source identity. Erasure cannot be
-reversed by changing the operation ID or importing the original content again.
+Lifecycle operations target explicit episode IDs within one authority, world and
+scope. A world manager also needs scope management permission; an administrator
+can perform authority-wide maintenance. A separately published copy has its own
+lifecycle at its destination.
 
-Use a fresh UUID for a new operation. Preview validates every target before
-writing anything and reports IDs and affected generation names without source
-content. Apply accepts at most 100 unique episode IDs. An exact operation replay
-returns its durable receipt; reusing the UUID with different targets or a
-different action fails. A retraction can later progress to erasure. An erased
-record cannot return to a retained or visible state.
+## Choose an action
 
-The Python interface is:
-
-```python
-from uuid import uuid4
-
-from memory_worlds.lifecycle import EpisodeLifecycle, LifecycleRequest
-
-lifecycle = EpisodeLifecycle(store)
-request = LifecycleRequest(
-    operation_id=uuid4(),
-    action="erase",  # or "retract"
-    episode_ids=[episode_id],
-)
-preview = lifecycle.preview(principal, world_id, scope_id, request)
-receipt = lifecycle.apply(principal, world_id, scope_id, request)
-receipt = lifecycle.receipt(principal, world_id, scope_id, request.operation_id)
-```
-
-The HTTP API provides preview and apply at
-`POST /v1/worlds/{world}/scopes/{scope}/lifecycle/preview` and
-`POST /v1/worlds/{world}/scopes/{scope}/lifecycle`. Retrieve a receipt at
-`GET /v1/worlds/{world}/scopes/{scope}/lifecycle/{operation_id}`. These routes
-check current credentials and grants on every call, including retries.
-
-Source removal and graph removal are separate durable steps. A short authority
-maintenance barrier drains known graph operations before taking the namespace
-inventory and committing the tombstone, source change and purge intents. Normal
-reads resume with the evidence hidden. Every generation that could contain the
-evidence becomes unavailable for graph use until maintenance succeeds. A SQL
-commit alone does not mean the external graph has been erased.
-
-The receipt reports `source_state`, `source_checkpointed`, `graph_state`,
-`pending_generations` and `erasure_complete`. For native SQLite storage, secure
-deletion is enabled and the source WAL must truncate after the deletion commits.
-A busy checkpoint leaves the operation incomplete and retryable. An erase is
-complete only after source cleanup and every affected graph namespace purge
-succeed. Provider errors are stored as fixed operational categories; provider
-queries and source text are excluded from receipts.
-
-Final graph purge is an operator operation. Stop and drain extraction workers
-across every replica before supplying `--workers-drained`; it is an assertion
-about the deployment, not a mechanism that stops remote processes. The operator
-command takes the authority's exclusive maintenance lock, inventories namespaces
-again and uses the configured adapter's exact namespace deletion operation.
-It is intentionally unavailable as a live HTTP purge endpoint. With Python,
-the maintenance equivalent is:
-
-```python
-result = await lifecycle.purge(
-    administrator,
-    world_id,
-    scope_id,
-    graph_adapter,
-    workers_drained=True,
-)
-```
-
-A failed namespace deletion leaves graph use blocked and can be retried. A
-successful retry skips namespaces already purged. Rebuild the graph from the
-remaining visible evidence before resuming extraction. A later purge does not
-delete a new clean active generation merely because an older lifecycle receipt
-exists. An adapter that cannot prove deletion of all derived data fails closed.
-
-These receipts cover the live authority's source records and inventoried graph
-namespaces. They do not promise cryptographic erasure of physical media,
-filesystem history, PostgreSQL MVCC/WAL archives, old backups or independently
-published destination copies. Those stores have separate retention obligations.
-Preserve the minimal tombstones and lifecycle receipts when backing up the
-current authority; deleting its tombstones would discard the nonresurrection
-boundary.
-
-Retention is disabled until an administrator submits an explicit policy. Each
-policy accepts one or more of these independently selected cutoffs:
-
-| Policy field | Targets | Preserved |
+| Action | Source result | Replay behavior |
 | --- | --- | --- |
-| `source_before` and explicit `scopes` | Source records received before the aware UTC cutoff, including retained retractions | Unselected scopes and newer source records |
-| `expired_invocations_before` | Invocation-private journals whose server-issued invocation credential expired before the cutoff | Live invocations, persistent agent scopes and scopes without an expiring invocation |
-| `terminal_deliveries_before` | Old delivered or blocked outbox envelopes | Pending or processing delivery envelopes |
-| `retired_generations_before` | Retired or failed graph namespaces | Active or building generations |
+| Retract | Hidden from normal lookup, search, export and extraction; retained for maintenance | The source identity remains tombstoned |
+| Erase | Retained payload, metadata and projection job removed | The source identity remains tombstoned |
+| Retain by policy | A bounded, frozen set of old sources, expired invocations, terminal deliveries or retired generations is selected | Retry resumes that exact plan |
 
-Cutoffs must include a timezone and cannot be in the future. The default batch
-limit is 100 targets; the maximum is 500. Preview is content free. Apply first
-persists the exact bounded target plan, then uses deterministic child lifecycle
-operation IDs. A crash after one source journal commits can be resumed without
-expanding that plan to newly eligible records. `more_available` indicates that a
-new operation may be needed to process another batch.
+Erasure can follow retraction. An erased source cannot be restored by replaying
+its old capture or import request. Preserve tombstones and lifecycle receipts
+when backing up an authority.
 
-```python
-from datetime import UTC, datetime
-from uuid import uuid4
+## Preview, apply and check the receipt
 
-from memory_worlds.lifecycle import RetentionEngine, RetentionPolicy, RetentionRequest
-from memory_worlds.models import ScopeSelection
+Use a new operation UUID for a new request. Preview validates targets without
+writing and reports IDs rather than source contents. Apply accepts at most 100
+unique episode IDs; retries with the same UUID must use the same action and targets.
 
-retention = RetentionEngine(store)
-request = RetentionRequest(
-    operation_id=uuid4(),
-    policy=RetentionPolicy(
-        scopes=[ScopeSelection(world_id=world_id, scope_id=scope_id)],
-        source_before=datetime(2026, 1, 1, tzinfo=UTC),
-        terminal_deliveries_before=datetime(2026, 1, 1, tzinfo=UTC),
-        limit=100,
-    ),
-)
-preview = retention.preview(administrator, request)
-receipt = retention.apply(administrator, request)
-```
+| Operation | HTTP route |
+| --- | --- |
+| Preview | `POST /v1/worlds/{world}/scopes/{scope}/lifecycle/preview` |
+| Apply | `POST /v1/worlds/{world}/scopes/{scope}/lifecycle` |
+| Receipt | `GET /v1/worlds/{world}/scopes/{scope}/lifecycle/{operation_id}` |
 
-Retention preview/apply routes are `POST /v1/retention/preview` and
-`POST /v1/retention`; receipt lookup is `GET /v1/retention/{operation_id}`.
-An `applied` retention receipt means its frozen source/envelope cleanup and graph
-purge intents committed. Graph deletion still requires the drained-worker
-maintenance step. Retention does not schedule itself or silently choose a
-retention period.
+The receipt separates source cleanup from graph cleanup. Check `source_state`,
+`source_checkpointed`, `graph_state`, `pending_generations` and `erasure_complete`.
+A source commit alone does not establish that external graph data was removed.
+See the [Python examples and receipt contract](reference/lifecycle.md).
 
-Terminal delivery cleanup removes the publication payload and captured
-principal, and retains the minimal delivery identity, immutable input digest,
-destination and receipt status. Exact enqueue replay still returns that receipt;
-changed input conflicts and a pruned delivery cannot be retried. Deleting that
-identity instead would allow cleanup to cause an old publication to be sent
-again. Pending deliveries retain their complete envelopes so delivery can resume
-without losing an authorized publication.
+## Finish graph cleanup
+
+Source changes queue purge intents and block affected graph generations. Stop
+and drain workers across all replicas before running operator graph purge with
+`--workers-drained`. That flag records an operator assertion; it does not stop
+remote processes. Purge is not a live HTTP endpoint.
+
+Retry failed cleanup, then rebuild from the remaining visible evidence before
+resuming extraction. See [Graphiti operations](graphiti.md) and the
+[purge procedure](reference/lifecycle.md).
+
+## Apply a retention policy
+
+Retention starts only when an administrator submits explicit cutoffs. It can
+select old source records in named scopes, expired invocation journals, terminal
+outbox envelopes and retired graph generations. It preserves live invocations,
+persistent agent scopes, pending deliveries and active/building generations.
+
+Preview the plan, apply it with a new operation UUID, and follow its receipt.
+The default limit is 100 targets and the maximum is 500; `more_available` indicates
+that another operation may be needed. Retention does not schedule itself.
+See the [policy fields and examples](reference/lifecycle.md).
+
+These operations cover the live authority and inventoried graph namespaces.
+Backups, filesystem history, PostgreSQL archives and independently published
+copies need their own retention policies. See [authority recovery](recovery.md).

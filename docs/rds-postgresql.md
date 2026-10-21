@@ -5,18 +5,16 @@ journals. Graphiti continues to use FalkorDB for extraction and graph retrieval.
 This gives an AWS deployment managed SQL storage without requiring Neptune or
 OpenSearch Serverless.
 
-The current backend uses SQLAlchemy 2.1 and Psycopg 3.3.6. Local integration tests
-exercise PostgreSQL 18.6, including two API replicas, current authorization,
-transaction rollback, worker death, lease takeover and stale completion fences.
-RDS setup is an operator deployment step; the tests do not provision AWS.
+Use this guide to prepare the database and connection Secrets, then return to
+the [Helm PostgreSQL profile](helm.md#postgresql-and-rds). The chart provisions
+neither the database nor AWS resources.
 
 ## Database setup
 
 Provision a PostgreSQL instance and dedicated database in a private network.
-Choose an RDS-supported engine minor available in your region. PostgreSQL 18 is
-a stable major; PostgreSQL 19 RC is a preview, not the production selection.
-Check the current [PostgreSQL release policy](https://www.postgresql.org/support/versioning/)
-and [RDS engine release notes](https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-versions.html).
+Choose a supported stable engine/minor available in your RDS region. Check the
+[PostgreSQL release policy](https://www.postgresql.org/support/versioning/) and
+[RDS engine release notes](https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-versions.html).
 
 Give the application a dedicated login role that owns its database and can
 create its authority and scope schemas, tables, indexes and sequences. The
@@ -28,11 +26,10 @@ No PostgreSQL extension is required. `pgvector` does not provide Graphiti's
 property graph contract, and installing it does not change the configured graph
 backend. AWS publishes extension versions by engine release in its
 [extension matrix](https://docs.aws.amazon.com/AmazonRDS/latest/PostgreSQLReleaseNotes/postgresql-extensions.html).
-The pinned Graphiti distribution has no PostgreSQL graph driver; its
-[driver interface](https://github.com/getzep/graphiti/blob/v0.31.2/graphiti_core/driver/driver.py)
-requires episode/entity/edge operations, traversal, full-text and vector search.
+The configured Graphiti driver needs property-graph operations, traversal,
+full-text and vector search; [storage](storage.md) explains the SQL/graph boundary.
 
-## Runtime configuration
+## Configure the connection
 
 Put connection material in a private environment file or an existing Kubernetes
 Secret. Use the same explicit authority UUID for all replicas; keep it stable
@@ -61,12 +58,26 @@ changing `search_path` cannot change the selected audience. Additional schema
 objects grow with the number of scopes, so monitor catalog size and connection
 counts alongside source-table and graph volume.
 
-Start with the [Helm deployment guide](helm.md). Select PostgreSQL storage and
-an existing runtime Secret containing the values above; use an operator-owned
-FalkorDB password Secret and persistent graph volume. The SQL source path does
-not require a shared filesystem or a SQLite PVC. The service may still use a
-private runtime directory for downloaded/staged backup artifacts; completed
-artifacts need separate durable backup storage.
+For Helm, put the URL alone in `/private/operator/database-url` and the current
+CA bundle in `/private/operator/postgres-ca.pem`, then create existing Secrets:
+
+```sh
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
+  memory-worlds-postgres --from-file=database-url=/private/operator/database-url
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
+  memory-worlds-postgres-ca --from-file=ca.pem=/private/operator/postgres-ca.pem
+```
+
+The [Helm PostgreSQL values](helm.md#postgresql-and-rds) mount the CA at
+`/secrets/postgres/ca.pem` and set `PGSSLROOTCERT`; a URL `sslrootcert` parameter
+takes precedence. Helm's storage selector, authority ID, graph and backup
+selections take precedence over matching runtime Secret entries.
+
+Keep the existing runtime Secret for explicit model/provider and OIDC settings,
+and retain the FalkorDB password Secret and graph volume. The SQL profile needs
+no shared filesystem or SQLite PVC. Staged/downloaded backup artifacts need
+private temporary space and separate durable artifact storage; see
+[backup settings](reference/helm-values.md#encrypted-authority-backups).
 
 ## Replicas, failure and recovery
 
@@ -91,10 +102,11 @@ cut. Native database point-in-time recovery can recover SQL, but independently
 restoring an older SQL snapshot and a newer graph snapshot is not a coordinated
 authority recovery. Restore into isolated resources, verify scope access,
 revocations, pending publications and extraction state, then connect clients.
-See [storage and recovery](storage.md).
+Follow [authority recovery](recovery.md) for the coordinated restore procedure.
 
 A running API does not silently switch to SQLite when RDS is unavailable.
 Database and graph outages remain visible, and durable unknown work stays
-conservative. This repository's local PostgreSQL tests establish the application
-storage/fencing behavior; they do not claim that a particular RDS network,
-credential rotation, region, failover policy or production workload was tested.
+conservative. Local integration tests exercise PostgreSQL 18.6 with two API replicas,
+authorization, rollback, worker death, lease takeover and stale completion
+fences. They establish application storage behavior, rather than a particular
+RDS network, credential rotation, regional failover or production workload.

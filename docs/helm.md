@@ -1,56 +1,79 @@
-# Helm deployment
+# Deploy with Helm
 
-The chart at `deploy/helm/memory-worlds` supports two source storage profiles.
-Graphiti uses a separate authenticated FalkorDB StatefulSet and retained graph
-PVC in both profiles.
+Use Helm for a Kubernetes installation with retained storage, explicit Secret
+references and optional TLS ingress. The chart runs Graphiti with a separate,
+authenticated FalkorDB StatefulSet in both storage profiles.
 
 | Source storage | API workload | API data volume | Replicas |
 | --- | --- | --- | --- |
-| `storage.backend=sqlite` (default) | StatefulSet | Retained local/block PVC | Exactly one |
-| `storage.backend=postgres` | Deployment | Bounded temporary directory | One to 32 fenced workers sharing one SQL authority |
+| SQLite (default) | StatefulSet | Retained local/block PVC | Exactly one |
+| PostgreSQL / RDS | Deployment | Bounded temporary directory | One to 32 fenced workers |
 
-PostgreSQL can be Amazon RDS or an operator-managed PostgreSQL service. It stores
-the source, control and outbox journals; it does not replace Graphiti's graph
-backend. Scaling the API does not make the single FalkorDB pod highly available.
+Choose SQLite for a single API owner, or PostgreSQL for several API replicas.
+PostgreSQL holds the control, source and publication journals; FalkorDB holds
+the graph. Scaling the API does not make its single graph pod highly available.
 The chart provisions no external database or cloud resources.
 
-Kubernetes 1.32 or later and Helm are required. SQLite and the bundled graph
-require compatible local/block storage. Helm 4.3.1 was verified against the
-[official release](https://github.com/helm/helm/releases/tag/v4.3.1) on 2026-10-20.
-The chart uses the stable StatefulSet PVC retention policy available since
-[Kubernetes 1.32](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention).
+## Before installing
 
-## Installation with Graphiti
+You need Kubernetes 1.32 or later, a compatible storage driver and an API image
+available on the cluster's nodes or in a registry. Use the checked-in mise tools
+from the repository root, and select the target context on every command.
+For a disposable local test, use [kind](deployments.md#local-kubernetes-with-kind).
 
-Use an explicit context on every command. The examples use a release and
-namespace both named `memory-worlds`, making the API pod `memory-worlds-0`.
-Other release names receive distinct Services, StatefulSets, and policies.
+Keep operator files outside the checkout. Prepare a private copy of
+[`runtime.env.example`](../deploy/k8s/runtime.env.example) containing explicit
+extraction and embedding providers, models and credentials. No model is selected
+implicitly; incomplete provider settings stop startup.
 
-Build the image with `docker build -f deploy/Dockerfile -t memory-worlds:local .`
-and load it into your named kind cluster, or select the registry image produced
-by the artifact pipeline. A private registry requires an existing pull Secret.
-The example local tag is suitable only when the image is already present on
-the cluster's nodes.
+Build a local image with `docker build -f deploy/Dockerfile -t memory-worlds:local .`
+and load it into your named kind cluster, or use a registry image's immutable
+digest. The default `memory-worlds:local` tag requires the image to be present
+on the nodes.
 
-Create the runtime and FalkorDB password Secrets before installing, using the
-commands below. Graphiti/FalkorDB is the default; the chart requires an existing
-runtime Secret naming explicit extraction and embedding providers.
+## 1. Create the existing Secrets
+
+The following example uses `memory-worlds` for both release and namespace. Create
+the namespace once, omitting that command if it already exists. Generate the
+FalkorDB password into a private file so its value stays out of argv:
+
+```sh
+umask 077
+mkdir -p /private/operator
+mise exec -- python -c 'import secrets; print(secrets.token_hex(32), end="")' \
+  > /private/operator/falkordb-password
+mise run kubectl -- --context YOUR_CONTEXT create namespace memory-worlds
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
+  memory-worlds-falkordb --from-file=password=/private/operator/falkordb-password
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
+  memory-worlds-runtime --from-env-file=/private/operator/runtime.env
+```
+
+The password file must contain exactly 64 hexadecimal characters. Use Kubernetes
+Secret encryption and access controls appropriate to your cluster. Credentials
+belong in existing Secrets, never Helm values or release history.
+
+## 2. Install and test
+
+For the local image and SQLite profile:
 
 ```sh
 mise run helm -- --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
-  deploy/helm/memory-worlds --namespace memory-worlds --create-namespace \
+  deploy/helm/memory-worlds --namespace memory-worlds \
   --set runtime.existingSecret=memory-worlds-runtime \
   --set networkPolicy.allowExternalHTTPS=true --wait --timeout 5m
 mise run helm -- --kube-context YOUR_CONTEXT -n memory-worlds test memory-worlds
 ```
 
-For registry deployment, use an installation values file with an immutable
-digest and an existing registry credential reference:
+The HTTPS flag permits external model/OIDC/router endpoints on TCP 443. Narrow
+its CIDRs for the target environment; use explicit egress rules for in-cluster
+models or private endpoints. NetworkPolicy requires an enforcing CNI.
+
+For a registry deployment, keep installation values outside the checkout:
 
 ```yaml
 image:
   repository: ghcr.io/YOUR_ACCOUNT/memory-worlds
-  tag: 0.3.0
   digest: sha256:REPLACE_WITH_THE_PUBLISHED_64_HEX_DIGEST
 imagePullSecrets:
   - name: existing-registry-credential
@@ -59,153 +82,39 @@ runtime:
 persistence:
   storageClass: YOUR_BLOCK_STORAGE_CLASS
   size: 20Gi
+networkPolicy:
+  allowExternalHTTPS: true
 ```
 
-Replace the digest placeholder before installation; the schema rejects it.
-The registry credential remains in Kubernetes, outside Helm values and release
-history. The API container never receives the registry token as an environment
-variable.
+Replace the digest placeholder and install with `--values FILE`. The registry
+Secret is used to pull the image; its token does not enter the API environment.
 
-Initialize the empty authority once. Its receipt contains a one-time
-administrative credential; redirect stdout directly into a private file outside
-the repository. Initialization is a manual operation, so it does not become a
-Helm hook, pod log, or release value.
+## 3. Initialize the authority
+
+Initialize an empty authority once and redirect its one-time administrative
+receipt into a private file:
 
 ```sh
 umask 077
-mkdir -p /private/operator
 mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds exec memory-worlds-0 -- \
   memory-worlds init > /private/operator/bootstrap.json
 mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds port-forward \
   --address=127.0.0.1 service/memory-worlds 8787:8787
 ```
 
-Issue separate revocable credentials for agents using the CLI. Re-running
-initialization against an initialized authority fails; it does not issue a new
-administrator token. The read-only Helm test checks readiness and verifies the
-protected API rejects unauthenticated requests. It does not initialize data or
-need an agent credential.
+For PostgreSQL, select `deployment/memory-worlds` instead of `memory-worlds-0`.
+Other release names may produce different resource names. Initialization is
+manual: no hook, init container or log receives the administrative credential.
+Repeating initialization fails without issuing another token.
 
-## FalkorDB and graph projection
-
-The default chart builds on Graphiti with FalkorDB's pinned 6.0.0 image. Create its
-password Secret before installing the default profile. Generate a 64-character
-hexadecimal password into a private file and provide that file to kubectl;
-the secret value never enters command-line arguments:
-
-```sh
-umask 077
-mise exec -- python -c 'import secrets; print(secrets.token_hex(32), end="")' \
-  > /private/operator/falkordb-password
-mise run kubectl -- --context YOUR_CONTEXT create namespace memory-worlds
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
-  memory-worlds-falkordb --from-file=password=/private/operator/falkordb-password
-```
-
-Omit namespace creation when it already exists. For extraction, copy
-`deploy/k8s/runtime.env.example` outside the repository, fill in explicit model
-and embedding provider settings, and create the runtime Secret:
-
-```sh
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
-  memory-worlds-runtime --from-env-file=/private/operator/runtime.env
-mise run helm -- --kube-context YOUR_CONTEXT upgrade --install memory-worlds \
-  deploy/helm/memory-worlds --namespace memory-worlds \
-  --set graph.backend=falkordb \
-  --set runtime.existingSecret=memory-worlds-runtime \
-  --set networkPolicy.allowExternalHTTPS=true --wait --timeout 5m
-```
-
-`graph.backend` is authoritative even if the runtime Secret contains
-`MEMORY_WORLDS_GRAPH_BACKEND`. Provider/model settings belong in the runtime
-Secret. The daemon requires this configuration before starting. Capture, publication,
-and imports queue scope-isolated graph extraction by default. Source retrieval
-and `project=false` captures are explicit maintenance/recovery options. Graph
-outages retain durable source receipts and surface unavailable graph queries;
-they never silently switch recall to source search.
-
-The API and graph PVCs have independent storage settings. An empty
-`storageClass` selects the cluster default; `"-"` sets an explicitly empty class.
-`persistence.existingClaim` and `falkordb.persistence.existingClaim` use
-operator-owned claims instead of creating claim templates. Claims must have
-compatible filesystem semantics and support the chart's UID/GID ownership:
-10001 for API data, 999 for graph data. Never share one data claim between
-releases or mount SQLite WAL over NFS/RWX storage.
-
-## Shared identity, router, and ingress
-
-OIDC settings use `runtime.existingSecret`, including issuer, audience, JWKS URL,
-and optional group-to-world mappings. World authorization remains independent
-of OIDC authentication. See [sharing.md](sharing.md) for the identity and
-publication contracts.
-
-For the router, enable `router.enabled` and reference existing Secrets through
-`router.mountsExistingSecret` and `router.tokensExistingSecret`. The first must
-contain `mounts.json`; it mounts below `/config`. Remote tokens mount below
-`/secrets/remotes`. Reference their absolute paths in `mounts.json`. Both volumes
-are read-only with mode 0440, readable by the API's filesystem group. No inline
-router endpoints, tokens, passwords, or model keys are accepted as chart values.
-
-All Services are internal. An optional ingress requires an explicit ingress
-class, hosts, and TLS Secret references covering every host. Certificate
-provisioning and the controller are existing infrastructure. Configure its
-namespace and pod selectors explicitly, for example:
-
-```yaml
-ingress:
-  enabled: true
-  className: nginx
-  hosts: [memory.example.org]
-  tls:
-    - secretName: existing-memory-tls
-      hosts: [memory.example.org]
-networkPolicy:
-  clientNamespaceSelector:
-    matchLabels:
-      memory-worlds-client: "true"
-  clientPodSelector:
-    matchLabels:
-      memory-worlds-client: "true"
-```
-
-Both selectors must match the gateway. The chart's default deny policy selects
-only its release's pods, preserving unrelated workloads in the namespace.
-API-to-FalkorDB and Helm-test-to-API rules also include release selectors.
-NetworkPolicy requires an enforcing CNI; default kind networking does not
-provide one, so a kind smoke cannot establish network isolation.
-
-Outbound access defaults to DNS and, when selected, the release's FalkorDB.
-Set `networkPolicy.allowExternalHTTPS=true` for external model, OIDC, and router
-endpoints, and narrow `externalHTTPSCIDRs` to the target environment. Its opt-in
-default CIDRs allow all IPv4/IPv6 destinations on TCP 443. Standard policies lack
-FQDN matching; use an egress gateway or the target CNI's DNS-aware policy where
-required. `extraAPIEgress` accepts explicit peer and port rules for in-cluster
-models or private Neptune endpoints.
+The Helm test checks readiness and rejection of unauthenticated API requests.
+It does not initialize data or require a client credential. Issue separate,
+revocable scoped credentials for agents; see [scope and delegation rules](scopes.md).
 
 ## PostgreSQL and RDS
 
-Create a dedicated application database and login role that can create the
-authority's schemas, tables, indexes and sequences. No PostgreSQL extension is
-required. Keep one stable authority UUID across all replicas and rollouts;
-another UUID selects another set of schemas. See [PostgreSQL and RDS](rds-postgresql.md)
-for engine, network, TLS and database recovery requirements.
-
-Put the URL in a private file, then create an existing Secret. The file contains
-one URL such as `postgresql+psycopg://USER:ENCODED_PASSWORD@HOST:5432/DATABASE?sslmode=verify-full`.
-URL-encode reserved credential characters. The live value stays outside chart
-values, shell arguments and Helm release history.
-
-```sh
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
-  memory-worlds-postgres --from-file=database-url=/private/operator/database-url
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
-  memory-worlds-postgres-ca --from-file=ca.pem=/private/operator/postgres-ca.pem
-```
-
-Use the current RDS CA bundle or the trust bundle for your PostgreSQL service.
-This profile mounts it at `/secrets/postgres/ca.pem` and sets `PGSSLROOTCERT`.
-The URL's `verify-full` validates both the hostname and certificate. An explicit
-URL `sslrootcert` parameter takes precedence over that environment setting.
+Prepare a dedicated database/login role, stable authority UUID, URL Secret and
+TLS CA Secret using the [PostgreSQL/RDS guide](rds-postgresql.md). Then select:
 
 ```yaml
 replicaCount: 2
@@ -217,8 +126,6 @@ storage:
     authorityId: 11111111-2222-4333-8444-555555555555
     caExistingSecret: memory-worlds-postgres-ca
     caKey: ca.pem
-runtime:
-  existingSecret: memory-worlds-runtime
 networkPolicy:
   postgresEgress:
     - to:
@@ -226,194 +133,70 @@ networkPolicy:
       ports: [{protocol: TCP, port: 5432}]
 ```
 
-Replace the example authority UUID and database network with your deployment's
-values. `postgresEgress` also accepts namespace/pod selectors for an in-cluster
-database. With policy enabled, the PostgreSQL profile requires explicit database
-egress. Security groups, TLS and database access policy remain separate controls.
+Replace the UUID and network. Retain the runtime, image and graph settings from
+your installation values. Database egress is required with policy enabled.
+The Deployment has no SQLite PVC; missing or empty PostgreSQL connection settings
+fail startup before a SQLite journal can be created. `persistence.existingClaim`
+is rejected in this profile. No PostgreSQL extension is required.
 
-The Deployment has no SQLite PVC; `persistence.existingClaim` is rejected in
-this profile. A required Secret key supplies `MEMORY_WORLDS_DATABASE_URL`, and
-the chart sets `MEMORY_WORLDS_STORAGE_BACKEND=postgres` explicitly. Missing or
-empty connection settings fail startup before any SQLite journal can be created.
-Backend, authority, graph and backup selections are authoritative over matching
-entries in the runtime Secret.
+## Optional configuration
 
-Initialize a fresh PostgreSQL authority once through a selected replica:
+Use the [Helm configuration reference](reference/helm-values.md) for the values
+summary, storage classes and claims, workload security, ingress, router mounts,
+backup scheduling, authenticated monitoring and egress rules.
 
-```sh
-umask 077
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds exec \
-  deployment/memory-worlds -- memory-worlds init > /private/operator/bootstrap.json
-```
+### Shared identity, router, and ingress
 
-All API replicas share the authority, graph endpoint, model configuration, OIDC
-policy and mount configuration. Database leases reject stale worker completion;
-unknown external graph writes still require a clean generation rebuild.
+Configure [OIDC/Okta](oidc-okta.md) for user identity and group mappings, then use
+the [networking and router settings](reference/helm-values.md#shared-identity-router-and-ingress)
+to expose a TLS gateway and mount scoped remote credentials.
 
-## Encrypted authority backups
+### Encrypted authority backups
 
-Enable the authenticated backup API with an operator-owned artifact PVC and
-encryption-key Secret. Generate the raw 32-byte key outside the repository:
+Configure the [artifact PVC, key Secret and optional CronJob](reference/helm-values.md#encrypted-authority-backups).
+Keep the key separately, choose retention, and follow the [restore procedure](recovery.md).
 
-```sh
-mise run cli -- authority-keygen /private/operator/authority-backup.key
-mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
-  memory-worlds-backup-key --from-file=key=/private/operator/authority-backup.key
-```
+### Authenticated metrics
 
-```yaml
-backup:
-  enabled: true
-  existingClaim: memory-worlds-backup-artifacts
-  keyExistingSecret: memory-worlds-backup-key
-  keyKey: key
-```
+See [monitoring settings](reference/helm-values.md#authenticated-metrics) for a
+live administrative scrape credential and optional Prometheus Operator resources.
 
-The API mounts the artifact claim at `/backups`; a single-file, read-only key
-mount provides `/secrets/backup/key`. No key or administrator credential is
-rendered into Helm values or logs. Provision the claim before installing. It
-must be writable by UID/GID 10001, and a multi-replica Deployment requires shared
-RWX semantics so a download can reach the artifact created by another replica.
-This requirement applies to encrypted artifact files; PostgreSQL source
-journals remain in SQL.
+### Explicit maintenance or recovery mode
 
-Request and download a complete encrypted artifact through the authenticated
-service:
+`graph.backend=disabled` with `falkordb.enabled=false` deliberately disables graph
+recall. See [maintenance settings](reference/helm-values.md#explicit-maintenance-or-recovery-mode).
 
-```sh
-mise run cli -- --url https://memory.example.org \
-  --token-file /private/operator/admin-token authority-backup \
-  /private/operator/authority.mwauthority --graph-mode native
-```
+### Experimental external Neptune
 
-`native` includes the configured FalkorDB namespaces. `rebuild` records a
-source/policy/outbox cut for explicit graph rebuilding after restore. The
-service chooses the remote artifact path; the CLI chooses only its local
-download path. Preserve the encryption key separately from the artifact.
-See [lifecycle](lifecycle.md) for erasure boundaries and [storage](storage.md)
-for coordinated fresh-target recovery.
-
-An optional CronJob runs the same authenticated CLI. Give it a separate
-destination PVC and an existing Secret holding a live administrator token:
-
-```yaml
-backup:
-  enabled: true
-  existingClaim: memory-worlds-backup-artifacts
-  keyExistingSecret: memory-worlds-backup-key
-  cronJob:
-    enabled: true
-    schedule: "0 3 * * *"
-    timeZone: Etc/UTC
-    outputExistingClaim: memory-worlds-downloaded-archives
-    adminTokenExistingSecret: memory-worlds-backup-admin
-    adminTokenKey: token
-    graphMode: native
-```
-
-The job gets the token as a read-only file and never receives the encryption
-key, SQL URL, runtime provider Secrets or source PVC. It writes uniquely named
-encrypted downloads with private permissions. Jobs cannot overlap, have a
-bounded deadline and do not retry automatically after failure. The release's
-NetworkPolicy permits only DNS and its API, with reciprocal API ingress for the
-job. The chart does not delete old artifact files or choose your retention
-period. Archive completed files and monitor available space; job history limits
-only remove Kubernetes job records.
-
-## Authenticated metrics
-
-`/metrics` requires a live administrative bearer credential. Metrics include
-bounded request method/status counters and latency, readiness, worker counts,
-and aggregate projection, purge, generation and delivery state. Source content,
-world IDs, scope IDs, user IDs and credentials are excluded from metric labels.
-
-```yaml
-metrics:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-    existingSecret: memory-worlds-metrics-admin
-    tokenKey: token
-    labels: {release: prometheus}
-  prometheusRule:
-    enabled: true
-    labels: {release: prometheus}
-networkPolicy:
-  metricsNamespaceSelector:
-    matchLabels: {kubernetes.io/metadata.name: monitoring}
-  metricsPodSelector:
-    matchLabels: {app.kubernetes.io/name: prometheus}
-```
-
-Install the Prometheus Operator CRDs first; the chart rejects a requested
-ServiceMonitor or PrometheusRule without the matching CRD. The token Secret
-belongs in the release namespace. Select these resources with your Prometheus
-installation's resource labels, and use a dedicated revocable administrator
-credential for scraping. Both NetworkPolicy selectors must match the actual
-scraper pods. For a different collector, leave `serviceMonitor.enabled=false`
-and configure authenticated scraping explicitly.
-
-The optional rules alert on failed scraping, unavailable authority, failed
-graph purges, unknown extraction outcomes and blocked publication. Their
-selectors bind the release's Service and namespace. Scrape authorization uses
-the operator's [Secret-backed authorization field](https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.SafeAuthorization).
-The backup schedule uses the standard [CronJob timezone field](https://kubernetes.io/docs/concepts/workloads/controllers/cron-jobs/#time-zones).
-
-## Explicit maintenance or recovery mode
-
-Set `graph.backend=disabled` and `falkordb.enabled=false` only for deliberate
-source maintenance or recovery. Capture still records extraction intent by
-default; pending jobs wait for a configured Graphiti daemon. Use explicit source
-queries while the graph is disabled. This mode does not provide graph memory.
-
-## Experimental external Neptune
-
-Select `graph.backend=neptune`, disable `falkordb.enabled`, and provide
-`runtime.existingSecret` with the Neptune/OpenSearch and provider settings in
-`deploy/k8s/neptune.env.example`. The schema rejects a Neptune profile that also
-deploys FalkorDB. Supply private Neptune egress on TCP 8182 and HTTPS access for
-OpenSearch/model endpoints. `serviceAccount.annotations` permits integration
-with existing workload identity; the chart grants no RBAC and keeps standard
-Kubernetes API token automount disabled. Validate your identity webhook's
-projected token requirements on the target cluster.
-
-This configures an external backend; it provisions no AWS resources. Live AWS
-ingestion and recovery remain unverified. Review backend support and isolation
-limits in [deployments.md](deployments.md#aws-neptune-evaluation-lane).
+Neptune requires external AWS and OpenSearch infrastructure. See the
+[experimental backend reference](reference/neptune.md) before selecting it.
 
 ## Upgrade, uninstall, and recovery
 
-Use stable release names and retain installation values outside the checkout.
-Take authenticated source exports or appropriate quiesced backups before
-upgrading. Apply changes using `helm upgrade --install ... --values FILE --wait`,
-then run `helm test`. Secret contents are not hashed into pod annotations;
-restart the appropriate StatefulSet or Deployment after changing an environment
-Secret. Single-file Secret mounts use `subPath` and also require a rollout after
-key or CA rotation.
-Coordinate database password rotation between API and graph pods.
+Keep the release name, authority identity and installation values stable. Take
+an appropriate coordinated backup before upgrading, apply with
+`helm upgrade --install ... --values FILE --wait`, then run `helm test`.
+Environment Secret changes and single-file `subPath` key/CA rotations require an
+explicit StatefulSet or Deployment rollout. Coordinate graph password rotation
+between API and graph workloads.
 
-StatefulSet claim templates are immutable. Changing a size/class or switching
-between generated and existing claims can require a planned workload
-replacement and CSI-supported PVC expansion; an ordinary Helm upgrade does not
-migrate storage. Do not use forced replacement as a substitute for a recovery
-plan. Claims remain through pod replacement and uninstall; installing the same
-release name reuses the retained claims. Review any existing data before
-reinstallation because it contains the previous authority and credentials.
+StatefulSet claim templates are immutable. Changes to size/class or to generated
+versus existing claims may need planned workload replacement and CSI-supported
+PVC expansion. An ordinary Helm upgrade does not migrate storage.
 
-`helm uninstall` removes workloads and release-specific networking. Existing
-Secrets and PVCs remain operator-owned. Retention protects against workload
-deletion, not node or disk loss. Portable exports exclude active credentials
-and grants; restoring the full authority and its graph requires the separate
-cross-store procedure described in [deployments.md](deployments.md#backups-and-recovery).
+Uninstall removes workloads and release-specific networking. Existing Secrets
+and PVCs remain; reinstalling the same release can reuse its retained claims.
+Inspect that data before reinstalling because it holds the earlier authority
+and credentials. Retention does not protect against node or disk loss. Use
+[encrypted authority recovery](recovery.md) for a coordinated restore; use
+[portable exports](portable-archives.md) to copy selected evidence.
 
-Validate the packaged deployment contract locally:
+Validate or package the chart from the repository root:
 
 ```sh
 mise run helm:check
 mise run helm -- package deploy/helm/memory-worlds --destination /private/build-output
 ```
 
-The validator checks eight profiles, rejects unsafe values, and checks security,
-secret mounts, retained SQLite storage, stateless PostgreSQL replicas, backup
-jobs, authenticated monitoring and distinct release names. Rendering does not
-prove storage-driver behavior or NetworkPolicy enforcement.
+See [lifecycle validation](reference/kind-validation.md) for the scope of the
+render and cluster checks.

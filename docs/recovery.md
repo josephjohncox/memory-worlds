@@ -1,14 +1,21 @@
-# Authority recovery and cloud artifacts
+# Back up and recover an authority
 
-A portable `.mworld` export contains selected source evidence. An encrypted
-`.mwauthority` backup contains the entire authority: users, credential hashes,
-revocations, world and scope grants, named identities, contexts, every private
-and shared source journal, lifecycle tombstones, projection jobs, generation
-inventory, and publication outbox. Only a live authority administrator can
-request or download one.
+Use an encrypted authority backup to recover the service's policy, private and
+shared memory, jobs and publication state together. Only a live authority
+administrator can request or download one.
 
-Provider credentials, OIDC client configuration, remote mount/token files, and
-the encryption key are operator configuration. Preserve them separately. A
+| Artifact | Contains | Use |
+| --- | --- | --- |
+| Portable `.mworld` export | Selected source evidence; no live credentials or grants | [Move evidence to an authorized destination](portable-archives.md) |
+| Native `.mwauthority` backup | Full authority and inventoried FalkorDB namespaces | Restore policy/source/outbox and the original graph |
+| Rebuild `.mwauthority` backup | Full authority with graph-rebuild intent | Restore policy/source/outbox, then extract a fresh graph |
+
+A full authority includes users, credential hashes, revocations, world/scope
+grants, named identities, contexts, all private/shared source journals, lifecycle
+tombstones, projection jobs, generation inventory and publication outbox.
+
+Preserve provider credentials, OIDC configuration, remote mount/token files and
+the encryption key separately as operator configuration. A
 recovered authority has the grants and revocations that existed at its backup
 cut; review subsequent revocations before admitting clients.
 
@@ -27,9 +34,11 @@ MEMORY_WORLDS_BACKUP_DIRECTORY=/private/backups/authority
 MEMORY_WORLDS_BACKUP_KEY_FILE=/private/keys/authority.key
 ```
 
-The key must be a regular file, readable only by its owner or a controlled
-read-only group. The chart mounts a Secret key as a regular subPath file. The
-service never accepts a client-selected server path or returns the key.
+The key must be a regular file readable only by its owner or a controlled
+read-only group. The chart mounts a Secret key as a regular `subPath` file; see
+[Helm backup configuration](reference/helm-values.md#encrypted-authority-backups)
+for claims, key mounting and optional scheduling. The service never accepts a
+client-selected server path or returns the key.
 
 ```sh
 mise run cli -- --token-file /private/admin.token \
@@ -61,8 +70,7 @@ mise run cli -- --token-file /private/admin.token \
 
 Both modes use AES-256-GCM. The reader verifies the authentication tag before
 parsing any decrypted archive, then validates checksums, the complete current
-table/scope inventory and the current schema. There are no migration or older
-format readers.
+table/scope inventory and the current schema. Recovery accepts the current archive schema.
 
 Backup and restore need private temporary space for uncompressed tables and
 graph dumps as well as the encrypted artifact. Size the process `TMPDIR` for

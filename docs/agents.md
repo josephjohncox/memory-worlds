@@ -1,21 +1,41 @@
-# Agent clients
+# Connect agent clients
 
-Each agent uses a user API access token or its own delegated credential. All
-clients use the running HTTP daemon, including clients in remote shells.
-Ordinary OIDC users can discover their accessible worlds without an administrator
-token. Child credentials discover only their delegated audience.
+[Documentation](README.md) · [Scopes and subagents](scopes.md)
+
+All clients connect to the running HTTP service, including agents in remote
+shells. Give each agent an ordinary user credential or its own delegated
+credential. Ordinary OIDC users can discover their accessible worlds without an
+administrator token; delegated children see only their granted audience.
+
+| Client | Choose it for |
+| --- | --- |
+| [Native Pi extension](../packages/pi/README.md) | Slash commands, session hooks, evidence rendering and rich Pi subagents |
+| Python `Client` | Typed harnesses and orchestration, including child delegation |
+| CLI | Discovery, explicit capture/import and operator workflows |
+| MCP stdio facade | Hosts that integrate tools through MCP |
+
+Start with [discovery](discovery.md) to find world IDs, scope UUIDs and mounts.
+Read selections and write destinations are separate. A context records selection
+and attribution; a delegated credential sets a child's actual permission ceiling.
+
+## Python
+
+This example writes and searches one explicitly selected private scope. Supply
+`service_url`, `agent_token`, `world_id` and `scope_id` from your private client
+configuration and discovery; keep tokens out of prompts and logs.
 
 ```python
-import os
 from datetime import UTC, datetime
 
 from memory_worlds.client import Client
-from memory_worlds.models import EpisodeInput, SearchRequest
+from memory_worlds.models import EpisodeInput, ScopeSelection, SearchRequest
 
-with Client(os.environ["MEMORY_WORLDS_URL"], os.environ["MEMORY_WORLDS_TOKEN"]) as client:
+selection = ScopeSelection(world_id=world_id, scope_id=scope_id)
+with Client(service_url, agent_token) as client:
     receipt = client.capture(
-        "WORLD_ID",
+        world_id,
         EpisodeInput(
+            scope_id=selection.scope_id,
             source_id="agent-session-42:entry-7",
             content="The approved fixture uses a ceramic bearing.",
             occurred_at=datetime(2026, 10, 20, tzinfo=UTC),
@@ -24,42 +44,56 @@ with Client(os.environ["MEMORY_WORLDS_URL"], os.environ["MEMORY_WORLDS_TOKEN"]) 
             role="user",
         ),
     )
-    results = client.search(SearchRequest(world_ids=["WORLD_ID"], query="ceramic"))
+    results = client.search(SearchRequest(scopes=[selection], query="ceramic"))
 ```
 
-Preserve the original timestamp and source identity on retries. A successful
-capture queues Graphiti extraction and returns the stored episode and `replayed`; its projection state is
-independent from durable receipt. Each read request names its worlds explicitly.
+Reuse the original source ID and timestamp on retries. A capture receipt confirms
+source storage and reports `replayed`; Graphiti extraction completes separately.
+Search uses Graphiti by default; set `mode="source"` for durable source text.
 
-For MCP clients, install the MCP extra and configure a stdio server command:
+For scoped children, use the [delegation example](reference/scopes.md#create-and-delegate).
+The [scope reference](reference/scopes.md) also covers contexts, aliases,
+publication and credential expiry.
+
+## MCP
+
+Install the MCP extra through the project's locked dependency task
+(`mise run python:deps`), then configure your host to run the stdio client:
 
 ```json
 {
   "command": "/absolute/path/to/.venv/bin/memory-worlds",
-  "args": ["--url", "http://127.0.0.1:8787", "mcp"],
-  "env": {"MEMORY_WORLDS_TOKEN": "agent-specific-token"}
+  "args": [
+    "--url", "http://127.0.0.1:8787",
+    "--token-file", "/absolute/private/path/agent.token",
+    "mcp"
+  ]
 }
 ```
 
-Use your client's secret mechanism for the token, or pass `--token-file` before
-`mcp`. The tools include `memory_discover`, `memory_worlds`, `memory_search`, `memory_capture`,
-`memory_publish`, `memory_mounts`, `memory_remote_search`, and `memory_deliveries`,
-plus `memory_scopes`, `memory_scope_status`, `memory_episodes`,
-`memory_bind_context`, and `memory_context` for scoped agent contexts.
-Scope selections and bound context IDs are explicit arguments. MCP exposes no
-credential issuance or grant administration tool. See [agent scopes](scopes.md)
-for typed child delegation, UUID identities, and publication rules.
-The MCP process is an
-HTTP client, so several MCP clients can share one daemon. It never takes local
-storage ownership or grants extra permissions.
+Use the installed executable's absolute path. Several MCP clients can share one
+daemon; the stdio process opens no storage and grants no additional permissions.
 
-The [native Pi extension](../packages/pi/README.md) uses direct typed HTTP calls,
-commands, session hooks, provenance renderers, and visible world selection.
-Its client is also exported as `memory-worlds-pi/client` for other native Pi code.
-It does not need MCP or a Pi fork. Automatic capture is off by default;
-publication uses an explicit user slash command or an enabled per-chat rule.
-See [chat sharing modes](chat-sharing.md) and [sharing](sharing.md) for
-remote mount configuration, OIDC membership, and outbox receipts.
+| Tools | Purpose |
+| --- | --- |
+| `memory_discover`, `memory_worlds`, `memory_scopes`, `memory_mounts` | Discover the caller's visible metadata |
+| `memory_search`, `memory_remote_search`, `memory_episodes` | Retrieve selected evidence |
+| `memory_capture`, `memory_publish` | Save or explicitly publish selected text |
+| `memory_bind_context`, `memory_context`, `memory_scope_status` | Bind context or inspect scoped state |
+| `memory_deliveries` | Inspect the caller's remote publication receipts |
 
-Use [user and harness discovery](discovery.md) to find canonical IDs
-and aliases. For native user login and team mappings, see [OIDC and Okta](oidc-okta.md).
+Scope selections and context IDs are explicit tool arguments. The facade exposes
+no credential issuance, delegation or grant-administration tool. A harness that
+needs to issue child credentials uses the typed client or CLI through a private
+channel, keeping bearer tokens out of model-visible output.
+
+## Native Pi
+
+The [Pi quickstart](../packages/pi/README.md) covers install and first use. The
+[Pi reference](reference/pi.md) documents commands, configuration, capture
+retries, disk spool and SDK exports. Its direct typed client and native session
+integration require neither MCP nor a Pi fork.
+
+Automatic capture starts disabled. Publication requires a user command or a
+user-enabled [per-chat sharing rule](chat-sharing.md). For corporate login,
+mounts and team mappings, see [OIDC](oidc-okta.md) and [local plus corporate memory](hybrid.md).

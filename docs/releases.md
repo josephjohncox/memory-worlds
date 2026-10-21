@@ -1,70 +1,71 @@
-# Builds and private artifacts
+# Build and download artifacts
 
-The repository builds four versioned distributions together:
+[Documentation](README.md)
+
+One build produces the Python service, native Pi extension and Helm chart:
 
 | File | Contents |
 | --- | --- |
 | `memory_worlds-<version>-py3-none-any.whl` | Python service, client and CLI |
-| `memory_worlds-<version>.tar.gz` | Python sources, tests, documentation, deployments and native Pi sources |
-| `memory-worlds-pi-<version>.tgz` | Compiled native Pi extension and typed client |
-| `memory-worlds-<version>.tgz` | Helm chart, schema, templates and Apache-2.0 license |
+| `memory_worlds-<version>.tar.gz` | Source, tests, docs, deployments and Pi source |
+| `memory-worlds-pi-<version>.tgz` | Compiled Pi extension and typed client |
+| `memory-worlds-<version>.tgz` | Helm chart, templates, schema and license |
 
-`manifest.json` records the full source commit, whether the checkout was clean, the tracked working-tree digest, the actual mise and build-tool versions, and each distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the manifest. The manifest is a build receipt; it is not a cryptographic signature. Archive timestamps may differ between builds, so matching source commits do not imply byte-identical archives.
-
-Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.3.0`. Builds fail if these identities differ.
+The output also includes `manifest.json` and `SHA256SUMS`. The manifest records
+the exact source identity, tools and file digests. See the
+[receipt and auditing reference](reference/artifacts.md).
 
 ## Build locally
 
-Use the checked-in [mise toolchain and targets](development.md). `mise.lock`
-pins tool downloads and checksums; the npm and uv lockfiles define library
-dependency resolution. The build script records the versions actually used.
-
-From a clean Git checkout:
+From a reviewed, clean Git checkout:
 
 ```sh
 mise trust
 mise install --locked
 mise run artifacts:build -- --require-clean
 mise run artifacts:audit -- dist/artifacts
-(cd dist/artifacts && sha256sum --check SHA256SUMS)
 ```
 
-The output directory must be empty. Select a fresh directory with
-`mise run artifacts:build -- --output /tmp/memory-worlds-build`. The task loads
-the locked Python, uv, Node, and Helm tools; it installs npm dependencies from
-the checked-in lockfile. Without `--require-clean`, local development builds
-are permitted and the receipt records that their commit alone does not identify
-the working tree.
+The output directory must be empty. For a new directory:
 
-The builder requires a Git commit. It never fabricates source identity for an unversioned directory. `--source-sha <40-character-commit>` also verifies that the checkout is the expected immutable commit.
+```sh
+mise run artifacts:build -- --require-clean --output /tmp/memory-worlds-build
+```
 
-The audit rejects unexpected package paths, archive traversal, links and device files, duplicate entries, excessive file or expanded archive sizes, local databases, exports, credentials, private inputs and common secret signatures. It also checks package metadata and license copies. `PUBLIC_CONTENT_DENY_PATTERN` can add an operator-supplied regular expression for private names without adding those names to the source tree. Content scanning is evidence about the checked files, rather than proof that every possible sensitive string has been recognized.
+Verify `SHA256SUMS` with `sha256sum --check SHA256SUMS` on Linux or
+`shasum -a 256 --check SHA256SUMS` on macOS, from the artifact directory.
+Python, Pi and chart versions must match; a release tag uses `v<version>`.
+`--source-sha FULL_COMMIT` additionally pins the expected source commit.
 
-## GitHub Actions
+The audit checks package contents, metadata, license copies and private-data
+signatures. Build receipts and content scans have the limits described in the
+[artifact reference](reference/artifacts.md#source-identity-and-content-auditing).
 
-The **Artifacts** workflow builds and uploads the four distributions, manifest and checksums on pull requests, pushes to `main`, version tags, and manual runs. These uploads use the repository's Actions access controls and have a 30-day retention period. Download them from a run's **Artifacts** section, or with GitHub CLI:
+## Download from GitHub Actions
+
+The Artifacts workflow uploads distributions and receipts under the repository's
+Actions access controls. Downloads expire after 30 days:
 
 ```sh
 gh run list --repo josephjohncox/memory-worlds --workflow Artifacts
 gh run download RUN_ID --repo josephjohncox/memory-worlds --dir /tmp/memory-worlds-download
 ```
 
-An artifact upload does not mean the full CI suite has passed; the run's source receipt identifies exactly what was built. The separate **CI** workflow remains the test gate.
+An uploaded distribution identifies built source; the separate CI workflow is
+the test gate. Check both run results and the downloaded checksums.
 
-After **CI** succeeds for a push to `main` or a version tag in the original repository, **Artifacts** builds and publishes a private container for `linux/amd64` and `linux/arm64` to `ghcr.io/josephjohncox/memory-worlds`. It checks out the exact full commit tested by CI. Pull requests and manual distribution builds cannot publish images. Only the container job receives `packages: write`; the other jobs receive read access to source.
+## Use a container image
 
-Container publication requires a private repository. An existing package must have private visibility before publication, and visibility is checked again afterward. An absent package is created with GHCR's default private visibility. A visibility lookup error fails the job. If an administrator later changes repository or package visibility, the next publication stops until the configuration is reviewed.
+After CI passes at an eligible commit, the container job builds private
+`linux/amd64` and `linux/arm64` images at
+`ghcr.io/josephjohncox/memory-worlds:sha-FULL_COMMIT`. Its
+`container-receipt.json` records the tested commit and immutable registry digest.
+Use `image@sha256:...` from that receipt to pin a deployment.
 
-Every image receives a `sha-<full-source-commit>` tag. A matching version-tag build also receives `<version>`. There is no automatically updated `latest` tag. A `container-receipt.json` artifact records the immutable registry digest, tags, platforms, tested commit and verified visibility. Tags are registry references and can be reassigned by authorized operators; use `image@sha256:...` from that receipt for deployments that must identify exact bytes. BuildKit also attaches provenance and an SBOM to the image.
+Private pulls require package access and `read:packages`; Kubernetes may need
+`imagePullSecrets`. Keep registry tokens out of Git and chart values. See
+[Helm installation](helm.md) and [publication controls](reference/artifacts.md#github-actions).
 
-To pull private images, authenticate with a GitHub credential that has `read:packages` and access to the package. Configure Kubernetes `imagePullSecrets` when required. Do not put registry tokens in chart values, manifests or Git history.
-
-The automated pipeline does not publish to PyPI, npm or a public Helm registry.
-Actions artifacts expire. Durable private releases retain the signed source tag,
-four distributions, manifest, checksums, immutable image receipt and sanitized
-local qualification receipts as GitHub Release assets in the private repository.
-Create them only after the exact source commit passes CI, verify repository and
-container privacy, and verify every asset checksum after downloading it. A
-private release is available only to repository readers; it does not change
-repository or package visibility. Public publication requires a separate explicit
-user decision.
+The current workflow checks private repository/package visibility and does not
+publish to public package registries. Durable release assets and public
+publication are separate release decisions; the reference describes their gates.

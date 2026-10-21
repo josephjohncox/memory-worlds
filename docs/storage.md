@@ -1,9 +1,14 @@
-# Storage and recovery
+# Storage internals
 
 Memory Worlds uses SQL journals as the durable source and Graphiti/FalkorDB for
 extraction and graph retrieval. Select SQLite for a local authority or PostgreSQL
 for a shared authority with several API replicas. PostgreSQL replaces the
 control, source, and publication journals; it does not replace the graph backend.
+
+For installation use [guided setup](setup.md), [Helm](helm.md) or
+[PostgreSQL/RDS](rds-postgresql.md). For backup and restore commands, use
+[authority recovery](recovery.md). This page explains the durability and worker
+coordination behind those procedures.
 
 ## Local SQLite
 
@@ -50,8 +55,8 @@ Nested resource sessions share one PostgreSQL transaction. This allows source,
 control and outbox mutations to participate in one fenced commit. Control
 operations serialize authority decisions; source write transactions serialize
 per scope. PostgreSQL sequences are restored explicitly when recovering rows.
-There are no historical schema readers or automatic migrations. Development
-schema changes require disposable data to be reset.
+The service uses the current schema directly. Reset disposable development data
+when changing that schema.
 
 ## Worker ownership and graph generations
 
@@ -106,17 +111,18 @@ recovery additionally requires an isolated empty graph backend and the recorded
 compatible backend version. Rebuild-mode backups restore evidence and queue
 extraction instead of claiming an exact graph copy.
 
-Use `authority-backup` to request/download a completed encrypted artifact and
-`authority-restore` for offline recovery. The former per-world native SQLite
-backup command is absent: a single source journal omits authority policy and
+Use [`authority-backup` and `authority-restore`](recovery.md) for coordinated
+whole-authority recovery. A single source journal omits authority policy and
 private scopes. Coordinate database/PVC/provider snapshots with the same
 maintenance boundary if using external backup tooling.
 
-FalkorDB has a separate persistent volume. AOF reduces graph loss after a
-restart; it is not an off-host backup. Failed or unknown graph delivery leaves
+FalkorDB has a separate persistent volume. Its AOF uses `appendfsync everysec`
+with periodic RDB snapshots; host failure can lose approximately the last
+second of graph writes. Source receipts remain governed by their independent
+SQL commit. AOF is not an off-host backup. Failed or unknown graph delivery leaves
 source evidence usable. Native snapshots preserve the exact selected graph key;
-recovery never renames a graph key or replaces an existing graph. Neptune
-remains experimental and complete erasure is unavailable because its secondary
+recovery never renames a graph key or replaces an existing graph. [Neptune](reference/neptune.md)
+remains experimental. Complete erasure is unavailable because its secondary
 OpenSearch documents also require verified removal.
 
 Completed exports and encrypted backups may be copied to a OneDrive folder,

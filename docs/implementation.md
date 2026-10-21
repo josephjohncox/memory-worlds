@@ -1,32 +1,27 @@
-# Implementation
+# Source map
 
-Approved design: `superpowers/specs/2026-10-20-memory-worlds-design.md`.
+[Documentation](README.md) · [Development](development.md) · [Architecture](architecture.md)
 
-1. Implement durable, scoped source storage, per-agent credentials, idempotent
-   capture, and daemon ownership. Exercise concurrency and access isolation.
-2. Implement versioned portable world export/restore and branch-preserving
-   ChatGPT/Pi import with synthetic fixtures. Verify checksum failures and
-   transactional conflict handling.
-3. Implement an actual Graphiti/FalkorDB adapter and durable worker, with
-   conservative interrupted-write handling and isolated generation rebuilds.
-4. Connect authenticated HTTP, typed client, CLI, and optional stdio MCP client.
-5. Document local launch, SSH forwarding, cloud-folder backup, graph provider
-   configuration, and the limits of source-only recovery.
-6. Run integration checks against independent HTTP clients and clean restore;
-   inspect package contents for private inputs and organization branding.
+The Python package contains the service, clients and local setup controller.
+The native Pi package calls the same HTTP API. Start with the boundary you are
+changing, then follow its current-contract tests.
 
-7. Add operator-configured shared-authority mounts, bounded attributed recall,
-   and explicit publication with a durable outbox. Verify outage, lost-ACK,
-   restart, source identity, revocation, and owner retry semantics.
-8. Add an explicit-issuer OIDC verifier, stable private work contexts, live
-   shared memberships, and signed group-state watermarks. Keep agent token
-   grants separate from user memberships.
-9. Build a native Pi package using the current public SDK: tools, slash commands,
-   rendering, branch state, bounded retrieval, and optional private capture.
-   Publication remains a user command. Exercise the real Pi runtime.
-10. Add Kubernetes StatefulSets/PVCs, current kind tooling, secret injection,
-    worker readiness, and pod-replacement checks. Add the optional Neptune
-    adapter with offline tests and an explicit experimental deployment overlay.
-11. License the Python and Pi packages under Apache-2.0 and audit public package
-    artifacts for private inputs. See validation.md for current executed results
-    and deployments.md for storage and AWS limits.
+| Boundary | Source | Tests and guidance |
+| --- | --- | --- |
+| HTTP contract and validation | [api.py](../src/memory_worlds/api.py), [models.py](../src/memory_worlds/models.py), [OpenAPI](openapi.json) | `tests/test_api.py`, [agent clients](agents.md) |
+| Durable sources and credentials | [store.py](../src/memory_worlds/store.py), [persistence.py](../src/memory_worlds/persistence.py), [postgres.py](../src/memory_worlds/postgres.py) | [Storage](storage.md) |
+| Scope authorization and delegated contexts | [scopes.py](../src/memory_worlds/scopes.py), [identity_names.py](../src/memory_worlds/identity_names.py) | `tests/test_scopes.py`, [scopes](scopes.md) |
+| OIDC and native login | [auth.py](../src/memory_worlds/auth.py), [login.py](../src/memory_worlds/login.py) | [OIDC and Okta](oidc-okta.md), [discovery](discovery.md) |
+| Graph extraction and snapshots | [graph.py](../src/memory_worlds/graph.py), [graph_snapshots.py](../src/memory_worlds/graph_snapshots.py) | `tests/test_graph.py`, [Graphiti operations](graphiti.md) |
+| Remote mounts and delivery | [mounts.py](../src/memory_worlds/mounts.py), [router.py](../src/memory_worlds/router.py), [outbox.py](../src/memory_worlds/outbox.py) | [Routing and sharing](sharing.md) |
+| Import and portable archives | [directory_import.py](../src/memory_worlds/directory_import.py), [chat_formats.py](../src/memory_worlds/chat_formats.py), [portability.py](../src/memory_worlds/portability.py) | [Directory import](chat-import.md), [portable archives](portable-archives.md) |
+| Authority recovery and lifecycle | [recovery.py](../src/memory_worlds/recovery.py), [recovery_archive.py](../src/memory_worlds/recovery_archive.py), [lifecycle.py](../src/memory_worlds/lifecycle.py) | [Recovery](recovery.md), [lifecycle](lifecycle.md) |
+| Local configuration, provisioning and runtime | `src/memory_worlds/setup_*.py`, [bootstrap.py](../scripts/bootstrap.py) | `tests/test_setup_*.py`, [guided setup](setup.md) |
+| Python, CLI and MCP clients | [client.py](../src/memory_worlds/client.py), [cli.py](../src/memory_worlds/cli.py), [mcp.py](../src/memory_worlds/mcp.py) | [Agent clients](agents.md) |
+| Native Pi | [packages/pi/src](../packages/pi/src/) | `packages/pi/test`, [Pi package](../packages/pi/README.md) |
+| Containers and Kubernetes | [deploy](../deploy/), [tasks](../tasks/) | [Deployments](deployments.md), [qualification](qualification.md) |
+
+[AGENTS.md](../AGENTS.md) defines the development contract: one current schema and
+API, explicit audiences, synthetic public fixtures, and private runtime data kept
+out of artifacts. Design records live under [specifications](superpowers/specs/)
+and [plans](superpowers/plans/); see [validation](validation.md) for executed checks.

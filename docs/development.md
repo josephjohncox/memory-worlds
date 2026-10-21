@@ -1,5 +1,7 @@
 # Development with mise
 
+[Documentation](README.md) · [Source map](implementation.md)
+
 Install [mise](https://mise.jdx.dev/installing-mise.html) 2026.10.17 or newer, then
 review and trust this checkout before installing its locked tools:
 

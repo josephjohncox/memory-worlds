@@ -1,223 +1,123 @@
 # Agent and subagent scopes
 
-Agent, run and invocation UUIDs can have owner-visible names and aliases. Names
-describe identities; live credentials and world/scope grants authorize access.
+[Documentation](README.md) · [Scope reference](reference/scopes.md)
 
-A world is an ownership and organizational boundary. Its scopes identify
-audiences inside that boundary. The service checks both the world and the scope
-before accessing source evidence or a graph projection. Knowing a UUID does not
-grant access.
+A world is an ownership and organizational boundary. A scope defines an audience
+inside it. An agent can read selected shared knowledge while keeping working
+notes private, then publish a selected conclusion to a broader audience.
 
-| Scope kind | Purpose | Default audience |
+| Scope kind | Use it for | Access |
 | --- | --- | --- |
 | `world-shared` | Published knowledge for a world | Authorized world participants |
-| `run-shared` | Task brief and selected coordination results | Explicitly granted participants |
-| `agent-persistent` | Specialist memory across invocations | Explicitly granted agent credentials |
-| `invocation-private` | Working notes for one invocation | That invocation's credential |
+| `run-shared` | One task's brief, coordination and findings | Explicitly granted participants |
+| `agent-persistent` | A specialist's notes across invocations | Explicitly granted credentials |
+| `invocation-private` | One invocation's working notes | Its credential, plus any explicit readers |
 
-The service issues scope, run, and invocation UUIDs. A stable agent UUID can be
-reused across invocations; its name or UUID never confers access to a persistent
-scope. Parent invocation IDs describe orchestration, not inherited permission.
-Siblings and parents cannot read a child's scratch by default.
-
-A context records selected read scopes, one optional write scope, agent UUID,
-and invocation UUID. Binding a context checks access and records defaults and
-attribution; it does not restrict the underlying credential. Supplying
-`context_id` on capture checks the exact write destination and records the
-server-owned invocation identity. Child tools use a delegated credential when
-their parent has broader access.
+UUIDs distinguish scopes, agents, runs and invocations. Names and `@aliases` make
+them easier to find; neither names nor UUIDs grant access. Parents and siblings
+cannot read a child's private notes by default.
 
 ## Create and delegate
 
-Use an ordinary world-writer credential for agent work. Save structured inputs
-outside the checkout. This input creates a run scope with a server-issued UUID:
+For a task with several agents, create one run scope and delegate its read access
+to each child. Each child receives a separate invocation-private scope.
+
+Save this JSON outside the checkout as `/private/run.json`:
 
 ```json
-{"kind":"run-shared","name":"Fixture investigation"}
+{"kind":"run-shared","name":"Fixture investigation","alias":"investigation"}
 ```
+
+Create it using a credential allowed to create scopes in the world:
 
 ```sh
-memory-worlds --token-file /private/parent.token \
+mise run cli -- --token-file /private/parent.token \
   scope-create WORLD_ID --input /private/run.json
-memory-worlds --token-file /private/parent.token scopes WORLD_ID
+mise run cli -- --token-file /private/parent.token scopes WORLD_ID
 ```
 
-An orchestrator can use the typed Python client:
+An orchestrator uses the typed client's `delegate` operation or
+`agent-delegate --input /private/child.json --token-output /private/child.token`.
+The grant list is explicit. The child cannot expand the parent's delegable
+authority, and revoking a parent invalidates its descendants.
 
-```python
-from datetime import UTC, datetime
-
-from memory_worlds.client import Client
-from memory_worlds.models import (
-    DelegateCredential,
-    EpisodeInput,
-    ScopeGrant,
-    ScopeKind,
-    SearchRequest,
-)
-
-with Client(service_url, parent_token) as parent:
-    shared = next(
-        scope for scope in parent.scopes(world_id) if scope.kind == ScopeKind.WORLD_SHARED
-    )
-    receipt = parent.delegate(
-        DelegateCredential(
-            private_world_id=world_id,
-            grants=[ScopeGrant(world_id=world_id, scope_id=shared.id, operations=["read"])],
-        )
-    )
-    try:
-        with Client(service_url, receipt.token) as child:
-            target = receipt.context.write_scope
-            saved = child.capture(
-                world_id,
-                EpisodeInput(
-                    scope_id=target.scope_id,
-                    context_id=receipt.context.id,
-                    source_id="stable-task-note-1",
-                    content="An unreviewed finding for this invocation.",
-                    occurred_at=datetime(2026, 10, 21, tzinfo=UTC),
-                ),
-            )
-            evidence = child.search(
-                SearchRequest(
-                    scopes=receipt.context.read_scopes,
-                    query="finding",
-                )
-            )
-            # Return selected findings through the orchestrator's result channel.
-            # Keep receipt.token and the parent transcript out of that channel.
-    finally:
-        parent.request("DELETE", f"/v1/credentials/{receipt.credential_id}")
-```
-
-The default child can read its delegated scopes and read/write its new private
-scope. It cannot publish globally, manage credentials, inspect federation
-deliveries, or inherit its human user's remote mount access. Further delegation
-requires `allow_delegation` and explicit delegable scope operations. Descendant
-lifetimes cannot exceed ancestors. Every request rechecks ancestor revocation,
-identity expiry, world permission, and delegated scope operations.
-
-Set `coordinator_read: true` explicitly when creating a child if its direct
-parent must inspect the complete scratch. This grants read access to that new
-scope without write, management, or onward delegation rights. The default is
-selected-result return only.
-
-The CLI equivalent is `agent-delegate --input /private/child.json
---token-output /private/child.token`. Its token destination must be a new file;
-the CLI creates it with mode 0600 and omits the bearer token from stdout.
+See the [complete Python example and delegation rules](reference/scopes.md#create-and-delegate).
+For native Pi sessions, use the
+[orchestrator SDK](reference/pi.md#native-subagents-and-review). It starts a fresh
+session with a task brief and selected evidence, rather than copying the parent
+transcript. Its SDK boundary is not an operating-system process sandbox.
 
 ## Read and publish independently
 
-`search QUERY --select WORLD_ID:SCOPE_UUID` accepts repeated selections.
-`search QUERY --world WORLD_ID --scope SCOPE_UUID` selects one scope.
-`capture`, `publish`, `status`, and `graph-rebuild` accept `--scope`; capture and
-publication also accept `--context` for bound invocation attribution.
+A context records selected reads, an optional write scope, and agent/invocation
+attribution. Binding a context checks access; it does not narrow the credential.
+Use a delegated credential to give a child a smaller permission ceiling.
 
-World-only requests select world-shared memory exclusively. A private scope
-never appears in a world-shared search, episode list, or export. An
-unauthorized selection rejects the complete request before any backend query.
-Restricted children cannot recover shared access by omitting the scope UUID.
+```sh
+mise run cli -- --token-file /private/agent.token \
+  search "bearing material" --world WORLD_ID --scope SCOPE_UUID
+```
 
-Publication creates a new destination episode with selected text. A scoped
-publication can reference authorized source evidence, recording its digest and
-provenance without copying the transcript. Source records retain their scope.
-Sharing into a run or world requires the destination's `publish` operation.
-Reads never select or widen the write destination.
+World-only requests select the world's shared scope. They never include private
+notes. An unauthorized scope rejects the complete request before backend access.
 
-Native Pi [chat sharing modes](chat-sharing.md) can authorize selected automatic
-publication from one private source under a user-enabled per-chat rule. The rule
-pins the destination and classifier/category/exclusion policy. It does not grant
-scope access, expose another invocation's scratch, or change the separate private
-capture flow check. Review mode requires approval of an individual excerpt.
+Publication creates a new episode at an authorized destination. It can retain
+source provenance without copying or relabeling the private transcript. Sharing
+to a run or world requires the destination's `publish` operation. Reads never
+select or widen a write destination.
 
-For automatic capture, `scope-flow --input FILE.json` checks whether every
-current reader of a selected write scope can also read every source scope.
-The HTTP endpoint is `POST /v1/scopes/flow`; it returns only `allowed`, without
-reader names or counts. This permits shared-run context to flow into child
-scratch when the actual grants allow it, and rejects broader destinations or
-extra coordinator readers without source access. Pi rechecks before uploading
-queued captures. Unavailable or excessively large audience checks fail closed.
-This is a check of current grants; later explicit sharing decisions change the
-destination's audience.
+Automatic capture also checks audience flow: every current reader of the write
+target must be able to read every source scope already exposed to the session.
+This allows run context to flow into narrower child notes when the actual grants
+permit it. Unknown or foreign-authority exposure stops capture; changing reads,
+forking or compacting does not erase exposure.
 
-## Graphiti extraction
-
-Graphiti is the graph engine for every projected scope, whether the service
-runs locally, through SSH, in kind, or on shared Kubernetes. SQLite locally and PostgreSQL on shared deployments store the
-authoritative source, authorization, contexts, and receipts. Source-only capture
-and search remain available independently of Graphiti.
-
-Additional scopes have separate source journals and graph namespaces derived
-from authority, world, scope UUID, and generation. Extraction uses previous
-episodes from the same scope only. Entity summaries and facts cannot combine
-private and shared input during ingestion. Retrieval combines only authorized
-projections and retains scope provenance. Graph search supports entities and
-relationship facts.
-
-Every scope uses the same namespace derivation, including world-shared memory.
-Unknown writes degrade the affected scope rather than siblings;
-rebuilds also target one scope. Every capture queues extraction by default. Explicit source-only capture is an
-operator or agent recovery choice, and graph failures never discard source.
-
-## Native Pi graph tools
-
-The native extension supports selected read scopes, a private write scope,
-project/global aliases, and invocation attribution. Its exported orchestrator
-API supplies distinct child credentials and fresh sessions with explicit task
-briefs and selected evidence. Scope exposure persists through branching and
-compaction. Automatic capture stops when its destination audience is broader
-than context already seen; explicit user publication remains separate.
-
-See the [native package](../packages/pi/README.md) for commands and SDK exports,
-and the [Pi Graphiti comparison](pi-graphiti-features.md) for supported
-upstream actions and intentional differences.
-
-## Persistence and archives
-
-The world-shared journal remains `worlds/WORLD_ID/source.sqlite3`. Additional
-journals are `worlds/WORLD_ID/scopes/SCOPE_UUID/source.sqlite3`. All control data
-and journals remain on the API data volume. No pod or PVC per agent is required.
-Pod replacement retains scope identities, delegations, and source records.
-
-`export WORLD_ID FILE.mworld --scope SCOPE_UUID` produces a version 2 archive
-with that scope's source, audit, and audience metadata. This is the single
-supported archive format. Private archives require explicit private restore targets;
-they cannot silently become world-shared. Restore rebinds the destination scope,
-retains original provenance, and restores neither credentials nor live context
-bindings. Rebuild graphs separately.
-
-Credential expiry stops access without deleting source. The current service
-does not automatically prune expired invocation journals. Use explicit
-coordinator inspection when an authorized reader must remain after child
-revocation. Whole-store operator backups include private journals and need the
-same protection as the data volume.
+See [flow checks and publication](reference/scopes.md#read-and-publish-independently)
+and [user-enabled chat sharing](chat-sharing.md) for selected automatic publication.
 
 ## Named identities
 
-Register and discover persistent identities through the CLI:
+Use a stable agent identity for notes associated with the same specialist across
+chats. An invocation remains distinct each time. A named run can coordinate
+several agents without sharing all their private memory.
 
 ```sh
-mise run cli -- identity-create agent --input /private/research-agent.json
 mise run cli -- identities agent
 mise run cli -- identity-resolve agent @research
-mise run cli -- identity-update agent @research --input /private/renamed-agent.json
 ```
 
-An input can be `{"name":"Researcher","alias":"research"}`. An optional `id`
-chooses an explicit UUID. Exact registration retries are idempotent; changed
-attributes conflict. Agents and runs can name an existing same-owner parent.
-Invocation registrations can reference an owned agent and run. These relations
-grant no access to another agent's memory. Alias resolution uses the live
-registry; persisted contexts use canonical UUIDs.
+Native Pi accepts `"agent":"@research"` in its configuration. `/memory agent REF`
+and `/memory run REF|off` change attribution and stop automatic capture/sharing
+until deliberately re-enabled. They retain the selected reads and private target.
+Restricted children retain their delegated identities.
 
-Unrestricted users can reuse a named run across independent chats. Restricted
-credentials can see only their own registered agent/invocation. They cannot
-enumerate the run roster or register/rename independent identities, and their
-live delegated scope ceiling still applies.
+See [registration, aliases and visibility](reference/scopes.md#named-identities).
 
-Native Pi accepts `agent: "@research"` or a canonical UUID. `/memory agent REF`
-and `/memory run REF|off` rebind the chat, disable automatic capture/sharing, and
-retain explicitly selected canonical read and write targets. A delegated
-credential's agent UUID is authoritative. See the
-[native extension guide](../packages/pi/README.md).
+## Graphiti extraction
+
+Graphiti processes each scope in an isolated namespace derived from authority,
+world, scope and projection generation. Extraction sees previous episodes from
+the same scope only. Authorized retrieval combines attributed results from
+separate namespaces.
+
+Capture queues extraction by default. SQLite local journals or PostgreSQL shared
+journals retain source records, permissions and receipts even when extraction
+fails. Explicit source-only operations support maintenance and recovery. See
+[graph extraction details](reference/scopes.md#graphiti-extraction).
+
+## Persistence and archives
+
+Scopes share the service's data volume; they do not need a pod or PVC per agent.
+Credential expiry stops access without deleting source. Invocation journals are
+not automatically pruned.
+
+Scope-aware `.mworld` archives retain source and audit provenance. Private
+archives require explicit private restore targets; restore does not recreate
+credentials or live contexts. See [scope persistence](reference/scopes.md#persistence-and-archives)
+and [portable archives](portable-archives.md).
+
+## Native Pi graph tools
+
+The Pi extension provides explicit project/global scope bindings, scoped graph
+actions and delegated subagents. See the [Pi quickstart](../packages/pi/README.md)
+or [Graphiti feature guide](pi-graphiti-features.md).
