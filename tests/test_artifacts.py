@@ -36,6 +36,7 @@ specification.loader.exec_module(audit)
         "package/.env",
         "package/node_modules/index.js",
         "package/daemon.sqlite3-wal",
+        "package/authority-backup.mwa",
         "package/ChatGPT-export.json",
         "package/private/key.txt",
         "package/line\nbreak",

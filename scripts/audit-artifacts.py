@@ -43,6 +43,7 @@ FORBIDDEN_NAMES = (
     "conversations*.json",
     "*.sqlite3*",
     "*.mworld",
+    "*.mwa",
     "*.mwauthority",
     "*.pem",
     "*.key",

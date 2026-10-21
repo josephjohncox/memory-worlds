@@ -283,7 +283,7 @@ service:
 ```sh
 mise run cli -- --url https://memory.example.org \
   --token-file /private/operator/admin-token authority-backup \
-  /private/operator/authority.mwa --graph-mode native
+  /private/operator/authority.mwauthority --graph-mode native
 ```
 
 `native` includes the configured FalkorDB namespaces. `rebuild` records a

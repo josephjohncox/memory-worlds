@@ -46,7 +46,7 @@ spec:
                 - |
                   import os, subprocess, uuid
                   os.umask(0o077)
-                  target = "/archives/authority-" + uuid.uuid4().hex + ".mwa"
+                  target = "/archives/authority-" + uuid.uuid4().hex + ".mwauthority"
                   subprocess.run([
                       "memory-worlds", "--url",
                       "http://{{ include "memory-worlds.fullname" . }}:8787",
