@@ -324,6 +324,7 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
     async with MCPClient(parameters, read_timeout_seconds=10, raise_exceptions=True) as client:
         tools = await client.list_tools()
         assert {tool.name for tool in tools.tools} == {
+            "memory_discover",
             "memory_worlds",
             "memory_search",
             "memory_capture",
@@ -337,6 +338,13 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
             "memory_bind_context",
             "memory_episodes",
         }
+        discovered = await client.call_tool("memory_discover", {})
+        assert not discovered.is_error
+        assert [row["id"] for row in discovered.structured_content["worlds"]] == [world]
+        assert [row["kind"] for row in discovered.structured_content["scopes"][world]] == [
+            "world-shared"
+        ]
+        assert agent not in discovered.model_dump_json()
         captured = await client.call_tool(
             "memory_capture",
             {

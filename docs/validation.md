@@ -5,7 +5,8 @@
 The discovery follow-up passed 100 targeted Python tests covering signed OIDC
 identities, HTTP/Python/CLI discovery, MCP, scope clients and the qualification
 harness. Native Pi passed 150 tests, TypeScript checks and all three actual
-runtime/service/sharing smokes. An actual isolated Pi model exercised delegated
+runtime/service/sharing smokes. Five actual CLI/stdio integration cases also
+passed, including discovery with an ordinary agent credential. An actual isolated Pi model exercised delegated
 discovery and continued after sanitized credential-file, transport and malformed
 JSON errors. MCP validation errors disclose private input in neither tool output
 nor server error logs. Explicit `include_scopes: false` also works with a selected
