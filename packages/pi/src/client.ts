@@ -7,7 +7,7 @@ export interface World {
 }
 export interface EpisodeInput {
   context_id?: string; scope_id?: string; source_id: string; content: string; occurred_at: string;
-  source_type?: "text" | "pi" | "publication";
+  source_type?: "text" | "chatgpt" | "claude" | "pi" | "publication";
   session_id?: string; source_entry_id?: string; parent_entry_id?: string | null;
   role?: string; metadata?: Record<string, unknown>; project?: boolean;
 }

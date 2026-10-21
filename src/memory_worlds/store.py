@@ -23,6 +23,8 @@ from uuid import UUID, uuid4
 from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized, Unavailable
 from memory_worlds.errors import MemoryError as InvalidRequest
 from memory_worlds.models import (
+    MAX_IMPORT_BYTES,
+    MAX_IMPORT_EPISODES,
     CreateToken,
     CreateWorld,
     Episode,
@@ -30,6 +32,7 @@ from memory_worlds.models import (
     Principal,
     Receipt,
     Role,
+    ScopeKind,
     UpdateAlias,
     World,
     WorldKind,
@@ -853,6 +856,79 @@ class MemoryStore(ScopedStore):
             mode="json"
         )
         return result
+
+    def import_episodes(
+        self,
+        principal: Principal,
+        world_id: str,
+        scope_id: UUID | str,
+        episodes: list[EpisodeInput],
+    ) -> dict:
+        """Atomically import historical evidence into the caller's private audience."""
+        if not 1 <= len(episodes) <= MAX_IMPORT_EPISODES:
+            raise InvalidRequest(f"An import requires 1 to {MAX_IMPORT_EPISODES} episodes")
+        with self._control() as control:
+            world = self._authorized(control, principal, world_id, write=True)
+            scope = self._scope_authorized(control, principal, world_id, scope_id, "write")
+            if WorldKind(world["kind"]) not in _PRIVATE or world["owner_id"] != principal.user_id:
+                raise Forbidden("Imports require a private world owned by the importing user")
+            if scope["kind"] not in {
+                ScopeKind.AGENT_PERSISTENT.value,
+                ScopeKind.INVOCATION_PRIVATE.value,
+            }:
+                raise Forbidden("Imports require an agent-persistent or invocation-private scope")
+            # Same-user agents may share private memory. A different user's live
+            # explicit read grant makes this destination unsuitable for import.
+            readers = control.execute(
+                "SELECT c.* FROM credentials c JOIN scope_grants g ON g.credential_id=c.id "
+                "WHERE c.revoked=0 AND c.user_id<>? AND g.scope_id=? "
+                "AND g.operation='read' LIMIT 4097",
+                (principal.user_id, scope["id"]),
+            ).fetchall()
+            if len(readers) > 4096:
+                raise Forbidden("Import destination reader audience cannot be verified")
+            for row in readers:
+                try:
+                    reader = self._credential_principal(control, row)
+                    self._scope_authorized(control, reader, world_id, scope["id"])
+                except (Unauthorized, Forbidden, NotFound):
+                    continue
+                raise Forbidden("Imports cannot target a scope readable by another user")
+            sid = UUID(scope["id"])
+            normalized = []
+            payload_size = len(b'{"episodes":[]}')
+            for episode in episodes:
+                if episode.scope_id is not None and episode.scope_id != sid:
+                    raise Forbidden("Import episodes must match the explicit target scope")
+                if episode.context_id is not None or episode.source_type == "publication":
+                    raise Forbidden("Imports cannot contain context bindings or publications")
+                value = episode.model_copy(update={"scope_id": sid})
+                # Metadata must remain finite before Pydantic's JSON conversion.
+                _canonical(value.metadata)
+                try:
+                    encoded = json.dumps(
+                        value.model_dump(mode="json"),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                except (TypeError, ValueError, UnicodeError) as error:
+                    raise InvalidRequest(
+                        "Import episodes must contain valid JSON and Unicode"
+                    ) from error
+                payload_size += len(encoded) + bool(normalized)
+                if payload_size > MAX_IMPORT_BYTES:
+                    raise InvalidRequest("Import payload exceeds 32 MiB")
+                normalized.append(value)
+            attributed = self._capture_principal(principal, world_id, scope["id"], None)
+            counts = {"imported": 0, "replayed": 0}
+            # Keep the control lock through the source commit, so concurrent
+            # grant changes in this daemon linearize before or after this batch.
+            with self._world_db(world_id, sid) as db, self._transaction(db):
+                for episode in normalized:
+                    receipt = self._insert(db, attributed, world_id, episode)
+                    counts["replayed" if receipt.replayed else "imported"] += 1
+            return counts
 
     def restore(
         self, principal: Principal, world_id: str, episodes: list[EpisodeInput], scope_id=None

@@ -16,6 +16,7 @@ from .models import (
     DelegateCredential,
     Episode,
     EpisodeInput,
+    ImportBatch,
     Publication,
     Receipt,
     Scope,
@@ -69,6 +70,17 @@ class Client:
 
     def worlds(self) -> list[World]:
         return [World.model_validate(w) for w in self.request("GET", "/v1/worlds")]
+
+    def import_episodes(
+        self, world_id: str, scope_id: UUID | str, episodes: list[EpisodeInput]
+    ) -> dict:
+        """Atomically import historical evidence into an explicit private scope."""
+        batch = ImportBatch(episodes=episodes)
+        return self.request(
+            "POST",
+            f"{scope_path(world_id, scope_id)}/imports",
+            json=batch.model_dump(mode="json"),
+        )
 
     @staticmethod
     def _alias(items, reference: str, kind: str):

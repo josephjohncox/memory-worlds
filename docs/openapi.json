@@ -652,6 +652,7 @@
             "enum": [
               "text",
               "chatgpt",
+              "claude",
               "pi",
               "publication"
             ],
@@ -799,6 +800,7 @@
             "enum": [
               "text",
               "chatgpt",
+              "claude",
               "pi",
               "publication"
             ],
@@ -825,6 +827,25 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "ImportBatch": {
+        "additionalProperties": false,
+        "properties": {
+          "episodes": {
+            "items": {
+              "$ref": "#/components/schemas/EpisodeInput"
+            },
+            "maxItems": 10000,
+            "minItems": 1,
+            "title": "Episodes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "episodes"
+        ],
+        "title": "ImportBatch",
         "type": "object"
       },
       "MembershipUpdate": {
@@ -3163,6 +3184,74 @@
           }
         ],
         "summary": "Scope Grant"
+      }
+    },
+    "/v1/worlds/{world_id}/scopes/{scope_id}/imports": {
+      "post": {
+        "operationId": "scoped_import_v1_worlds__world_id__scopes__scope_id__imports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "world_id",
+            "required": true,
+            "schema": {
+              "title": "World Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "scope_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Scope Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportBatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "title": "Response Scoped Import V1 Worlds  World Id  Scopes  Scope Id  Imports Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Scoped Import"
       }
     },
     "/v1/worlds/{world_id}/scopes/{scope_id}/publications": {

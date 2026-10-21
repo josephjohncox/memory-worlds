@@ -7,6 +7,8 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")]
 Alias = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")]
+MAX_IMPORT_BYTES = 32 * 1024 * 1024
+MAX_IMPORT_EPISODES = 10_000
 
 
 class Model(BaseModel):
@@ -83,7 +85,7 @@ class EpisodeInput(Model):
     source_id: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=200_000)
     occurred_at: AwareDatetime
-    source_type: Literal["text", "chatgpt", "pi", "publication"] = "text"
+    source_type: Literal["text", "chatgpt", "claude", "pi", "publication"] = "text"
     session_id: str | None = Field(default=None, max_length=500)
     source_entry_id: str | None = Field(default=None, max_length=500)
     parent_entry_id: str | None = Field(default=None, max_length=500)
@@ -98,6 +100,10 @@ class EpisodeInput(Model):
         if not value.strip():
             raise ValueError("content cannot be blank")
         return value
+
+
+class ImportBatch(Model):
+    episodes: list[EpisodeInput] = Field(min_length=1, max_length=MAX_IMPORT_EPISODES)
 
 
 class Episode(EpisodeInput):

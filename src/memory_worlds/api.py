@@ -1,4 +1,5 @@
 import asyncio
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
@@ -14,6 +15,7 @@ from .auth import AuthConfig, OIDCAuthenticator
 from .errors import MemoryError, Unauthorized, Unavailable
 from .locking import DaemonLock
 from .models import (
+    MAX_IMPORT_BYTES,
     AgentContext,
     BindContext,
     CreateScope,
@@ -22,6 +24,7 @@ from .models import (
     DelegateCredential,
     Episode,
     EpisodeInput,
+    ImportBatch,
     MembershipUpdate,
     Principal,
     Publication,
@@ -41,6 +44,11 @@ from .router import WorldRouter
 from .store import MemoryStore
 
 bearer = HTTPBearer(auto_error=False)
+_IMPORT_ROUTE = re.compile(
+    r"/v1/worlds/[a-zA-Z0-9_-]{1,100}/scopes/"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/imports"
+)
 
 
 def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_config=None) -> FastAPI:
@@ -83,9 +91,14 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     async def bounded_body(request: Request, call_next):
         chunks = []
         size = 0
+        maximum = (
+            MAX_IMPORT_BYTES
+            if request.method == "POST" and _IMPORT_ROUTE.fullmatch(request.scope["path"])
+            else 1_048_576
+        )
         async for chunk in request.stream():
             size += len(chunk)
-            if size > 1_048_576:
+            if size > maximum:
                 return JSONResponse(status_code=413, content={"error": "request_too_large"})
             chunks.append(chunk)
         request._body = b"".join(chunks)
@@ -206,6 +219,10 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
 
             raise Forbidden("Episode scope does not match its route")
         return store.capture(user, world_id, body.model_copy(update={"scope_id": scope_id}))
+
+    @app.post("/v1/worlds/{world_id}/scopes/{scope_id}/imports", response_model=dict[str, int])
+    def scoped_import(world_id: str, scope_id: UUID, body: ImportBatch, user: User):
+        return store.import_episodes(user, world_id, scope_id, body.episodes)
 
     @app.get("/v1/worlds/{world_id}/scopes/{scope_id}/episodes", response_model=list[Episode])
     def scoped_episodes(world_id: str, scope_id: UUID, user: User, limit: int = 100):

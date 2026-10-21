@@ -7,7 +7,7 @@ world that receives new evidence.
 
 The service includes per-world SQLite source storage, authenticated HTTP,
 a Python client, CLI, optional stdio MCP, native Pi tools and hooks, remote
-shared-space routing, an OIDC shared service, ChatGPT/Pi import, portable export
+shared-space routing, an OIDC shared service, ChatGPT/Claude directory import, Pi import, portable export
 and restore, and Graphiti/FalkorDB extraction and recall by default. Explicit
 source retrieval remains available for recovery and inspection. Graph extraction has separate delivery state;
 a capture receipt establishes durable source storage.
@@ -172,8 +172,25 @@ the local setup does not require opening a public listener.
 
 ## Import and portable recovery
 
-Import is a local administrative operation using `--data-dir` and an admin
-token. Imports queue Graphiti extraction using the configured models.
+Import previously extracted chat directories into an explicit private scope.
+Preview runs locally without a token or service connection; application uses the
+authenticated HTTP service and writes the entire batch in one transaction:
+
+```sh
+mise run cli -- import-directory @personal /private/chat-exports \
+  --scope @history --dry-run
+mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
+  import-directory @personal /private/chat-exports --scope @history
+```
+
+Use an `agent-persistent` or `invocation-private` scope in your own personal or
+private-work world. The [directory import guide](docs/chat-import.md) shows scope
+creation, native ChatGPT/Claude JSON, richlow Markdown, timezone selection,
+document snapshots, and format selection to avoid duplicate representations.
+Graphiti extraction is queued by default; `--source-only` deliberately skips it.
+
+The single-file import and portable recovery commands below are local
+administrative operations using `--data-dir` and an admin token:
 
 ```sh
 mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
@@ -202,9 +219,10 @@ Restore into a new world for an independent copy; an existing source with
 different provenance or projection intent is a conflict.
 
 Archives recover evidence. Re-extraction into Graphiti may produce different
-facts and entities; `.mworld` is not an exact graph-engine snapshot. Limits per
-import/archive are 128 MiB input, 256 MiB uncompressed archive data, 2 MiB per
-record, and 100,000 episodes. Split larger histories into bounded inputs.
+facts and entities; `.mworld` is not an exact graph-engine snapshot. Single-file
+imports and portable archives allow 128 MiB input, 256 MiB uncompressed archive
+data, 2 MiB per record, and 100,000 episodes. Directory batches have the smaller
+limits documented in the [directory import guide](docs/chat-import.md).
 
 For OneDrive or another file-sync tool, sync completed `.mworld` artifacts.
 Exports stage a `.pending` file on the destination filesystem, then atomically

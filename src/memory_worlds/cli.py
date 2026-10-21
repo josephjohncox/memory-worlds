@@ -7,6 +7,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
@@ -14,7 +15,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ValidationError
 
-from .client import Client
+from .client import Client, scope_path
 from .errors import MemoryError
 from .locking import DaemonLock
 from .models import (
@@ -313,6 +314,33 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("deliveries", help="inspect your durable publication outbox")
     retry = sub.add_parser("delivery-retry", help="reauthorize and retry your queued publication")
     retry.add_argument("delivery_id")
+    directory_import = sub.add_parser(
+        "import-directory", help="preview or import extracted chats into an explicit private scope"
+    )
+    directory_import.add_argument("world", help="destination world ID or @alias")
+    directory_import.add_argument("directory", type=Path)
+    directory_import.add_argument(
+        "--scope", type=scope_reference, required=True, help="private scope UUID or @alias"
+    )
+    directory_import.add_argument(
+        "--format",
+        choices=("auto", "chatgpt", "claude", "richlow-md", "documents"),
+        default="auto",
+        help="accepted source format; documents explicitly selects plain text and Markdown",
+    )
+    directory_import.add_argument("--all-branches", action="store_true")
+    directory_import.add_argument(
+        "--source-timezone", help="IANA timezone for rendered dates without an offset"
+    )
+    directory_import.add_argument(
+        "--fallback-timestamp", help="explicit timestamp with timezone for undated sources"
+    )
+    directory_import.add_argument(
+        "--dry-run", action="store_true", help="validate and preview locally without credentials"
+    )
+    directory_import.add_argument(
+        "--source-only", action="store_true", help="store evidence without Graphiti extraction"
+    )
     for name in ("export", "restore", "import-chatgpt", "import-pi", "backup"):
         cmd = sub.add_parser(name, help="local authenticated administrative operation")
         cmd.add_argument("world")
@@ -489,6 +517,47 @@ def run(args):
         with DaemonLock(args.data_dir):
             emit(asyncio.run(rebuild()))
         return
+    if args.command == "import-directory":
+        from .directory_import import plan_directory
+
+        import_plan = plan_directory(
+            args.directory,
+            format=args.format,
+            all_branches=args.all_branches,
+            timezone=args.source_timezone,
+            fallback_timestamp=args.fallback_timestamp,
+        )
+        if args.source_only:
+            import_plan = replace(
+                import_plan,
+                episodes=[
+                    episode.model_copy(update={"project": False})
+                    for episode in import_plan.episodes
+                ],
+            )
+            # Recheck the encoded budget after changing projection intent.
+            preview_payload = import_plan.payload(UUID(int=0))
+            import_plan = replace(
+                import_plan,
+                report={
+                    **import_plan.report,
+                    "payload_bytes": len(
+                        json.dumps(
+                            preview_payload, ensure_ascii=False, separators=(",", ":")
+                        ).encode("utf-8")
+                    ),
+                },
+            )
+        if args.dry_run:
+            emit(
+                {
+                    **import_plan.report,
+                    "dry_run": True,
+                    "destination": {"world_id": args.world, "scope_id": str(args.scope)},
+                    "project": not args.source_only,
+                }
+            )
+            return
     token = read_token(args)
     if args.command == "mcp":
         from .mcp import run_mcp
@@ -518,7 +587,22 @@ def run(args):
                 )
                 for world, sid in args.select
             ]
-        if args.command == "worlds":
+        if args.command == "import-directory":
+            result = client.request(
+                "POST",
+                f"{scope_path(args.world, args.scope)}/imports",
+                json=import_plan.payload(args.scope),
+            )
+            emit(
+                {
+                    **import_plan.report,
+                    **result,
+                    "dry_run": False,
+                    "destination": {"world_id": args.world, "scope_id": str(args.scope)},
+                    "project": not args.source_only,
+                }
+            )
+        elif args.command == "worlds":
             listing(client.worlds(), "worlds") if args.table else emit(client.worlds())
         elif args.command == "discover":
             found = client.discover(world=args.world, include_scopes=args.scopes)

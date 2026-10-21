@@ -164,6 +164,25 @@ def _episode(value: dict) -> EpisodeInput:
         raise PortabilityError(f"Invalid episode: {exc}") from exc
 
 
+class EpisodeBuffer(list[EpisodeInput]):
+    """Bound output amplification while a parser builds normalized records."""
+
+    def __init__(self, *, max_episodes=MAX_EPISODES, max_bytes=MAX_UNCOMPRESSED_BYTES):
+        super().__init__()
+        self.max_episodes = max_episodes
+        self.max_bytes = max_bytes
+        self.encoded_bytes = 0
+
+    def append(self, episode: EpisodeInput) -> None:
+        if len(self) >= self.max_episodes:
+            raise PortabilityError("Too many episodes in one import")
+        size = len(_json(episode))
+        if self.encoded_bytes + size > self.max_bytes:
+            raise PortabilityError("Imported episodes exceed the encoded output byte limit")
+        self.encoded_bytes += size
+        super().append(episode)
+
+
 def export_world(
     store: PortableStore,
     principal: Principal,
@@ -508,21 +527,21 @@ def _content(content: Any, source: str) -> tuple[str, int, dict]:
     return "\n".join(texts), unsupported, raw
 
 
-def import_chatgpt(
-    store: PortableStore,
-    principal: Principal,
-    world_id: str,
-    path: Path,
+def parse_chatgpt(
+    data: bytes,
     all_branches: bool = False,
     *,
-    scope_id: UUID | str | None = None,
-) -> dict:
-    """Import ChatGPT JSON, preserving individual nodes rather than flattening branches."""
-    data = _load_json(_read_bounded(Path(path)), "ChatGPT export")
+    max_episodes: int = MAX_EPISODES,
+    max_bytes: int = MAX_UNCOMPRESSED_BYTES,
+) -> tuple[list[EpisodeInput], dict]:
+    """Validate native ChatGPT bytes without writing or flattening branches."""
+    if not isinstance(data, bytes) or len(data) > MAX_INPUT_BYTES:
+        raise PortabilityError(f"Input must be bytes of at most {MAX_INPUT_BYTES} bytes")
+    data = _load_json(data, "ChatGPT export")
     conversations = data if isinstance(data, list) else [data]
     if not conversations or any(not isinstance(item, dict) for item in conversations):
         raise PortabilityError("ChatGPT export must contain conversation objects")
-    episodes = []
+    episodes = EpisodeBuffer(max_episodes=max_episodes, max_bytes=max_bytes)
     conversation_ids = set()
     skipped = unsupported_parts = references_only = 0
     for conversation in conversations:
@@ -625,19 +644,32 @@ def import_chatgpt(
             )
             if len(episodes) > MAX_EPISODES:
                 raise PortabilityError("Too many episodes in one import")
-    if scope_id is not None:
-        episodes = [item.model_copy(update={"scope_id": UUID(str(scope_id))}) for item in episodes]
-    result = store.restore(
-        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
-    )
-    return {
-        **result,
+    return episodes, {
         "conversations": len(conversations),
         "skipped": skipped,
         "unsupported_parts": unsupported_parts,
         "references_only": references_only,
         "all_branches": all_branches,
     }
+
+
+def import_chatgpt(
+    store: PortableStore,
+    principal: Principal,
+    world_id: str,
+    path: Path,
+    all_branches: bool = False,
+    *,
+    scope_id: UUID | str | None = None,
+) -> dict:
+    """Import complete native conversations in one administrative transaction."""
+    episodes, report = parse_chatgpt(_read_bounded(Path(path)), all_branches)
+    if scope_id is not None:
+        episodes = [item.model_copy(update={"scope_id": UUID(str(scope_id))}) for item in episodes]
+    result = store.restore(
+        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
+    )
+    return {**result, **report}
 
 
 def import_pi(
