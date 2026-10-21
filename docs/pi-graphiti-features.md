@@ -78,7 +78,7 @@ contracts are described separately.
 | Offline local spool | Opt-in `spoolDirectory`; private immutable envelopes pinned to service, authority, credential, target, source, and exposure guard. Defaults: 10,000 envelopes and 64 MiB aggregate capacity; no automatic age-based deletion | [Queue tests](../packages/pi/test/spool.test.mjs) |
 | Document ingestion | `/graph ingest PATH` accepts one user-selected UTF-8 text file up to 200,000 bytes as one episode, with a stable retry identity. Paragraph/sentence chunking is not implemented | [Native command implementation](../packages/pi/src/extension.ts) |
 | Export and restore | Scope-aware `.mworld` source/audit archives and explicit imports; the CLI rejects restoring a private archive into a broader scope kind | [Scoped projection/portability tests](../tests/test_scope_graph.py), [adversarial review](../tests/test_scope_adversarial_review.py) |
-| Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph setup`, `uninstall`, and `teardown` are operator commands | [Deployment guide](deployments.md), [Helm guide](helm.md) |
+| Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph` does not provide `setup`, `uninstall`, or `teardown` | [Deployment guide](deployments.md), [Helm guide](helm.md) |
 | Graph clearing | No unrestricted agent wipe tool or `/graph clear`; administrators rebuild isolated projections from durable evidence | [Storage and recovery](storage.md) |
 
 Memory Worlds already adds multi-agent authenticated service access, SSH
