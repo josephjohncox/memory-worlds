@@ -14,7 +14,7 @@ from memory_worlds.graph import (
     graph_episode_id,
     graph_namespace,
 )
-from memory_worlds.models import CreateWorld, EpisodeInput
+from memory_worlds.models import CreateScope, CreateWorld, EpisodeInput, ScopeKind
 from memory_worlds.store import MemoryStore
 
 
@@ -355,7 +355,10 @@ async def test_live_falkordb_ingestion_scope_provenance_and_rebuild(local, monke
     class DeterministicLLM(LLMClient):
         async def _generate_response(self, messages, response_model=None, *args, **kwargs):
             text = " ".join(message.content for message in messages)
-            marker = "PRIVATE-COPPER" if "PRIVATE-COPPER" in text else "SHARED-TEAL"
+            marker = next(
+                (item for item in ("PRIVATE-COPPER", "SCOPED-ORANGE") if item in text),
+                "SHARED-TEAL",
+            )
             schema = response_model.__name__
             if schema == "ExtractedEntities":
                 return {
@@ -412,13 +415,24 @@ async def test_live_falkordb_ingestion_scope_provenance_and_rebuild(local, monke
     env["MEMORY_WORLDS_EMBEDDING_DIMENSIONS"] = "16"
     store, private, principal = local
     other = store.create_world(principal, CreateWorld(name="Separate context"))
+    scope = store.create_scope(
+        principal,
+        private.id,
+        CreateScope(kind=ScopeKind.INVOCATION_PRIVATE, name="Within-world private"),
+    )
+    scoped = store.get_world(principal, private.id, scope_id=scope.id)
     receipts = []
-    for world, marker in [(private, "PRIVATE-COPPER"), (other, "SHARED-TEAL")]:
+    for world, marker in [
+        (private, "PRIVATE-COPPER"),
+        (other, "SHARED-TEAL"),
+        (scoped, "SCOPED-ORANGE"),
+    ]:
         receipts.append(
             store.capture(
                 principal,
                 world.id,
                 EpisodeInput(
+                    scope_id=world.scope_id,
                     source_id=marker,
                     content=f"Ada owns the {marker} lathe.",
                     occurred_at=datetime(2026, 10, 20, tzinfo=UTC),
@@ -429,7 +443,7 @@ async def test_live_falkordb_ingestion_scope_provenance_and_rebuild(local, monke
     adapter = GraphitiAdapter(GraphConfig.from_env(env))
     worker = ProjectionWorker(store, adapter)
     try:
-        assert await worker.run_once() == 2
+        assert await worker.run_once() == 3
         results = await worker.search([private], "Ada lathe")
         assert results and any("PRIVATE-COPPER" in result["fact"] for result in results)
         assert all("SHARED-TEAL" not in result["fact"] for result in results)
@@ -437,6 +451,14 @@ async def test_live_falkordb_ingestion_scope_provenance_and_rebuild(local, monke
         assert receipts[0].id in results[0]["source_episode_ids"]
         combined = await worker.search([private, other], "Ada lathe")
         assert {result["world_id"] for result in combined} == {private.id, other.id}
+        scoped_results = await worker.search([scoped], "Ada lathe", include_entities=True)
+        assert {result["record_type"] for result in scoped_results} == {"entity", "fact"}
+        assert all(result["scope_id"] == str(scope.id) for result in scoped_results)
+        scoped_text = str(scoped_results)
+        assert "SCOPED-ORANGE" in scoped_text
+        assert "PRIVATE-COPPER" not in scoped_text and "SHARED-TEAL" not in scoped_text
+        shared_entities = await worker.search([private], "Ada lathe", include_entities=True)
+        assert "SCOPED-ORANGE" not in str(shared_entities)
         previous = store.get_world(principal, private.id).generation
         rebuilt = await worker.rebuild(private)
         assert rebuilt["generation"] != previous

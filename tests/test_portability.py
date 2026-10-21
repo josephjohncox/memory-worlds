@@ -215,7 +215,7 @@ def test_corrupt_archive_rejected_before_writes(authority, tmp_path, damage):
         elif damage == "path":
             entries["../../escaped"] = b"must never be extracted"
         elif damage == "version":
-            manifest["version"] = 2
+            manifest["version"] = 99
         else:
             manifest["grants"] = {"bob": "manager"}
         entries["manifest.json"] = json.dumps(manifest).encode()

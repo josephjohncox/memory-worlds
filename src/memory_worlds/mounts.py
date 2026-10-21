@@ -61,6 +61,11 @@ class Mount(Model):
             )
 
     def role(self, user: Principal) -> MountRole | None:
+        # Scope delegation cannot recover broader federation access through the
+        # originating user's mount grants. Remote credentials need independent
+        # explicit delegation at their issuing authority.
+        if user.restricted:
+            return None
         if user.admin:
             return MountRole.PUBLISHER
         return self.credential_grants.get(user.credential_id, self.user_grants.get(user.user_id))

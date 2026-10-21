@@ -4,10 +4,12 @@ import ipaddress
 import json
 import os
 import sqlite3
+import stat
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -15,7 +17,21 @@ from pydantic import BaseModel, ValidationError
 from .client import Client
 from .errors import MemoryError
 from .locking import DaemonLock
-from .models import CreateToken, CreateWorld, EpisodeInput, Role, SearchRequest, WorldKind
+from .models import (
+    BindContext,
+    CreateScope,
+    CreateToken,
+    CreateWorld,
+    DelegateCredential,
+    EpisodeInput,
+    Publication,
+    Role,
+    ScopeFlow,
+    ScopeSelection,
+    SearchRequest,
+    UpdateScopeGrant,
+    WorldKind,
+)
 from .outbox import RoutedPublication, RouterSearch
 
 
@@ -43,6 +59,57 @@ def content(args) -> str:
     return args.text if args.text is not None else sys.stdin.read(200_001)
 
 
+def read_input(path: Path, model):
+    """Load bounded structured input without putting credentials in command arguments."""
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+    with os.fdopen(descriptor, "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1_048_576:
+            raise MemoryError("input must be a regular JSON file no larger than 1 MiB")
+        value = source.read(1_048_577)
+    if len(value) > 1_048_576:
+        raise MemoryError("input exceeds 1 MiB")
+    return model.model_validate_json(value)
+
+
+def scope_selection(value: str) -> ScopeSelection:
+    try:
+        world_id, selected = value.rsplit(":", 1)
+        return ScopeSelection(world_id=world_id, scope_id=UUID(selected))
+    except (ValueError, ValidationError):
+        raise argparse.ArgumentTypeError("scope selection must be WORLD:UUID") from None
+
+
+def delegate_to_file(client: Client, request: DelegateCredential, destination: Path):
+    """Reserve a private file before issuance and never print the one-time token."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as output:
+            result = client.delegate(request)
+            if (
+                not result.token
+                or len(result.token) > 8192
+                or any(c.isspace() for c in result.token)
+            ):
+                raise MemoryError("delegation returned an invalid credential")
+            output.write(result.token + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        directory = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    return {
+        **result.model_dump(mode="json", exclude={"token"}),
+        "token_file": str(destination),
+    }
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="memory-worlds", description="Shared local agent memory")
     p.add_argument(
@@ -63,6 +130,31 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--allow-network", action="store_true")
     sub.add_parser("worlds", help="list accessible worlds through the daemon")
     sub.add_parser("me", help="show the authenticated identity and accessible worlds")
+    scopes = sub.add_parser("scopes", help="list explicitly accessible scopes in a world")
+    scopes.add_argument("world")
+    scope = sub.add_parser("scope", help="inspect one authorized scope")
+    scope.add_argument("world")
+    scope.add_argument("scope", type=UUID)
+    create_scope = sub.add_parser(
+        "scope-create", help="create a scope from a CreateScope JSON file"
+    )
+    create_scope.add_argument("world")
+    create_scope.add_argument("--input", type=Path, required=True)
+    grant_scope = sub.add_parser(
+        "scope-grant", help="set explicit credential operations on a scope"
+    )
+    grant_scope.add_argument("world")
+    grant_scope.add_argument("scope", type=UUID)
+    grant_scope.add_argument("--input", type=Path, required=True)
+    flow = sub.add_parser("scope-flow", help="check audience containment for private capture")
+    flow.add_argument("--input", type=Path, required=True)
+    bind_context = sub.add_parser("context-bind", help="bind invocation reads and write target")
+    bind_context.add_argument("--input", type=Path, required=True)
+    context = sub.add_parser("context", help="inspect an invocation's immutable context binding")
+    context.add_argument("context_id", type=UUID)
+    delegate = sub.add_parser("agent-delegate", help="issue an attenuated child credential")
+    delegate.add_argument("--input", type=Path, required=True)
+    delegate.add_argument("--token-output", type=Path, required=True)
     sub.add_parser("mounts", help="list configured remote shared spaces")
     sub.add_parser("users", help="list shared-service identities (administrator)")
     user = sub.add_parser("user-set", help="enable or disable a shared-service identity")
@@ -90,6 +182,10 @@ def parser() -> argparse.ArgumentParser:
     for name in ("capture", "publish"):
         capture = sub.add_parser(name)
         capture.add_argument("world")
+        capture.add_argument("--scope", type=UUID)
+        capture.add_argument(
+            "--context", type=UUID, help="bind invocation attribution and write target"
+        )
         capture.add_argument("--source-id", required=True)
         capture.add_argument("--text", help="omit to read text from stdin")
         capture.add_argument("--project", action="store_true")
@@ -101,11 +197,18 @@ def parser() -> argparse.ArgumentParser:
         )
     search = sub.add_parser("search")
     search.add_argument("query")
-    search.add_argument("--world", action="append", required=True)
+    search.add_argument("--world", action="append", default=[])
+    selected_scopes = search.add_mutually_exclusive_group()
+    selected_scopes.add_argument("--scope", type=UUID)
+    selected_scopes.add_argument("--select", type=scope_selection, action="append", default=[])
     search.add_argument("--graph", action="store_true")
+    search.add_argument(
+        "--entities", action="store_true", help="include entity summaries with graph facts"
+    )
     search.add_argument("--limit", type=int, default=10)
     status = sub.add_parser("status")
     status.add_argument("world")
+    status.add_argument("--scope", type=UUID)
     routed = sub.add_parser("route-search", help="recall from explicit configured mounts")
     routed.add_argument("query")
     routed.add_argument("--mount", action="append", required=True)
@@ -125,10 +228,13 @@ def parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name, help="local authenticated administrative operation")
         cmd.add_argument("world")
         cmd.add_argument("path", type=Path)
+        if name != "backup":
+            cmd.add_argument("--scope", type=UUID)
         if name.startswith("import-"):
             cmd.add_argument("--all-branches", action="store_true")
     rebuild = sub.add_parser("graph-rebuild", help="rebuild while the daemon is stopped")
     rebuild.add_argument("world")
+    rebuild.add_argument("--scope", type=UUID)
     rebuild.add_argument(
         "--include-unprojected",
         action="store_true",
@@ -217,19 +323,41 @@ def run(args):
 
         store, principal = local_store(args)
         if args.command == "export":
-            emit({"path": str(portability.export_world(store, principal, args.world, args.path))})
+            emit(
+                {
+                    "path": str(
+                        portability.export_world(
+                            store, principal, args.world, args.path, scope_id=args.scope
+                        )
+                    )
+                }
+            )
         elif args.command == "restore":
-            emit(portability.restore_world(store, principal, args.world, args.path))
+            emit(
+                portability.restore_world(
+                    store, principal, args.world, args.path, scope_id=args.scope
+                )
+            )
         elif args.command == "import-chatgpt":
             emit(
                 portability.import_chatgpt(
-                    store, principal, args.world, args.path, all_branches=args.all_branches
+                    store,
+                    principal,
+                    args.world,
+                    args.path,
+                    all_branches=args.all_branches,
+                    scope_id=args.scope,
                 )
             )
         elif args.command == "import-pi":
             emit(
                 portability.import_pi(
-                    store, principal, args.world, args.path, all_branches=args.all_branches
+                    store,
+                    principal,
+                    args.world,
+                    args.path,
+                    all_branches=args.all_branches,
+                    scope_id=args.scope,
                 )
             )
         else:
@@ -244,7 +372,7 @@ def run(args):
         config = GraphConfig.from_env()
         if config is None:
             raise MemoryError("graph processing is not configured")
-        world = store.get_world(principal, args.world, write=True)
+        world = store.get_world(principal, args.world, write=True, scope_id=args.scope)
 
         async def rebuild():
             worker = ProjectionWorker(store, GraphitiAdapter(config))
@@ -267,6 +395,27 @@ def run(args):
             emit(client.worlds())
         elif args.command == "me":
             emit(client.me())
+        elif args.command == "scopes":
+            emit(client.scopes(args.world))
+        elif args.command == "scope":
+            emit(client.get_scope(args.world, args.scope))
+        elif args.command == "scope-create":
+            emit(client.create_scope(args.world, read_input(args.input, CreateScope)))
+        elif args.command == "scope-grant":
+            client.grant_scope(args.world, args.scope, read_input(args.input, UpdateScopeGrant))
+            emit({"world_id": args.world, "scope_id": str(args.scope), "updated": True})
+        elif args.command == "scope-flow":
+            emit({"allowed": client.can_flow(read_input(args.input, ScopeFlow))})
+        elif args.command == "context-bind":
+            emit(client.bind_context(read_input(args.input, BindContext)))
+        elif args.command == "context":
+            emit(client.get_context(args.context_id))
+        elif args.command == "agent-delegate":
+            emit(
+                delegate_to_file(
+                    client, read_input(args.input, DelegateCredential), args.token_output
+                )
+            )
         elif args.command == "mounts":
             emit(client.mounts())
         elif args.command == "route-search":
@@ -342,6 +491,8 @@ def run(args):
             emit({"revoked": args.credential_id})
         elif args.command in ("capture", "publish"):
             episode = EpisodeInput(
+                scope_id=args.scope,
+                context_id=args.context,
                 source_id=args.source_id,
                 content=content(args),
                 occurred_at=args.at,
@@ -351,14 +502,16 @@ def run(args):
                 emit(client.capture(args.world, episode))
             else:
                 emit(
-                    client.request(
-                        "POST",
-                        f"/v1/worlds/{args.world}/publications",
-                        json={
-                            k: v
-                            for k, v in episode.model_dump(mode="json").items()
-                            if k in {"source_id", "content", "occurred_at", "project"}
-                        },
+                    client.publish(
+                        args.world,
+                        Publication(
+                            source_id=episode.source_id,
+                            content=episode.content,
+                            occurred_at=episode.occurred_at,
+                            project=episode.project,
+                            context_id=episode.context_id,
+                        ),
+                        scope_id=args.scope,
                     )
                 )
         elif args.command == "search":
@@ -366,6 +519,9 @@ def run(args):
                 client.search(
                     SearchRequest(
                         world_ids=args.world,
+                        scope_id=args.scope,
+                        scopes=args.select,
+                        include_entities=args.entities,
                         query=args.query,
                         limit=args.limit,
                         mode="graph" if args.graph else "source",
@@ -373,7 +529,7 @@ def run(args):
                 )
             )
         elif args.command == "status":
-            emit(client.status(args.world))
+            emit(client.status(args.world, scope_id=args.scope))
 
 
 def main():

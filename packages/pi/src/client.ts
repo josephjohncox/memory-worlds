@@ -3,23 +3,23 @@ import { readFile, stat } from "node:fs/promises";
 export type WorldKind = "personal" | "private-work" | "team" | "company" | "ad-hoc";
 export interface World {
   id: string; authority_id: string; name: string; kind: WorldKind; owner_id: string;
-  created_at: string; generation?: string | null; projection_state: string;
+  created_at: string; generation?: string | null; projection_state: string; scope_id?: string;
 }
 export interface EpisodeInput {
-  source_id: string; content: string; occurred_at: string;
+  context_id?: string; scope_id?: string; source_id: string; content: string; occurred_at: string;
   source_type?: "text" | "pi" | "publication";
   session_id?: string; source_entry_id?: string; parent_entry_id?: string | null;
   role?: string; metadata?: Record<string, unknown>; project?: boolean;
 }
 export interface Episode extends EpisodeInput {
   id: string; world_id: string; sequence: number; digest: string;
-  received_at: string; actor_id: string; agent_id: string; projection_state: string;
+  agent_uuid?: string; invocation_id?: string; parent_invocation_id?: string; received_at: string; actor_id: string; agent_id: string; projection_state: string;
 }
 export interface Receipt { episode: Episode; replayed: boolean }
 export interface Mount { id: string; name: string; url: string; world_ids: string[]; authority_id: string; can_publish: boolean }
-export interface Identity { credential_id: string; user_id: string; agent_id: string; admin: boolean; authority_id: string; worlds: World[] }
+export interface Identity { credential_id: string; user_id: string; agent_id: string; admin: boolean; restricted?: boolean; agent_uuid?: string; invocation_id?: string; parent_invocation_id?: string; authority_id: string; worlds: World[] }
 export interface SearchHit {
-  mount_id?: string; authority_id: string; world_id: string; record_type: "source" | "fact";
+  mount_id?: string; authority_id: string; world_id: string; record_type: "source" | "fact" | "entity"; scope_id?: string; generation?: string; entity_id?: string; name?: string; summary?: string;
   id?: string; source_id?: string; content?: string; fact?: string; fact_id?: string;
   occurred_at?: string; role?: string | null; projection_state?: string;
   claim_status?: string; graph_episode_ids?: string[];
@@ -36,6 +36,50 @@ export interface Delivery {
 export interface Publication {
   destination_mount_id: string; world_id: string; source_id: string;
   content: string; occurred_at: string; project: false;
+}
+
+export type ScopeKind = "world-shared" | "run-shared" | "agent-persistent" | "invocation-private";
+export type ScopeOperation = "read" | "write" | "publish" | "delegate" | "manage";
+export interface ScopeSelection { world_id: string; scope_id: string }
+export interface Scope extends ScopeSelection {
+  id: string; kind: ScopeKind; name: string; created_at: string;
+  run_id?: string | null; agent_id?: string | null; invocation_id?: string | null;
+  parent_invocation_id?: string | null; coordinator_credential_id?: string | null; generation?: string | null; projection_state: string;
+}
+export interface ScopeGrant extends ScopeSelection { operations: ScopeOperation[] }
+export interface ContextInput { read_scopes: ScopeSelection[]; write_scope?: ScopeSelection | null; agent_id?: string; run_id?: string }
+export interface AgentContext extends ContextInput {
+  id: string; credential_id: string; invocation_id: string; parent_invocation_id?: string | null; created_at: string;
+}
+export interface DelegationInput {
+  grants: ScopeGrant[]; private_world_id?: string; agent_id?: string; run_id?: string;
+  expires_at?: string; allow_delegation?: boolean; parent_context_id?: string; coordinator_read?: boolean;
+}
+/** Sensitive. Pass straight to a closure; never serialize to tool results or session entries. */
+export interface DelegationReceipt { token: string; credential_id: string; context: AgentContext; private_scope: Scope | null }
+export interface ScopedPublication extends Omit<EpisodeInput, "source_type" | "session_id" | "source_entry_id" | "parent_entry_id" | "role" | "metadata" | "scope_id"> {
+  source_scope?: ScopeSelection; source_episode_id?: string;
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function scopeSelection(value: unknown): ScopeSelection {
+  const item = object(value);
+  const worldId = string(item.world_id), scopeId = string(item.scope_id);
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(worldId) || !UUID.test(scopeId)) throw new Error("Invalid scope selection");
+  return { world_id: worldId, scope_id: scopeId.toLowerCase() };
+}
+export function scopeKey(scope: ScopeSelection): string { return `${scope.world_id}/${scope.scope_id}`; }
+function scope(value: unknown): Scope {
+  const item = object(value); const id = string(item.id);
+  scopeSelection({ world_id: item.world_id, scope_id: id });
+  if (!["world-shared", "run-shared", "agent-persistent", "invocation-private"].includes(String(item.kind))) throw new Error("Invalid scope kind");
+  return { ...item, scope_id: id } as unknown as Scope;
+}
+function context(value: unknown): AgentContext {
+  const item = object(value);
+  if (!UUID.test(string(item.id)) || !UUID.test(string(item.invocation_id))) throw new Error("Invalid context identity");
+  const reads = array(item.read_scopes).map(scopeSelection);
+  const write = item.write_scope ? scopeSelection(item.write_scope) : null;
+  return { ...item, read_scopes: reads, write_scope: write } as unknown as AgentContext;
 }
 
 export class MemoryWorldsError extends Error {
@@ -94,14 +138,14 @@ export class MemoryWorldsClient {
     readonly timeoutMs = 5000,
   ) { this.url = serviceURL(url); }
 
-  private async request(path: string, body?: unknown, signal?: AbortSignal): Promise<unknown> {
+  private async request(path: string, body?: unknown, signal?: AbortSignal, method?: "DELETE"): Promise<unknown> {
     const deadline = AbortSignal.timeout(this.timeoutMs);
     const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
     combined.throwIfAborted();
     const token = await this.token();
     combined.throwIfAborted();
     const response = await this.transport(`${this.url}${path}`, {
-      method: body === undefined ? "GET" : "POST", redirect: "error", signal: combined,
+      method: method ?? (body === undefined ? "GET" : "POST"), redirect: "error", signal: combined,
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
@@ -109,6 +153,7 @@ export class MemoryWorldsClient {
       await response.body?.cancel();
       throw new MemoryWorldsError(response.status, `http_${response.status}`);
     }
+    if (response.status === 204) return undefined;
     const reader = response.body?.getReader();
     if (!reader) throw new Error("Empty Memory Worlds response");
     let size = 0;
@@ -125,6 +170,17 @@ export class MemoryWorldsClient {
     return JSON.parse(Buffer.concat(chunks).toString("utf8"));
   }
 
+  /** Snapshot a rotating token for one operation; erase the closure when the operation ends. */
+  async withCredentialSession<T>(work: (client: MemoryWorldsClient) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted();
+    let snapshot: string | undefined = await this.token();
+    const pinned = new MemoryWorldsClient(this.url, async () => {
+      if (!snapshot) throw new Error("Credential session has ended");
+      return snapshot;
+    }, this.transport, this.timeoutMs);
+    try { signal?.throwIfAborted(); return await work(pinned); }
+    finally { snapshot = undefined; }
+  }
   async worlds(signal?: AbortSignal): Promise<World[]> {
     return array(await this.request("/v1/worlds", undefined, signal)).map(world);
   }
@@ -196,6 +252,92 @@ export class MemoryWorldsClient {
     // Authorities retain their own ordering; scores are not comparable across services.
     combined.results = combined.results.slice(0, limit);
     return combined;
+  }
+  async scopes(worldId: string, signal?: AbortSignal): Promise<Scope[]> {
+    return array(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/scopes`, undefined, signal)).map(scope);
+  }
+  async scope(selection: ScopeSelection, signal?: AbortSignal): Promise<Scope> {
+    const selected = scopeSelection(selection);
+    const result = scope(await this.request(this.scopePath(selected), undefined, signal));
+    if (scopeKey(result) !== scopeKey(selected)) throw new Error("Scope response does not match selection");
+    return result;
+  }
+  private scopePath(selection: ScopeSelection): string {
+    const selected = scopeSelection(selection);
+    return `/v1/worlds/${encodeURIComponent(selected.world_id)}/scopes/${selected.scope_id}`;
+  }
+  async createScope(worldId: string, input: { kind: ScopeKind; name: string; run_id?: string; agent_id?: string; invocation_id?: string }, signal?: AbortSignal): Promise<Scope> {
+    return scope(await this.request(`/v1/worlds/${encodeURIComponent(worldId)}/scopes`, input, signal));
+  }
+  async canFlow(readScopes: ScopeSelection[], writeScope: ScopeSelection, signal?: AbortSignal): Promise<boolean> {
+    const response = object(await this.request("/v1/scopes/flow", { read_scopes: readScopes.map(scopeSelection), write_scope: scopeSelection(writeScope) }, signal));
+    if (typeof response.allowed !== "boolean") throw new Error("Invalid scope flow response");
+    return response.allowed;
+  }
+  async context(contextId: string, signal?: AbortSignal): Promise<AgentContext> {
+    const result = context(await this.request(`/v1/contexts/${encodeURIComponent(contextId)}`, undefined, signal));
+    if (result.id !== contextId) throw new Error("Context response identity mismatch");
+    return result;
+  }
+  async bindContext(input: ContextInput, signal?: AbortSignal): Promise<AgentContext> {
+    return context(await this.request("/v1/contexts", input, signal));
+  }
+  async delegate(input: DelegationInput, signal?: AbortSignal): Promise<DelegationReceipt> {
+    const response = object(await this.request("/v1/credentials/delegate", input, signal));
+    const credentialId = typeof response.credential_id === "string" ? response.credential_id : undefined;
+    try {
+      const token = string(response.token);
+      if (!token || /\s/.test(token) || !credentialId) throw new Error("Invalid delegated credential");
+      return { token, credential_id: credentialId, context: context(response.context), private_scope: response.private_scope ? scope(response.private_scope) : null };
+    } catch {
+      if (credentialId) await this.revokeCredential(credentialId);
+      throw new Error("Invalid delegation response; issued credential revoked when identifiable");
+    }
+  }
+  async revokeCredential(credentialId: string, signal?: AbortSignal): Promise<void> {
+    await this.request(`/v1/credentials/${encodeURIComponent(credentialId)}`, undefined, signal, "DELETE");
+  }
+  async captureScope(selection: ScopeSelection, episode: EpisodeInput, signal?: AbortSignal): Promise<Receipt> {
+    const response = object(await this.request(`${this.scopePath(selection)}/episodes`, episode, signal));
+    const item = object(response.episode);
+    if (item.world_id !== selection.world_id || item.scope_id !== selection.scope_id) throw new Error("Capture receipt does not match selected scope");
+    string(item.id);
+    return response as unknown as Receipt;
+  }
+  async episodes(selection: ScopeSelection, limit = 5, signal?: AbortSignal): Promise<Episode[]> {
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid episode limit");
+    return array(await this.request(`${this.scopePath(selection)}/episodes?limit=${limit}`, undefined, signal)).map(value => {
+      const item = object(value);
+      if (item.world_id !== selection.world_id || item.scope_id !== selection.scope_id) throw new Error("Episode outside selected scope");
+      string(item.id); string(item.content);
+      return item as unknown as Episode;
+    });
+  }
+  /** Fail closed: an unauthorized member of a selected scope set rejects the entire request. */
+  async searchScopes(selections: ScopeSelection[], query: string, mode: "source" | "graph", limit: number, signal?: AbortSignal, includeEntities = false): Promise<SearchResult> {
+    if (!selections.length || selections.length > 50 || !query.trim() || query.length > 2000 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid scoped search");
+    const scopes = selections.map(scopeSelection), allowed = new Set(scopes.map(scopeKey));
+    const result = object(await this.request("/v1/search", { scopes, query, mode, limit, include_entities: includeEntities }, signal));
+    if (result.mode !== mode) throw new Error("Search response mode mismatch");
+    const worlds = array(result.worlds).map(world);
+    const results = array(result.results).map(value => {
+      const hit = object(value);
+      const selected = scopeSelection(hit);
+      if (!allowed.has(scopeKey(selected))) throw new Error("Search returned an unselected scope");
+      const authority = worlds.find(world => world.id === selected.world_id)?.authority_id;
+      if (!authority) throw new Error("Missing world authority");
+      const recordType = mode === "source" ? "source" : hit.record_type === "entity" ? "entity" : "fact";
+      string(recordType === "source" ? hit.content : recordType === "entity" ? hit.name : hit.fact);
+      return { ...hit, ...selected, authority_id: authority, record_type: recordType } as SearchHit;
+    });
+    return { results, failures: [], complete: true };
+  }
+  async publishScope(destination: ScopeSelection, publication: ScopedPublication, signal?: AbortSignal): Promise<Receipt> {
+    const response = object(await this.request(`${this.scopePath(destination)}/publications`, publication, signal));
+    const item = object(response.episode);
+    if (item.world_id !== destination.world_id || item.scope_id !== destination.scope_id) throw new Error("Publication receipt does not match destination scope");
+    string(item.id);
+    return response as unknown as Receipt;
   }
   async publish(publication: Publication, signal?: AbortSignal): Promise<Delivery> {
     const value = object(await this.request("/v1/router/publications", publication, signal));

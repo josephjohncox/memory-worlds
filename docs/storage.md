@@ -4,8 +4,11 @@ One Unix daemon owns a local data directory. It contains `control.sqlite3` and
 `worlds/<opaque-id>/source.sqlite3`, plus `router.sqlite3` for explicit remote
 publication envelopes and delivery receipts. The control database owns authority
 identity, world metadata, token hashes, OIDC sessions, memberships, and grants.
-A world database owns source episodes,
+A scope database owns source episodes,
 capture audit, projection jobs, active generation, and public model provenance.
+The existing world journal is world-shared. Additional scope journals live at
+`worlds/<world-id>/scopes/<scope-uuid>/source.sqlite3`; scope grants and invocation
+contexts remain in `control.sqlite3`. See [agent scopes](scopes.md).
 Capture and enqueue commit together with SQLite synchronous FULL transactions.
 Files are private to their operating-system owner. Use a local filesystem.
 
@@ -17,6 +20,10 @@ transaction and that metadata establish the portable export boundary.
 `.mworld` recovery is source-only. It preserves attributed evidence and audit
 records and deliberately excludes live ACLs and credentials. It can reconstruct
 a new graph, but model extraction need not reproduce the same interpretation.
+Version 2 archives identify the selected scope and preserve invocation
+provenance. Version 1 archives remain readable. World-only export includes the
+world-shared journal; select private scopes explicitly. Private archives require
+an explicit compatible private restore destination.
 Archive checksums detect corruption, not malicious forgery; the archive is not
 signed or encrypted. Only import archives from a trusted source.
 
@@ -26,9 +33,11 @@ the control database's credential or membership state. `restore` accepts portabl
 archives rather than arbitrary SQLite files. For routine migration use
 export/restore. Native SQLite file recovery requires an administrator to preserve
 the matching world/authority metadata and stop the daemon before replacing files.
+The current `backup` command selects the legacy world-shared source database;
+it does not combine private scope journals into one SQLite file.
 
 FalkorDB uses a separate persistent volume. Namespaces separate authorities,
-worlds, and graph generations logically; several worlds may share one backend
+worlds, scopes, and graph generations logically; several worlds may share one backend
 snapshot. AOF reduces graph loss across backend restarts but is not an off-host
 backup. The source journal remains authoritative when graph delivery is unknown.
 The graph deployment requires a database password as well as loopback binding;

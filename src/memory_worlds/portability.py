@@ -18,11 +18,12 @@ import zlib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from .errors import MemoryError as RequestError
-from .models import Episode, EpisodeInput, Model, Principal, World
+from .models import Episode, EpisodeInput, Model, Principal, Scope, ScopeKind, World
 
 MAX_INPUT_BYTES = 128 * 1024 * 1024
 MAX_ARCHIVE_BYTES = 128 * 1024 * 1024
@@ -47,10 +48,10 @@ class PortabilityError(RequestError):
 
 
 class PortableStore(Protocol):
-    def snapshot(self, principal: Principal, world_id: str) -> dict: ...
+    def snapshot(self, principal: Principal, world_id: str, scope_id=None) -> dict: ...
 
     def restore(
-        self, principal: Principal, world_id: str, episodes: list[EpisodeInput]
+        self, principal: Principal, world_id: str, episodes: list[EpisodeInput], scope_id=None
     ) -> dict: ...
 
 
@@ -64,9 +65,10 @@ class AuditRecord(Model):
 
 class Manifest(Model):
     format: str = Field(pattern=r"^memory-worlds$")
-    version: int = Field(ge=1, le=1, strict=True)
+    version: int = Field(ge=1, le=2, strict=True)
     exported_at: str
     world: World
+    scope: Scope | None = None
     episode_count: int = Field(ge=0, le=MAX_EPISODES, strict=True)
     episodes_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     audit_count: int = Field(default=0, ge=0, le=MAX_EPISODES, strict=True)
@@ -163,7 +165,12 @@ def _episode(value: dict) -> EpisodeInput:
 
 
 def export_world(
-    store: PortableStore, principal: Principal, world_id: str, destination: Path
+    store: PortableStore,
+    principal: Principal,
+    world_id: str,
+    destination: Path,
+    *,
+    scope_id: UUID | str | None = None,
 ) -> Path:
     """Publish a consistent, immutable .mworld ZIP beside its staging file.
 
@@ -171,17 +178,26 @@ def export_world(
     the completed name visible atomically without replacing an existing artifact.
     The staging file and final file are on the same destination filesystem.
     """
-    snapshot = store.snapshot(principal, world_id)
+    snapshot = store.snapshot(principal, world_id, **({"scope_id": scope_id} if scope_id else {}))
     try:
         world = World.model_validate(snapshot["world"])
         episodes = [Episode.model_validate(item) for item in snapshot["episodes"]]
         audit = [AuditRecord.model_validate(item) for item in snapshot.get("audit", [])]
+        scope = Scope.model_validate(snapshot["scope"]) if snapshot.get("scope") else None
     except (KeyError, TypeError, ValidationError) as exc:
         raise PortabilityError(f"Invalid store snapshot: {exc}") from exc
     if len(episodes) > MAX_EPISODES or len(audit) > MAX_EPISODES:
         raise PortabilityError("Too many episodes for one portable archive")
     if any(item.world_id != world.id for item in episodes):
         raise PortabilityError("Snapshot contains episodes from another world")
+    if scope_id is not None and scope is None:
+        raise PortabilityError("Scoped snapshot is missing its audience identity")
+    if scope is not None and (
+        scope.world_id != world.id
+        or str(scope.id) != str(scope_id)
+        or any(item.scope_id is not None and item.scope_id != scope.id for item in episodes)
+    ):
+        raise PortabilityError("Snapshot contains evidence from another scope")
 
     records = [_json(item) + b"\n" for item in episodes]
     if any(len(record) > MAX_RECORD_BYTES for record in records):
@@ -190,9 +206,10 @@ def export_world(
     audit_body = b"".join(_json(item) + b"\n" for item in audit)
     manifest = Manifest(
         format="memory-worlds",
-        version=1,
+        version=2,
         exported_at=datetime.now(UTC).isoformat(),
         world=world,
+        scope=scope,
         episode_count=len(episodes),
         episodes_sha256=hashlib.sha256(body).hexdigest(),
         audit_count=len(audit),
@@ -295,6 +312,14 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
     lines = body.splitlines()
     if len(lines) != manifest.episode_count:
         raise PortabilityError("Episode count does not match manifest")
+    if manifest.scope is not None and (
+        manifest.version != 2 or manifest.scope.world_id != manifest.world.id
+    ):
+        raise PortabilityError("Invalid scoped archive identity")
+    if manifest.world.scope_id is not None and (
+        manifest.scope is None or manifest.world.scope_id != manifest.scope.id
+    ):
+        raise PortabilityError("Scoped archive is missing its audience identity")
     episodes = []
     identities = set()
     episode_ids = set()
@@ -313,6 +338,16 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
         episode_ids.add(episode.id)
         if episode.world_id != manifest.world.id:
             raise PortabilityError("Archive contains an episode from another world")
+        if episode.scope_id is not None and (
+            manifest.scope is None or episode.scope_id != manifest.scope.id
+        ):
+            raise PortabilityError("Archive contains an episode from another scope")
+        if (
+            manifest.scope is not None
+            and manifest.scope.kind != ScopeKind.WORLD_SHARED
+            and (episode.scope_id != manifest.scope.id)
+        ):
+            raise PortabilityError("Scoped archive episode has no audience identity")
         episodes.append(episode)
     if hashlib.sha256(audit_body).hexdigest() != manifest.audit_sha256:
         raise PortabilityError("Audit checksum mismatch")
@@ -336,9 +371,24 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
     return manifest, episodes, audit
 
 
-def restore_world(store: PortableStore, principal: Principal, world_id: str, archive: Path) -> dict:
+def restore_world(
+    store: PortableStore,
+    principal: Principal,
+    world_id: str,
+    archive: Path,
+    *,
+    scope_id: UUID | str | None = None,
+) -> dict:
     """Verify the entire archive before one authorized, transactional restore."""
     manifest, records, audit = _read_archive(Path(archive))
+    if manifest.scope is not None and manifest.scope.kind != ScopeKind.WORLD_SHARED:
+        if scope_id is None:
+            raise PortabilityError("Scoped archives require an explicit private destination scope")
+        target = store.snapshot(principal, world_id, scope_id=scope_id)
+        destination_scope = Scope.model_validate(target.get("scope"))
+        allowed = {manifest.scope.kind, ScopeKind.INVOCATION_PRIVATE}
+        if destination_scope.kind not in allowed:
+            raise PortabilityError("Restore cannot broaden the archived scope's audience kind")
     audit_by_episode: dict[str, list[dict]] = {}
     for item in audit:
         audit_by_episode.setdefault(item.episode_id, []).append(item.model_dump(mode="json"))
@@ -356,13 +406,26 @@ def restore_world(store: PortableStore, principal: Principal, world_id: str, arc
             "projection_state": record.projection_state,
             "audit": audit_by_episode.get(record.id, []),
         }
+        if manifest.scope is not None:
+            origin["scope"] = manifest.scope.model_dump(mode="json")
+        for key in ("agent_uuid", "invocation_id", "parent_invocation_id", "context_id"):
+            value = getattr(record, key, None)
+            if value is not None:
+                origin[key] = str(value)
         metadata = dict(record.metadata)
         if "memory_worlds_origin" in metadata:
             origin["prior"] = metadata["memory_worlds_origin"]
         metadata["memory_worlds_origin"] = origin
-        fields.update(metadata=metadata, project=False)
+        fields.update(
+            metadata=metadata,
+            project=False,
+            scope_id=UUID(str(scope_id)) if scope_id is not None else None,
+            context_id=None,
+        )
         episodes.append(_episode(fields))
-    return store.restore(principal, world_id, episodes)
+    return store.restore(
+        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
+    )
 
 
 def _validate_tree(nodes: dict[str, dict], parent_key: str) -> dict[str, int]:
@@ -454,6 +517,8 @@ def import_chatgpt(
     world_id: str,
     path: Path,
     all_branches: bool = False,
+    *,
+    scope_id: UUID | str | None = None,
 ) -> dict:
     """Import ChatGPT JSON, preserving individual nodes rather than flattening branches."""
     data = _load_json(_read_bounded(Path(path)), "ChatGPT export")
@@ -563,7 +628,11 @@ def import_chatgpt(
             )
             if len(episodes) > MAX_EPISODES:
                 raise PortabilityError("Too many episodes in one import")
-    result = store.restore(principal, world_id, episodes)
+    if scope_id is not None:
+        episodes = [item.model_copy(update={"scope_id": UUID(str(scope_id))}) for item in episodes]
+    result = store.restore(
+        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
+    )
     return {
         **result,
         "conversations": len(conversations),
@@ -581,6 +650,8 @@ def import_pi(
     path: Path,
     all_branches: bool = False,
     leaf_id: str | None = None,
+    *,
+    scope_id: UUID | str | None = None,
 ) -> dict:
     """Import Pi JSONL; the last file entry is the default active branch leaf."""
     lines = _read_bounded(Path(path)).splitlines()
@@ -695,7 +766,11 @@ def import_pi(
         )
         if len(episodes) > MAX_EPISODES:
             raise PortabilityError("Too many episodes in one import")
-    result = store.restore(principal, world_id, episodes)
+    if scope_id is not None:
+        episodes = [item.model_copy(update={"scope_id": UUID(str(scope_id))}) for item in episodes]
+    result = store.restore(
+        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
+    )
     return {
         **result,
         "skipped": skipped,

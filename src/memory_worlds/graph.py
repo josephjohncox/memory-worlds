@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from .errors import Unavailable
 from .models import Episode, World
+from .scopes import world_shared_scope_id
 
 if TYPE_CHECKING:
     from .store import MemoryStore
@@ -169,7 +170,13 @@ class GraphConfig:
 
 def graph_namespace(world: World, generation: str) -> str:
     """Never pass user-controlled names or path-shaped values to a graph driver."""
-    identity = "\0".join((world.authority_id, world.id, generation))
+    # The legacy namespace already contains world-shared evidence exclusively.
+    # Preserve it so upgrades do not strand an existing projection. New private
+    # audiences always get a different database/group, including during extraction.
+    parts = [world.authority_id, world.id]
+    if world.scope_id is not None:
+        parts.append(str(world.scope_id))
+    identity = "\0".join((*parts, generation))
     return "mw_" + hashlib.sha256(identity.encode()).hexdigest()
 
 
@@ -182,7 +189,12 @@ class ProjectionAdapter(Protocol):
     async def project(self, world: World, generation: str, episode: Episode) -> None: ...
 
     async def search(
-        self, world: World, generation: str, query: str, limit: int
+        self,
+        world: World,
+        generation: str,
+        query: str,
+        limit: int,
+        include_entities: bool = False,
     ) -> list[dict[str, Any]]: ...
 
     async def close(self) -> None: ...
@@ -320,12 +332,26 @@ class GraphitiAdapter:
         return await self._project(world, generation, episode)
 
     async def _project(self, world: World, generation: str, episode: Episode) -> None:
+        if episode.world_id != world.id or episode.scope_id != world.scope_id:
+            raise Unavailable("projection source does not belong to the selected scope")
         client = await self._client(world, generation)
         from graphiti_core.errors import NodeNotFoundError
         from graphiti_core.nodes import EpisodeType, EpisodicNode
 
         namespace = graph_namespace(world, generation)
         episode_uuid = graph_episode_id(world, generation, episode.id)
+        source_kind = episode.metadata.get("graphiti_source")
+        source = {
+            "text": EpisodeType.text,
+            "message": EpisodeType.message,
+            "json": EpisodeType.json,
+        }.get(source_kind if isinstance(source_kind, str) else "text", EpisodeType.text)
+        supplied_name = episode.metadata.get("name")
+        name = (
+            supplied_name
+            if isinstance(supplied_name, str) and 0 < len(supplied_name) <= 200
+            else episode.source_id
+        )
         source_description = (
             f"source episode {episode.id}; imported by {episode.actor_id}; "
             f"source type {episode.source_type}; original role {episode.role or 'unspecified'}; "
@@ -336,6 +362,8 @@ class GraphitiAdapter:
             last_n=3,
             group_ids=[namespace],
         )
+        if any(getattr(node, "group_id", None) != namespace for node in previous):
+            raise Unavailable("extraction context is outside the selected scope")
         previous_ids = [node.uuid for node in previous if node.uuid != episode_uuid]
         # Graphiti's add_episode(uuid=...) requires a pre-existing episode.
         # Presence does not imply completed projection; the durable worker owns that receipt.
@@ -344,9 +372,9 @@ class GraphitiAdapter:
         except NodeNotFoundError:
             node = EpisodicNode(
                 uuid=episode_uuid,
-                name=episode.source_id,
+                name=name,
                 group_id=namespace,
-                source=EpisodeType.text,
+                source=source,
                 content=episode.content,
                 source_description=source_description,
                 created_at=episode.received_at,
@@ -354,11 +382,11 @@ class GraphitiAdapter:
             )
             await node.save(client.driver)
         await client.add_episode(
-            name=episode.source_id,
+            name=name,
             episode_body=episode.content,
             source_description=source_description,
             reference_time=episode.occurred_at,
-            source=EpisodeType.text,
+            source=source,
             group_id=namespace,
             uuid=episode_uuid,
             previous_episode_uuids=previous_ids,
@@ -370,11 +398,18 @@ class GraphitiAdapter:
         )
 
     async def search(
-        self, world: World, generation: str, query: str, limit: int
+        self,
+        world: World,
+        generation: str,
+        query: str,
+        limit: int,
+        include_entities: bool = False,
     ) -> list[dict[str, Any]]:
         if self.config.backend == "neptune":
-            return await self._aws_call(self._search(world, generation, query, limit))
-        return await self._search(world, generation, query, limit)
+            return await self._aws_call(
+                self._search(world, generation, query, limit, include_entities)
+            )
+        return await self._search(world, generation, query, limit, include_entities)
 
     async def _check_namespace(self, driver, namespace: str) -> None:
         if self.config.backend == "falkordb":
@@ -389,28 +424,69 @@ class GraphitiAdapter:
             raise Unavailable("graph namespace is missing; rebuild from durable sources")
 
     async def _search(
-        self, world: World, generation: str, query: str, limit: int
+        self,
+        world: World,
+        generation: str,
+        query: str,
+        limit: int,
+        include_entities: bool = False,
     ) -> list[dict[str, Any]]:
         client = await self._client(world, generation)
         namespace = graph_namespace(world, generation)
         await self._check_namespace(client.driver, namespace)
-        edges = await client.search(query=query, group_ids=[namespace], num_results=limit)
-        return [
+        nodes = []
+        if include_entities:
+            from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+
+            config = COMBINED_HYBRID_SEARCH_RRF.model_copy(
+                deep=True, update={"limit": limit, "episode_config": None, "community_config": None}
+            )
+            result = await client.search_(query=query, config=config, group_ids=[namespace])
+            edges, nodes = result.edges, result.nodes
+        else:
+            edges = await client.search(query=query, group_ids=[namespace], num_results=limit)
+        # A driver returning a different audience must never expand a search.
+        if any(getattr(item, "group_id", None) != namespace for item in [*edges, *nodes]):
+            raise Unavailable("graph returned evidence outside the selected scope")
+        provenance = {
+            "world_id": world.id,
+            "authority_id": world.authority_id,
+            "scope_id": (
+                str(world.scope_id)
+                if world.scope_id is not None
+                else world_shared_scope_id(world.authority_id, world.id)
+            ),
+            "generation": generation,
+            "projection_status": "ready",
+            "claim_status": "derived-unreviewed",
+        }
+        facts = [
             {
+                **provenance,
                 "record_type": "fact",
-                "world_id": world.id,
-                "authority_id": world.authority_id,
-                "generation": generation,
-                "projection_status": "ready",
                 "fact_id": edge.uuid,
                 "fact": edge.fact,
-                "claim_status": "derived-unreviewed",
                 "graph_episode_ids": list(edge.episodes),
                 "valid_at": edge.valid_at,
                 "invalid_at": edge.invalid_at,
             }
             for edge in edges
         ]
+        entities = [
+            {
+                **provenance,
+                "record_type": "entity",
+                "entity_id": node.uuid,
+                "name": node.name,
+                "summary": node.summary,
+                "content": f"{node.name}: {node.summary}",
+                # Entity summaries are scoped derived evidence; do not fabricate
+                # a particular source episode for a summary of surrounding edges.
+                "graph_episode_ids": [],
+            }
+            for node in nodes
+        ]
+        return facts + entities
 
     async def close(self) -> None:
         if self._aws_loop is not None:
@@ -436,7 +512,7 @@ class GraphitiAdapter:
 
 
 class ProjectionWorker:
-    """A single daemon's per-world sequential worker; unknown writes are never replayed."""
+    """Sequential per-scope projection; unknown writes are never replayed."""
 
     def __init__(self, store: MemoryStore, adapter: ProjectionAdapter):
         self.store = store
@@ -444,46 +520,61 @@ class ProjectionWorker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._recovered = False
 
-    def _lock(self, world_id: str) -> asyncio.Lock:
-        return self._locks.setdefault(world_id, asyncio.Lock())
+    @staticmethod
+    def _scope(world: World) -> dict:
+        return {"scope_id": world.scope_id} if world.scope_id is not None else {}
 
-    def _world(self, world_id: str) -> World:
-        return next(world for world in self.store.projection_worlds() if world.id == world_id)
+    def _lock(self, world: World) -> asyncio.Lock:
+        return self._locks.setdefault(f"{world.id}:{world.scope_id or 'shared'}", asyncio.Lock())
+
+    def _world(self, world_id: str, scope_id=None) -> World:
+        return next(
+            world
+            for world in self.store.projection_worlds()
+            if world.id == world_id and world.scope_id == scope_id
+        )
 
     def _check_configuration(self, world: World) -> None:
         if world.generation and (
-            self.store.projection_configuration(world.id) != self.adapter.configuration_metadata()
+            self.store.projection_configuration(world.id, **self._scope(world))
+            != self.adapter.configuration_metadata()
         ):
             raise Unavailable("graph configuration changed; rebuild the world before graph use")
 
     async def _process_world(self, world: World) -> int:
-        async with self._lock(world.id):
-            world = self._world(world.id)
+        async with self._lock(world):
+            world = self._world(world.id, world.scope_id)
             if world.projection_state == "degraded":
                 return 0
             try:
                 self._check_configuration(world)
             except Unavailable:
-                self.store.set_projection(world.id, world.generation, "degraded")
+                self.store.set_projection(
+                    world.id, world.generation, "degraded", **self._scope(world)
+                )
                 return 0
             generation = world.generation or uuid4().hex
             count = 0
-            for pending in self.store.pending_jobs(world.id)[:20]:
-                episode = self.store.mark_processing(world.id, pending.id)
+            for pending in self.store.pending_jobs(world.id, **self._scope(world))[:20]:
+                episode = self.store.mark_processing(world.id, pending.id, **self._scope(world))
                 if episode is None:
                     continue
                 try:
                     if not world.generation:
                         self.store.set_projection_configuration(
-                            world.id, self.adapter.configuration_metadata()
+                            world.id, self.adapter.configuration_metadata(), **self._scope(world)
                         )
                     await self.adapter.project(world, generation, episode)
-                    self.store.mark_projected(world.id, episode.id, generation)
+                    self.store.mark_projected(
+                        world.id, episode.id, generation, **self._scope(world)
+                    )
                     count += 1
                 except BaseException as exc:
                     # Even cancellation can arrive after a remote write. Do not assume
                     # a failed call is safe to retry, or expose a partially changed graph.
-                    self.store.mark_unknown(world.id, episode.id, type(exc).__name__)
+                    self.store.mark_unknown(
+                        world.id, episode.id, type(exc).__name__, **self._scope(world)
+                    )
                     if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
                         raise
                     return count
@@ -507,8 +598,10 @@ class ProjectionWorker:
             await asyncio.sleep(poll_interval)
 
     async def rebuild(self, world: World, include_unprojected: bool = False) -> dict[str, Any]:
-        async with self._lock(world.id):
-            episodes = self.store.projection_episodes(world.id, include_unprojected)
+        async with self._lock(world):
+            episodes = self.store.projection_episodes(
+                world.id, include_unprojected, **self._scope(world)
+            )
             generation = uuid4().hex
             try:
                 for episode in episodes:
@@ -522,20 +615,26 @@ class ProjectionWorker:
                 generation,
                 [episode.id for episode in episodes],
                 configuration=self.adapter.configuration_metadata(),
+                **self._scope(world),
             )
             return {
                 "world_id": world.id,
+                "scope_id": str(world.scope_id) if world.scope_id is not None else None,
                 "generation": generation,
                 "episodes": len(episodes),
                 "source_sequence": max((ep.sequence for ep in episodes), default=0),
             }
 
     async def search(
-        self, worlds: list[World], query: str, limit: int = 10
+        self,
+        worlds: list[World],
+        query: str,
+        limit: int = 10,
+        include_entities: bool = False,
     ) -> list[dict[str, Any]]:
         # The caller authorizes the complete selection before invoking this method.
         # Validate every projection before querying any backend.
-        resolved = [self._world(world.id) for world in worlds]
+        resolved = [self._world(world.id, world.scope_id) for world in worlds]
         if any(w.projection_state != "ready" or not w.generation for w in resolved):
             raise Unavailable(
                 "selected graph projection is unavailable; source search remains usable"
@@ -544,16 +643,21 @@ class ProjectionWorker:
             self._check_configuration(world)
         results: list[dict[str, Any]] = []
         for world in resolved:
-            async with self._lock(world.id):
-                current = self._world(world.id)
+            async with self._lock(world):
+                current = self._world(world.id, world.scope_id)
                 if current.projection_state != "ready" or not current.generation:
                     raise Unavailable("selected graph projection is unavailable")
                 self._check_configuration(current)
-                projected_sources = self.store.projection_episodes(current.id)
+                projected_sources = self.store.projection_episodes(
+                    current.id, **self._scope(current)
+                )
                 if not projected_sources:
                     continue
                 try:
-                    facts = await self.adapter.search(current, current.generation, query, limit)
+                    options = {"include_entities": True} if include_entities else {}
+                    facts = await self.adapter.search(
+                        current, current.generation, query, limit, **options
+                    )
                 except Exception as exc:
                     raise Unavailable(
                         "graph retrieval failed; source search remains usable"
@@ -564,6 +668,16 @@ class ProjectionWorker:
                     for episode in projected_sources
                 }
                 for fact in facts:
+                    fact.update(
+                        world_id=current.id,
+                        authority_id=current.authority_id,
+                        scope_id=(
+                            str(current.scope_id)
+                            if current.scope_id is not None
+                            else world_shared_scope_id(current.authority_id, current.id)
+                        ),
+                        generation=current.generation,
+                    )
                     graph_ids = fact.pop("graph_episode_ids", [])
                     fact["source_episode_ids"] = [
                         source_ids[graph_id] for graph_id in graph_ids if graph_id in source_ids

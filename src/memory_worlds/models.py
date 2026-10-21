@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")]
 
@@ -30,6 +31,10 @@ class Principal(Model):
     user_id: str
     agent_id: str
     admin: bool = False
+    restricted: bool = False
+    agent_uuid: UUID | None = None
+    invocation_id: UUID | None = None
+    parent_invocation_id: UUID | None = None
 
 
 class MembershipUpdate(Model):
@@ -49,6 +54,7 @@ class World(Model):
     created_at: datetime
     generation: str | None = None
     projection_state: Literal["disabled", "ready", "degraded"] = "disabled"
+    scope_id: UUID | None = None
 
 
 class CreateWorld(Model):
@@ -65,6 +71,8 @@ class CreateToken(Model):
 
 
 class EpisodeInput(Model):
+    scope_id: UUID | None = None
+    context_id: UUID | None = None
     source_id: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=200_000)
     occurred_at: AwareDatetime
@@ -93,6 +101,9 @@ class Episode(EpisodeInput):
     received_at: datetime
     actor_id: str
     agent_id: str
+    agent_uuid: UUID | None = None
+    invocation_id: UUID | None = None
+    parent_invocation_id: UUID | None = None
     projection_state: Literal["disabled", "pending", "processing", "projected", "unknown"]
 
 
@@ -102,14 +113,118 @@ class Receipt(Model):
 
 
 class SearchRequest(Model):
-    world_ids: list[Identifier] = Field(min_length=1, max_length=50)
+    world_ids: list[Identifier] = Field(default_factory=list, max_length=50)
     query: str = Field(min_length=1, max_length=2000)
     limit: int = Field(default=10, ge=1, le=100)
     mode: Literal["source", "graph"] = "source"
+    include_entities: bool = False
+    scope_id: UUID | None = None
+    scopes: list["ScopeSelection"] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def selected_scope(self):
+        if not self.world_ids and not self.scopes:
+            raise ValueError("Select at least one world or scope")
+        if self.scope_id is not None and self.scopes:
+            raise ValueError("Use scope_id or scopes, not both")
+        return self
 
 
 class Publication(Model):
+    context_id: UUID | None = None
     source_id: str = Field(min_length=1, max_length=500)
     content: str = Field(min_length=1, max_length=200_000)
     occurred_at: AwareDatetime
     project: bool = False
+
+
+class ScopeKind(StrEnum):
+    WORLD_SHARED = "world-shared"
+    RUN_SHARED = "run-shared"
+    AGENT_PERSISTENT = "agent-persistent"
+    INVOCATION_PRIVATE = "invocation-private"
+
+
+class ScopeOperation(StrEnum):
+    READ = "read"
+    WRITE = "write"
+    PUBLISH = "publish"
+    DELEGATE = "delegate"
+    MANAGE = "manage"
+
+
+class ScopeSelection(Model):
+    world_id: Identifier
+    scope_id: UUID
+
+
+class ScopeFlow(Model):
+    read_scopes: list[ScopeSelection] = Field(default_factory=list, max_length=50)
+    write_scope: ScopeSelection
+
+
+class Scope(Model):
+    id: UUID
+    world_id: Identifier
+    kind: ScopeKind
+    name: str
+    created_at: AwareDatetime
+    creator_credential_id: str | None = None
+    coordinator_credential_id: str | None = None
+    run_id: UUID | None = None
+    agent_id: UUID | None = None
+    invocation_id: UUID | None = None
+    parent_invocation_id: UUID | None = None
+    generation: str | None = None
+    projection_state: Literal["disabled", "ready", "degraded"] = "disabled"
+
+
+class CreateScope(Model):
+    kind: ScopeKind
+    name: str = Field(min_length=1, max_length=200)
+    run_id: UUID | None = None
+    agent_id: UUID | None = None
+    invocation_id: UUID | None = None
+
+
+class ScopeGrant(ScopeSelection):
+    operations: list[ScopeOperation] = Field(min_length=1, max_length=5)
+
+
+class UpdateScopeGrant(Model):
+    credential_id: str = Field(min_length=1, max_length=100)
+    operations: list[ScopeOperation] = Field(default_factory=list, max_length=5)
+
+
+class BindContext(Model):
+    read_scopes: list[ScopeSelection] = Field(default_factory=list, max_length=50)
+    write_scope: ScopeSelection | None = None
+    agent_id: UUID | None = None
+    run_id: UUID | None = None
+
+
+class AgentContext(BindContext):
+    id: UUID
+    credential_id: str
+    invocation_id: UUID
+    parent_invocation_id: UUID | None = None
+    created_at: AwareDatetime
+
+
+class DelegateCredential(Model):
+    grants: list[ScopeGrant] = Field(default_factory=list, max_length=50)
+    private_world_id: Identifier | None = None
+    agent_id: UUID | None = None
+    run_id: UUID | None = None
+    expires_at: AwareDatetime | None = None
+    allow_delegation: bool = False
+    parent_context_id: UUID | None = None
+    coordinator_read: bool = False
+
+
+class ScopedPublication(Publication):
+    source_scope: ScopeSelection | None = None
+    source_episode_id: str | None = Field(default=None, max_length=100)
+
+
+SearchRequest.model_rebuild()

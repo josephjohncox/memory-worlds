@@ -79,6 +79,11 @@ async def test_sdk2_discovers_only_scoped_memory_tools(backend):
             "memory_mounts",
             "memory_remote_search",
             "memory_deliveries",
+            "memory_scopes",
+            "memory_scope_status",
+            "memory_context",
+            "memory_bind_context",
+            "memory_episodes",
         }
         assert "fixture-secret" not in listed.model_dump_json()
         worlds = await client.call_tool("memory_worlds", {})

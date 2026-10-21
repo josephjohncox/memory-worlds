@@ -11,6 +11,7 @@ from .errors import Forbidden, MemoryError, NotFound
 from .models import Episode, EpisodeInput, Principal, Receipt, World, WorldKind
 from .mounts import MountConfig, MountRole, MountView
 from .outbox import PublicationOutbox, RoutedPublication, RouterSearch
+from .scopes import world_shared_scope_id
 
 
 class RemoteFailure(Exception):
@@ -138,6 +139,11 @@ class WorldRouter:
                             raise RemoteFailure("remote_authority_mismatch")
                     if row.get("world_id") not in mount.world_ids:
                         raise RemoteFailure("remote_scope_mismatch")
+                    if row.get("scope_id") not in {
+                        None,
+                        world_shared_scope_id(mount.authority_id, row["world_id"]),
+                    }:
+                        raise RemoteFailure("remote_scope_mismatch")
                     row.update(mount_id=mount.id, authority_id=mount.authority_id)
                     results.append(row)
                 return results, None
@@ -183,8 +189,17 @@ class WorldRouter:
                 actual = EpisodeInput.model_validate(
                     receipt.episode.model_dump(include=set(EpisodeInput.model_fields))
                 )
+                if actual.scope_id is not None and str(actual.scope_id) == world_shared_scope_id(
+                    mount.authority_id, row["world_id"]
+                ):
+                    actual = actual.model_copy(update={"scope_id": None})
+                canonical_payload = expected.model_dump(mode="json")
+                # Preserve the original journal digest for pre-scope publications.
+                for field in ("scope_id", "context_id"):
+                    if canonical_payload.get(field) is None:
+                        canonical_payload.pop(field, None)
                 canonical = json.dumps(
-                    expected.model_dump(mode="json"),
+                    canonical_payload,
                     sort_keys=True,
                     separators=(",", ":"),
                     allow_nan=False,
@@ -234,10 +249,14 @@ class WorldRouter:
 
     def deliveries(self, principal):
         self.store.validate_principal(principal)
+        if principal.restricted:
+            raise Forbidden("Delegated scope credentials cannot inspect federation deliveries")
         return self.outbox.list(principal)
 
     def retry(self, principal, delivery_id):
         self.store.validate_principal(principal)
+        if principal.restricted:
+            raise Forbidden("Delegated scope credentials cannot retry federation deliveries")
         row = self.outbox.owned(principal, delivery_id)
         mount = self.mount(principal, row["mount_id"], publish=True)
         if (

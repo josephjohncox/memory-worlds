@@ -89,10 +89,18 @@ Authority administrators control the local files and can access all worlds.
 OIDC sessions use live user membership. Local agent credentials retain only
 their explicit grants; a user membership never widens an agent's credential.
 
-Ordinary capture goes to a selected private world. Shared worlds require the
-separate `publish` command with a destination and selected text. The publication
-request cannot dereference a private source or attach private transcript links.
-Reading a shared world never changes an agent's capture destination.
+Capture goes to an explicitly selected private world or private scope. Shared
+destinations require a separate publication operation with selected text.
+Scoped publications can link authorized source evidence without copying its
+transcript. Reading a shared world never changes an agent's capture destination.
+
+Worlds contain four [memory scopes](docs/scopes.md): world-shared, run-shared,
+agent-persistent, and invocation-private. UUID child identities use attenuated,
+expiring credentials; parents and siblings cannot read child scratch by default.
+Source journals and Graphiti extraction are isolated by scope. Legacy world-only
+calls address world-shared memory, preserving existing source replay identities.
+The native Pi package also provides a bounded [Pi Graphiti compatibility
+surface](docs/pi-graphiti-compatibility.md).
 
 For remote shared spaces, `mounts` lists operator-configured authorities,
 `route-search QUERY --mount MOUNT` reads them, and `route-publish MOUNT WORLD

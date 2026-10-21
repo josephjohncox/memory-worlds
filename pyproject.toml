@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memory-worlds"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local shared agent memory with explicit worlds and portable evidence"
 readme = "README.md"
 license = "Apache-2.0"

@@ -38,7 +38,7 @@ digest and an existing registry credential reference:
 ```yaml
 image:
   repository: ghcr.io/YOUR_ACCOUNT/memory-worlds
-  tag: 0.1.0
+  tag: 0.2.0
   digest: sha256:REPLACE_WITH_THE_PUBLISHED_64_HEX_DIGEST
 imagePullSecrets:
   - name: existing-registry-credential

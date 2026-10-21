@@ -1,11 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { serviceURL } from "./client.js";
+import { scopeSelection, serviceURL, type ScopeSelection } from "./client.js";
 
 export interface MemoryConfig {
   url: string; tokenFile: string; readWorldIds: string[]; readMountIds: string[];
-  writeWorldId?: string; automaticCapture: boolean;
+  writeWorldId?: string; automaticCapture: boolean; readScopes: ScopeSelection[]; writeScope?: ScopeSelection;
+  graphAliases: { project?: ScopeSelection; global?: ScopeSelection }; projectCaptured: boolean; correctionHints: boolean; reviewCorrections: boolean; spoolDirectory?: string;
   retrieval: { enabled: boolean; mode: "source" | "graph"; limit: number; maxChars: number };
 }
 function ids(value: unknown): string[] {
@@ -18,7 +19,7 @@ function ids(value: unknown): string[] {
 export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env, home = homedir()): MemoryConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid Memory Worlds config");
   const config = value as Record<string, unknown>;
-  const allowed = ["url", "tokenFile", "readWorldIds", "readMountIds", "writeWorldId", "automaticCapture", "retrieval"];
+  const allowed = ["url", "tokenFile", "readWorldIds", "readMountIds", "writeWorldId", "automaticCapture", "retrieval", "readScopes", "writeScope", "graphAliases", "projectCaptured", "correctionHints", "reviewCorrections", "spoolDirectory"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("Unknown Memory Worlds config key; use tokenFile for credentials");
   const rawTokenFile = env.MEMORY_WORLDS_TOKEN_FILE ?? config.tokenFile ?? join(home, ".config/memory-worlds/pi.token");
   if (typeof rawTokenFile !== "string") throw new Error("tokenFile must be an absolute path");
@@ -40,9 +41,22 @@ export function parseConfig(value: unknown, env: NodeJS.ProcessEnv = process.env
   if (!["source", "graph"].includes(String(mode)) || !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 20 || !Number.isInteger(maxChars) || Number(maxChars) < 256 || Number(maxChars) > 32000) {
     throw new Error("Retrieval requires source/graph mode, limit 1..20 and maxChars 256..32000");
   }
+  if (config.readScopes !== undefined && (!Array.isArray(config.readScopes) || config.readScopes.length > 50)) throw new Error("readScopes requires up to 50 selections");
+  const readScopes = (config.readScopes as unknown[] | undefined ?? []).map(scopeSelection);
+  const writeScope = config.writeScope === undefined ? undefined : scopeSelection(config.writeScope);
+  if (writeScope && writeWorldId && writeScope.world_id !== writeWorldId) throw new Error("writeScope and writeWorldId disagree");
+  const aliases = config.graphAliases === undefined ? {} : config.graphAliases as Record<string, unknown>;
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases) || Object.keys(aliases).some(key => !["project", "global"].includes(key))) throw new Error("graphAliases permits explicit project/global scope selections only");
+  const graphAliases = { project: aliases.project === undefined ? undefined : scopeSelection(aliases.project), global: aliases.global === undefined ? undefined : scopeSelection(aliases.global) };
+  if (config.projectCaptured !== undefined && typeof config.projectCaptured !== "boolean") throw new Error("projectCaptured must be boolean");
+  if (config.correctionHints !== undefined && typeof config.correctionHints !== "boolean") throw new Error("correctionHints must be boolean");
+  if (config.reviewCorrections !== undefined && typeof config.reviewCorrections !== "boolean") throw new Error("reviewCorrections must be boolean");
+  const spoolDirectory = config.spoolDirectory === undefined ? undefined : typeof config.spoolDirectory === "string" && config.spoolDirectory.startsWith("~/") ? join(home, config.spoolDirectory.slice(2)) : config.spoolDirectory;
+  if (spoolDirectory !== undefined && (typeof spoolDirectory !== "string" || !isAbsolute(spoolDirectory))) throw new Error("spoolDirectory must be an absolute private directory");
   return {
     url: serviceURL(url), tokenFile, readWorldIds: ids(config.readWorldIds), readMountIds, writeWorldId,
-    automaticCapture: Boolean(writeWorldId && config.automaticCapture === true),
+    readScopes, writeScope, graphAliases, spoolDirectory, reviewCorrections: config.reviewCorrections === true, projectCaptured: config.projectCaptured === true, correctionHints: config.correctionHints !== false,
+    automaticCapture: Boolean((writeWorldId || writeScope) && config.automaticCapture === true),
     retrieval: { enabled: retrieval.enabled === true, mode: mode as "source" | "graph", limit: Number(limit), maxChars: Number(maxChars) },
   };
 }

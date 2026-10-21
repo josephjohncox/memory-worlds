@@ -40,8 +40,13 @@ For MCP clients, install the MCP extra and configure a stdio server command:
 ```
 
 Use your client's secret mechanism for the token, or pass `--token-file` before
-`mcp`. The tools are `memory_worlds`, `memory_search`, `memory_capture`,
-`memory_publish`, `memory_mounts`, `memory_remote_search`, and `memory_deliveries`.
+`mcp`. The tools include `memory_worlds`, `memory_search`, `memory_capture`,
+`memory_publish`, `memory_mounts`, `memory_remote_search`, and `memory_deliveries`,
+plus `memory_scopes`, `memory_scope_status`, `memory_episodes`,
+`memory_bind_context`, and `memory_context` for scoped agent contexts.
+Scope selections and bound context IDs are explicit arguments. MCP exposes no
+credential issuance or grant administration tool. See [agent scopes](scopes.md)
+for typed child delegation, UUID identities, and publication rules.
 The MCP process is an
 HTTP client, so several MCP clients can share one daemon. It never takes local
 storage ownership or grants extra permissions.

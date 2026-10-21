@@ -145,17 +145,26 @@ def main():
     log_file = args.state_dir / "helm-port-forward.log"
     log_file.touch(mode=0o600)
 
-    def call(path, payload=None, *, authenticated=True):
+    def call(path, payload=None, *, authenticated=True, credential=None, method=None):
         headers = {"Content-Type": "application/json"}
         if authenticated:
-            headers["Authorization"] = f"Bearer {token}"
+            headers["Authorization"] = f"Bearer {credential or token}"
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}{path}",
             headers=headers,
             data=json.dumps(payload).encode() if payload is not None else None,
+            method=method,
         )
         with opener.open(request, timeout=10) as response:
-            return json.load(response)
+            return None if response.status == 204 else json.load(response)
+
+    def rejected(path, status, *, credential=None):
+        try:
+            call(path, credential=credential)
+        except urllib.error.HTTPError as error:
+            assert error.code == status
+        else:
+            raise AssertionError("Expected scope authorization failure")
 
     @contextlib.contextmanager
     def forwarded():
@@ -194,6 +203,19 @@ def main():
         receipt = call(f"/v1/worlds/{world}/episodes", source)
         replay = call(f"/v1/worlds/{world}/episodes", source)
         assert receipt["episode"]["id"] == replay["episode"]["id"] and replay["replayed"]
+        child = call("/v1/credentials/delegate", {"private_world_id": world})
+        sibling = call("/v1/credentials/delegate", {"private_world_id": world})
+        private_scope = child["private_scope"]["id"]
+        private_path = f"/v1/worlds/{world}/scopes/{private_scope}/episodes"
+        scoped_source = {
+            **source,
+            "source_id": "helm-private-1",
+            "content": "Synthetic private invocation memory",
+        }
+        scoped_receipt = call(private_path, scoped_source, credential=child["token"])
+        private_episode_path = f"{private_path}/{scoped_receipt['episode']['id']}"
+        rejected(private_episode_path, 403)
+        rejected(private_episode_path, 403, credential=sibling["token"])
 
     def graph_query(query):
         return kubectl("exec", f"{graph}-0", "--", "redis-cli", "GRAPH.QUERY", "helm-smoke", query)
@@ -212,6 +234,13 @@ def main():
             recovered = call(f"/v1/worlds/{world}/episodes/{receipt['episode']['id']}")
             assert recovered["content"] == source["content"]
             assert call(f"/v1/worlds/{world}/episodes", source)["replayed"]
+            recovered_private = call(private_episode_path, credential=child["token"])
+            assert recovered_private["content"] == scoped_source["content"]
+            assert recovered_private["invocation_id"] == child["context"]["invocation_id"]
+            assert call(private_path, scoped_source, credential=child["token"])["replayed"]
+            rejected(private_episode_path, 403)
+            rejected(private_episode_path, 403, credential=sibling["token"])
+            assert call(f"/v1/worlds/{world}/status")["episodes"] == 1
         assert "synthetic-helm-retention" in graph_query("MATCH (n:Smoke) RETURN n.value")
 
     kubectl("delete", "pod", f"{api}-0", f"{graph}-0", "--wait=true", "--timeout=120s")
@@ -234,6 +263,9 @@ def main():
     install()
     verify()
     command([*helm, "test", args.release, "--timeout", "3m"])
+    with forwarded():
+        call(f"/v1/credentials/{child['credential_id']}", method="DELETE")
+        rejected(private_episode_path, 401, credential=child["token"])
     command([*helm, "uninstall", args.release, "--wait", "--timeout", "3m"])
     assert pvc_ids() == claims
     versions = json.loads(kubectl("version", "-o", "json"))
@@ -254,6 +286,9 @@ def main():
         "source_and_graph_after_upgrade": True,
         "source_and_graph_after_uninstall_reinstall": True,
         "pvc_uids_retained": True,
+        "invocation_private_source_and_credentials_retained": True,
+        "parent_and_sibling_scope_isolation": True,
+        "delegated_credential_revocation": True,
         "graph_authentication": True,
         "network_policy_enforcement": "not tested; kindnet does not enforce policies",
         "node_or_volume_loss_recovery": "not tested",

@@ -166,9 +166,15 @@ The `backup` CLI uses SQLite's online backup API for an exact source database.
 FalkorDB uses AOF with `appendfsync everysec` and periodic RDB snapshots. A host
 failure can lose approximately the last second of graph writes; source receipts
 remain governed by their independent SQLite commit. If a graph write outcome
-is unknown, the conservative worker stops that world's graph use and requires
+is unknown, the conservative worker stops that scope's graph use and requires
 an isolated rebuild. A later empty or stale graph backend is not evidence that
 the acknowledged source was lost.
+
+The same API data volume retains scope journals, UUID identities, context
+bindings, and delegated credential state. The Helm lifecycle smoke also checks
+private invocation data and parent/sibling isolation after pod replacement,
+upgrade, and uninstall/reinstall. See [agent scopes](scopes.md) for the data and
+authorization model. Scope isolation does not require a pod or PVC per agent.
 
 An exact whole-authority disaster recovery procedure must quiesce graph writers,
 record source/projection watermarks, back up all source/control/outbox databases,

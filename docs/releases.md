@@ -11,7 +11,7 @@ The repository builds four versioned distributions together:
 
 `manifest.json` records the full source commit, whether the checkout was clean, the tracked working-tree digest, tool versions, and each distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the manifest. The manifest is a build receipt; it is not a cryptographic signature. Archive timestamps may differ between builds, so matching source commits do not imply byte-identical archives.
 
-Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.1.0`. Builds fail if these identities differ.
+Python, Pi, chart version and chart `appVersion` must match. Release tags must use `v<version>`, such as `v0.2.0`. Builds fail if these identities differ.
 
 ## Build locally
 

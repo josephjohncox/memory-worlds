@@ -106,3 +106,12 @@ test("configuration defaults to no capture/retrieval and rejects plaintext crede
   assert.throws(() => parseConfig({ retrieval: { enabled: "yes" } }, {}), /boolean/);
   assert.throws(() => parseConfig({ readWorldIds: ["../../escape"] }, {}), /identifiers/);
 });
+
+test("a credential session snapshots rotation and erases its token after completion", async () => {
+  let token = "first", reads = 0, retained;
+  const authorizations = [];
+  const client = new MemoryWorldsClient("http://localhost", async () => { reads++; return token; }, async (_url, options) => { authorizations.push(options.headers.Authorization); return reply([world]); });
+  await client.withCredentialSession(async pinned => { retained = pinned; await pinned.worlds(); token = "second"; await pinned.worlds(); });
+  assert.deepEqual(authorizations, ["Bearer first", "Bearer first"]); assert.equal(reads, 1);
+  await assert.rejects(retained.worlds(), /session has ended/);
+});

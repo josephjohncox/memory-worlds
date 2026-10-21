@@ -282,6 +282,11 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
             "memory_mounts",
             "memory_remote_search",
             "memory_deliveries",
+            "memory_scopes",
+            "memory_scope_status",
+            "memory_context",
+            "memory_bind_context",
+            "memory_episodes",
         }
         captured = await client.call_tool(
             "memory_capture",

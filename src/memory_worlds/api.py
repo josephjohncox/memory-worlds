@@ -2,25 +2,35 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from . import __version__
 from .auth import AuthConfig, OIDCAuthenticator
 from .errors import MemoryError, Unauthorized, Unavailable
 from .locking import DaemonLock
 from .models import (
+    AgentContext,
+    BindContext,
+    CreateScope,
     CreateToken,
     CreateWorld,
+    DelegateCredential,
     Episode,
     EpisodeInput,
     MembershipUpdate,
     Principal,
     Publication,
     Receipt,
+    Scope,
+    ScopedPublication,
+    ScopeFlow,
     SearchRequest,
+    UpdateScopeGrant,
     UserUpdate,
     World,
 )
@@ -62,7 +72,7 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
                 if graph is not None:
                     await graph.close()
 
-    app = FastAPI(title="Memory Worlds", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="Memory Worlds", version=__version__, lifespan=lifespan)
     app.state.store = store
     app.state.router = router
     app.state.started = False
@@ -148,6 +158,68 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
     def revoke(credential_id: str, user: User):
         store.revoke_token(user, credential_id)
 
+    @app.post("/v1/credentials/delegate", status_code=201)
+    def delegate(body: DelegateCredential, user: User):
+        return store.delegate_credential(user, body)
+
+    @app.post("/v1/contexts", response_model=AgentContext, status_code=201)
+    def bind_context(body: BindContext, user: User):
+        return store.bind_context(user, body)
+
+    @app.get("/v1/contexts/{context_id}", response_model=AgentContext)
+    def context(context_id: UUID, user: User):
+        return store.get_context(user, context_id)
+
+    @app.get("/v1/worlds/{world_id}/scopes", response_model=list[Scope])
+    def scopes(world_id: str, user: User):
+        return store.list_scopes(user, world_id)
+
+    @app.post("/v1/scopes/flow")
+    def scope_flow(body: ScopeFlow, user: User):
+        return {"allowed": store.scope_flow(user, body)}
+
+    @app.post("/v1/worlds/{world_id}/scopes", response_model=Scope, status_code=201)
+    def create_scope(world_id: str, body: CreateScope, user: User):
+        return store.create_scope(user, world_id, body)
+
+    @app.get("/v1/worlds/{world_id}/scopes/{scope_id}", response_model=Scope)
+    def scope(world_id: str, scope_id: UUID, user: User):
+        return store.get_scope(user, world_id, scope_id)
+
+    @app.put("/v1/worlds/{world_id}/scopes/{scope_id}/grants", status_code=204)
+    def scope_grant(world_id: str, scope_id: UUID, body: UpdateScopeGrant, user: User):
+        store.set_scope_grant(user, world_id, scope_id, body)
+
+    @app.post("/v1/worlds/{world_id}/scopes/{scope_id}/episodes", response_model=Receipt)
+    def scoped_capture(world_id: str, scope_id: UUID, body: EpisodeInput, user: User):
+        if body.scope_id not in {None, scope_id}:
+            from .errors import Forbidden
+
+            raise Forbidden("Episode scope does not match its route")
+        return store.capture(user, world_id, body.model_copy(update={"scope_id": scope_id}))
+
+    @app.get("/v1/worlds/{world_id}/scopes/{scope_id}/episodes", response_model=list[Episode])
+    def scoped_episodes(world_id: str, scope_id: UUID, user: User, limit: int = 100):
+        return store.list_episodes(user, world_id, scope_id=scope_id, limit=limit)
+
+    @app.get(
+        "/v1/worlds/{world_id}/scopes/{scope_id}/episodes/{episode_id}", response_model=Episode
+    )
+    def scoped_episode(world_id: str, scope_id: UUID, episode_id: str, user: User):
+        return store.get_episode(user, world_id, episode_id, scope_id=scope_id)
+
+    @app.post("/v1/worlds/{world_id}/scopes/{scope_id}/publications", response_model=Receipt)
+    def scoped_publication(world_id: str, scope_id: UUID, body: ScopedPublication, user: User):
+        return store.publish_scope(user, world_id, scope_id, body)
+
+    @app.get("/v1/worlds/{world_id}/scopes/{scope_id}/snapshot")
+    def scoped_snapshot(world_id: str, scope_id: UUID, user: User):
+        return store.snapshot(user, world_id, scope_id=scope_id)
+
+    @app.get("/v1/worlds/{world_id}/scopes/{scope_id}/status")
+    def scoped_status(world_id: str, scope_id: UUID, user: User):
+        return status(world_id, user, scope_id)
+
     @app.get("/v1/users")
     def users(user: User):
         return store.list_users(user)
@@ -169,8 +241,12 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
         return store.capture(user, world_id, body)
 
     @app.get("/v1/worlds/{world_id}/episodes/{episode_id}", response_model=Episode)
-    def episode(world_id: str, episode_id: str, user: User):
-        return store.get_episode(user, world_id, episode_id)
+    def episode(world_id: str, episode_id: str, user: User, scope_id: UUID | None = None):
+        return store.get_episode(user, world_id, episode_id, scope_id=scope_id)
+
+    @app.get("/v1/worlds/{world_id}/episodes", response_model=list[Episode])
+    def episodes(world_id: str, user: User, scope_id: UUID | None = None, limit: int = 100):
+        return store.list_episodes(user, world_id, scope_id=scope_id, limit=limit)
 
     @app.post("/v1/worlds/{world_id}/publications", response_model=Receipt)
     def publish(world_id: str, body: Publication, user: User):
@@ -179,26 +255,40 @@ def create_app(data_dir: Path, graph=None, *, router=None, auth=None, mount_conf
         return store.capture(user, world_id, data, shared=True)
 
     @app.get("/v1/worlds/{world_id}/status")
-    def status(world_id: str, user: User):
-        world = store.get_world(user, world_id)
-        episodes = store.list_episodes(user, world_id)
+    def status(world_id: str, user: User, scope_id: UUID | None = None):
+        world = store.get_world(user, world_id, scope_id=scope_id)
+        episodes = store.list_episodes(user, world_id, scope_id=scope_id)
         counts: dict[str, int] = {}
         for item in episodes:
             counts[item.projection_state] = counts.get(item.projection_state, 0) + 1
-        return {"world": world, "episodes": len(episodes), "projection": counts}
+        result = {"world": world, "episodes": len(episodes), "projection": counts}
+        if scope_id is not None:
+            result["scope"] = store.get_scope(user, world_id, scope_id)
+        return result
 
     @app.post("/v1/search")
     async def search(body: SearchRequest, user: User):
         # Authorize the entire selection before any backend is queried.
-        selected = [store.get_world(user, wid) for wid in dict.fromkeys(body.world_ids)]
+        selections = [(wid, body.scope_id) for wid in body.world_ids]
+        selections.extend((s.world_id, s.scope_id) for s in body.scopes)
+        selected = [
+            store.get_world(user, wid, scope_id=sid) for wid, sid in dict.fromkeys(selections)
+        ]
         if body.mode == "source":
             rows = await asyncio.to_thread(
-                store.search, user, [w.id for w in selected], body.query, body.limit
+                store.search,
+                user,
+                body.world_ids,
+                body.query,
+                body.limit,
+                scope_id=body.scope_id,
+                scopes=body.scopes,
             )
             return {"mode": "source", "results": rows, "worlds": selected}
         if graph is None:
             raise Unavailable("graph processing is not configured; source search is available")
-        results = await graph.search(selected, body.query, body.limit)
+        kwargs = {"include_entities": True} if body.include_entities else {}
+        results = await graph.search(selected, body.query, body.limit, **kwargs)
         return {"mode": "graph", "results": results, "worlds": selected}
 
     @app.get("/v1/mounts", response_model=list[MountView])

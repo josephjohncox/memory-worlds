@@ -14,7 +14,7 @@ const token = "smoke-fixture-agent-token";
 const captured = [];
 const published = [];
 const requests = [];
-const world = { id: "private", name: "Private", authority_id: "fixture-authority", kind: "personal", owner_id: "alice", created_at: "2026-10-20T00:00:00Z", projection_state: "disabled" };
+const world = { scope_id: "00000000-0000-4000-8000-000000000001", id: "private", name: "Private", authority_id: "fixture-authority", kind: "personal", owner_id: "alice", created_at: "2026-10-20T00:00:00Z", projection_state: "disabled" };
 const daemon = createServer(async (request, response) => {
   assert.equal(request.headers.authorization, `Bearer ${token}`);
   requests.push(request.url);
@@ -24,6 +24,7 @@ const daemon = createServer(async (request, response) => {
   if (request.url === "/v1/worlds") response.end(JSON.stringify([world]));
   else if (request.url === "/v1/router/deliveries") response.end("[]");
   else if (request.url === "/v1/mounts") response.end(JSON.stringify([{ id: "team", name: "Team", url: "https://example.test", authority_id: "team-authority", world_ids: ["shared"], can_publish: true }]));
+  else if (request.url === "/v1/scopes/flow") response.end(JSON.stringify({ allowed: true }));
   else if (request.url === "/v1/search") response.end(JSON.stringify({ mode: "source", worlds: [world], results: [{ world_id: "private", id: "fixture-source", content: "fixture evidence" }] }));
   else if (request.url === "/v1/router/publications") {
     published.push(JSON.parse(body));

@@ -8,12 +8,14 @@ import io
 import json
 import stat
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "scripts/audit-artifacts.py"
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts/audit-artifacts.py"
 specification = importlib.util.spec_from_file_location("artifact_audit", SCRIPT)
 assert specification and specification.loader
 audit = importlib.util.module_from_spec(specification)
@@ -142,11 +144,12 @@ def test_user_home_path_signature_and_scanner_source() -> None:
 
 
 def test_changed_distribution_cannot_keep_old_manifest_and_checksums(tmp_path: Path) -> None:
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     filenames = [
-        "memory_worlds-0.1.0-py3-none-any.whl",
-        "memory_worlds-0.1.0.tar.gz",
-        "memory-worlds-pi-0.1.0.tgz",
-        "memory-worlds-0.1.0.tgz",
+        f"memory_worlds-{version}-py3-none-any.whl",
+        f"memory_worlds-{version}.tar.gz",
+        f"memory-worlds-pi-{version}.tgz",
+        f"memory-worlds-{version}.tgz",
     ]
     receipts = []
     checksums = []
@@ -159,7 +162,7 @@ def test_changed_distribution_cannot_keep_old_manifest_and_checksums(tmp_path: P
     manifest = {
         "schema_version": 1,
         "project": "memory-worlds",
-        "version": "0.1.0",
+        "version": version,
         "source": {"commit": "a" * 40},
         "artifacts": receipts,
     }

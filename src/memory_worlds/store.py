@@ -18,7 +18,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized, Unavailable
 from memory_worlds.errors import MemoryError as InvalidRequest
@@ -33,6 +33,7 @@ from memory_worlds.models import (
     World,
     WorldKind,
 )
+from memory_worlds.scopes import ScopedStore, scope_uuid
 
 _PRIVATE = {WorldKind.PERSONAL, WorldKind.PRIVATE_WORK}
 _WRITERS = {Role.WRITER.value, Role.MANAGER.value}
@@ -50,7 +51,7 @@ def _canonical(value: dict) -> str:
         raise InvalidRequest("Metadata must contain JSON values with finite numbers") from error
 
 
-class MemoryStore:
+class MemoryStore(ScopedStore):
     def __init__(self, data_dir: Path):
         self.data_dir = Path(data_dir).expanduser().absolute()
         self._control_lock = threading.RLock()
@@ -104,6 +105,7 @@ class MemoryStore:
             self.authority_id = db.execute(
                 "SELECT value FROM metadata WHERE key='authority_id'"
             ).fetchone()[0]
+            self._initialize_scopes(db)
 
     @staticmethod
     def _directory(path: Path) -> None:
@@ -142,19 +144,31 @@ class MemoryStore:
         with self._locks_lock:
             return self._world_locks.setdefault(world_id, threading.RLock())
 
-    def world_path(self, world_id: str) -> Path:
+    def world_path(self, world_id: str, scope_id=None) -> Path:
         """Trusted administration helper; callers still authorize the world first."""
         self._lock(world_id)
-        return self.data_dir / "worlds" / world_id / "source.sqlite3"
+        directory = self.data_dir / "worlds" / world_id
+        if scope_id is not None:
+            directory = directory / "scopes" / scope_uuid(scope_id)
+        return directory / "source.sqlite3"
 
     @contextmanager
-    def _world_db(self, world_id: str) -> Iterator[sqlite3.Connection]:
+    def _world_db(self, world_id: str, scope_id=None) -> Iterator[sqlite3.Connection]:
         with self._lock(world_id):
-            path = self.world_path(world_id)
+            path = self.world_path(world_id, scope_id)
             if not path.parent.is_dir() or path.parent.is_symlink():
                 raise NotFound("World storage not found")
             db = self._connect(path)
             try:
+                columns = {row["name"] for row in db.execute("PRAGMA table_info(episodes)")}
+                missing = {"agent_uuid", "invocation_id", "parent_invocation_id"} - columns
+                if columns and missing:
+                    with self._transaction(db):
+                        # Separate API/worker store instances can inspect the old
+                        # schema concurrently. Recheck after the database write lock.
+                        current = {row["name"] for row in db.execute("PRAGMA table_info(episodes)")}
+                        for column in sorted(missing - current):
+                            db.execute(f"ALTER TABLE episodes ADD COLUMN {column} TEXT")
                 yield db
             finally:
                 db.close()
@@ -170,16 +184,20 @@ class MemoryStore:
             db.rollback()
             raise
 
-    def _initialize_world(self, world_id: str) -> None:
+    def _initialize_world(self, world_id: str, scope_id=None) -> None:
         self._directory(self.data_dir / "worlds" / world_id)
-        with self._world_db(world_id) as db:
+        if scope_id is not None:
+            self._directory(self.data_dir / "worlds" / world_id / "scopes")
+            self._directory(self.world_path(world_id, scope_id).parent)
+        with self._world_db(world_id, scope_id) as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS episodes (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     id TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL UNIQUE,
                     digest TEXT NOT NULL, payload TEXT NOT NULL,
                     received_at TEXT NOT NULL, actor_id TEXT NOT NULL, agent_id TEXT NOT NULL,
-                    projection_state TEXT NOT NULL
+                    projection_state TEXT NOT NULL,
+                    agent_uuid TEXT, invocation_id TEXT, parent_invocation_id TEXT
                 );
                 CREATE TABLE IF NOT EXISTS projection (
                     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -201,6 +219,7 @@ class MemoryStore:
             """)
 
     def _principal(self, db: sqlite3.Connection, principal: Principal) -> Principal:
+        self._validate_ancestors(db, principal.credential_id)
         row = db.execute(
             "SELECT * FROM credentials WHERE id=? AND revoked=0", (principal.credential_id,)
         ).fetchone()
@@ -218,12 +237,7 @@ class MemoryStore:
             raise Unauthorized("Identity is disabled")
         if session is not None and session["expires_at"] <= time.time():
             raise Unauthorized("Identity session is expired")
-        current = Principal(
-            credential_id=row["id"],
-            user_id=row["user_id"],
-            agent_id=row["agent_id"],
-            admin=bool(row["admin"]),
-        )
+        current = self._credential_principal(db, row)
         if current != principal:
             raise Unauthorized("Credential identity does not match")
         return current
@@ -328,14 +342,9 @@ class MemoryStore:
             row = db.execute(
                 "SELECT * FROM credentials WHERE token_hash=? AND revoked=0", (digest,)
             ).fetchone()
-        if row is None:
-            raise Unauthorized("Credential is invalid or revoked")
-        return Principal(
-            credential_id=row["id"],
-            user_id=row["user_id"],
-            agent_id=row["agent_id"],
-            admin=bool(row["admin"]),
-        )
+            if row is None:
+                raise Unauthorized("Credential is invalid or revoked")
+            return self._principal(db, self._credential_principal(db, row))
 
     def authenticate_oidc(
         self,
@@ -556,17 +565,31 @@ class MemoryStore:
             roles = {grant["role"]} if grant is not None else set()
         if not roles or (write and not roles.intersection(_WRITERS)):
             raise Forbidden("World access denied")
+        context = db.execute(
+            "SELECT parent_credential_id FROM credential_contexts WHERE credential_id=?",
+            (principal.credential_id,),
+        ).fetchone()
+        if context is not None:
+            parent = db.execute("SELECT * FROM credentials WHERE id=?", (context[0],)).fetchone()
+            self._authorized(db, self._credential_principal(db, parent), world_id, write)
         return row
 
-    def _hydrate(self, row: sqlite3.Row) -> World:
-        with self._world_db(row["id"]) as db:
+    def _hydrate(self, row: sqlite3.Row, scope_id=None) -> World:
+        with self._world_db(row["id"], scope_id) as db:
             projection = db.execute("SELECT generation,state FROM projection").fetchone()
-        return World(**dict(row), generation=projection[0], projection_state=projection[1])
+        return World(
+            **dict(row), generation=projection[0], projection_state=projection[1], scope_id=scope_id
+        )
 
-    def get_world(self, principal: Principal, world_id: str, write: bool = False) -> World:
+    def get_world(
+        self, principal: Principal, world_id: str, write: bool = False, scope_id=None
+    ) -> World:
         with self._control() as db:
             row = self._authorized(db, principal, world_id, write)
-        return self._hydrate(row)
+            scope = self._scope_authorized(
+                db, principal, world_id, scope_id, "write" if write else "read"
+            )
+        return self._hydrate(row, self._journal_scope(scope))
 
     def list_worlds(self, principal: Principal) -> list[World]:
         with self._control() as db:
@@ -579,6 +602,10 @@ class MemoryStore:
                     visible.append(row)
                 except Forbidden:
                     continue
+        # A scope-only invocation may discover its world's identity without
+        # receiving the shared journal's projection state or any shared data.
+        if principal.restricted:
+            return [World(**dict(row)) for row in visible]
         return [self._hydrate(row) for row in visible]
 
     def issue_token(self, principal: Principal, request: CreateToken) -> str:
@@ -592,7 +619,16 @@ class MemoryStore:
 
     def revoke_token(self, principal: Principal, credential_id: str) -> None:
         with self._control() as db, self._transaction(db):
-            self._admin(db, principal)
+            self._principal(db, principal)
+            if not principal.admin:
+                row = db.execute(
+                    "SELECT parent_credential_id FROM credential_contexts WHERE credential_id=?",
+                    (credential_id,),
+                ).fetchone()
+                if row is None or row[0] != principal.credential_id:
+                    raise Forbidden(
+                        "Only administrators or the delegating parent may revoke a credential"
+                    )
             changed = db.execute(
                 "UPDATE credentials SET revoked=1 WHERE id=?", (credential_id,)
             ).rowcount
@@ -610,7 +646,23 @@ class MemoryStore:
             received_at=row["received_at"],
             actor_id=row["actor_id"],
             agent_id=row["agent_id"],
+            agent_uuid=row["agent_uuid"],
+            invocation_id=row["invocation_id"],
+            parent_invocation_id=row["parent_invocation_id"],
             projection_state=row["projection_state"],
+        )
+
+    @staticmethod
+    def _episode_response(episode: Episode, scope_id=None) -> Episode:
+        # Scope-aware views identify even the legacy shared journal explicitly.
+        # This annotation never rewrites immutable source payloads or digests.
+        if scope_id is None:
+            return episode
+        return episode.model_copy(update={"scope_id": UUID(scope_uuid(scope_id))})
+
+    def _receipt_response(self, receipt: Receipt, scope_id=None) -> Receipt:
+        return receipt.model_copy(
+            update={"episode": self._episode_response(receipt.episode, scope_id)}
         )
 
     def _insert(
@@ -619,7 +671,12 @@ class MemoryStore:
         # Validate before Pydantic's JSON conversion can turn NaN into null and
         # make two distinct inputs acquire the same source identity digest.
         _canonical(episode.metadata)
-        payload = _canonical(episode.model_dump(mode="json"))
+        value = episode.model_dump(mode="json")
+        # Preserve the canonical payload of pre-scope journals and their replay digests.
+        for field in ("scope_id", "context_id"):
+            if value.get(field) is None:
+                value.pop(field, None)
+        payload = _canonical(value)
         digest = hashlib.sha256(payload.encode()).hexdigest()
         old = db.execute(
             "SELECT * FROM episodes WHERE source_id=?", (episode.source_id,)
@@ -632,8 +689,9 @@ class MemoryStore:
         state = "pending" if episode.project else "disabled"
         db.execute(
             "INSERT INTO episodes "
-            "(id,source_id,digest,payload,received_at,actor_id,agent_id,projection_state) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "(id,source_id,digest,payload,received_at,actor_id,agent_id,projection_state,"
+            "agent_uuid,invocation_id,parent_invocation_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 episode_id,
                 episode.source_id,
@@ -643,6 +701,9 @@ class MemoryStore:
                 principal.user_id,
                 principal.agent_id,
                 state,
+                str(principal.agent_uuid) if principal.agent_uuid else None,
+                str(principal.invocation_id) if principal.invocation_id else None,
+                str(principal.parent_invocation_id) if principal.parent_invocation_id else None,
             ),
         )
         if episode.project:
@@ -660,55 +721,92 @@ class MemoryStore:
     def capture(
         self, principal: Principal, world_id: str, episode: EpisodeInput, shared: bool = False
     ) -> Receipt:
-        world = self.get_world(principal, world_id, write=True)
-        if shared != (world.kind not in _PRIVATE):
+        operation = "publish" if shared else "write"
+        with self._control() as control:
+            scope = self._scope_authorized(
+                control, principal, world_id, episode.scope_id, operation
+            )
+            row = self._authorized(control, principal, world_id, write=True)
+        sid = self._journal_scope(scope)
+        world = self._hydrate(row, sid)
+        is_shared = scope["kind"] in {"world-shared", "run-shared"}
+        requires_publication = is_shared and (world.kind not in _PRIVATE or sid is not None)
+        if shared != requires_publication and not (shared and sid is not None):
             raise Forbidden(
                 "Use explicit publication for shared worlds and capture for private worlds"
             )
-        with self._world_db(world_id) as db, self._transaction(db):
-            return self._insert(db, principal, world_id, episode)
+        normalized = episode.model_copy(update={"scope_id": UUID(sid) if sid else None})
+        attributed = self._capture_principal(principal, world_id, sid, episode.context_id)
+        with self._world_db(world_id, sid) as db, self._transaction(db):
+            receipt = self._insert(db, attributed, world_id, normalized)
+        return self._receipt_response(receipt, episode.scope_id)
 
-    def get_episode(self, principal: Principal, world_id: str, episode_id: str) -> Episode:
-        self.get_world(principal, world_id)
-        with self._world_db(world_id) as db:
+    def get_episode(
+        self, principal: Principal, world_id: str, episode_id: str, scope_id=None
+    ) -> Episode:
+        world = self.get_world(principal, world_id, scope_id=scope_id)
+        with self._world_db(world_id, world.scope_id) as db:
             row = db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
         if row is None:
             raise NotFound("Episode not found")
-        return self._episode(row, world_id)
+        return self._episode_response(self._episode(row, world_id), scope_id)
 
-    def list_episodes(self, principal: Principal, world_id: str) -> list[Episode]:
-        self.get_world(principal, world_id)
-        with self._world_db(world_id) as db:
+    def list_episodes(
+        self, principal: Principal, world_id: str, scope_id=None, limit=None
+    ) -> list[Episode]:
+        world = self.get_world(principal, world_id, scope_id=scope_id)
+        if limit is not None and not 1 <= limit <= 1000:
+            raise InvalidRequest("Episode limit must be between 1 and 1000")
+        with self._world_db(world_id, world.scope_id) as db:
             return [
-                self._episode(r, world_id)
-                for r in db.execute("SELECT * FROM episodes ORDER BY sequence")
+                self._episode_response(self._episode(r, world_id), scope_id)
+                for r in db.execute(
+                    "SELECT * FROM episodes ORDER BY sequence"
+                    if limit is None
+                    else "SELECT * FROM episodes ORDER BY sequence DESC LIMIT ?",
+                    () if limit is None else (limit,),
+                )
             ]
 
     def search(
-        self, principal: Principal, world_ids: list[str], query: str, limit: int = 10
+        self,
+        principal: Principal,
+        world_ids: list[str],
+        query: str,
+        limit: int = 10,
+        scope_id=None,
+        scopes=None,
     ) -> list[Episode]:
         if not 1 <= limit <= 100:
             raise ValueError("Search limit must be between 1 and 100")
         # Authorize the complete selection before touching any source database.
+        selections = [(world_id, scope_id) for world_id in world_ids]
+        selections.extend((selection.world_id, selection.scope_id) for selection in (scopes or []))
+        selected = {}
         with self._control() as db:
             self._principal(db, principal)
-            for world_id in world_ids:
-                self._authorized(db, principal, world_id)
+            for world_id, sid in selections:
+                scope = self._scope_authorized(db, principal, world_id, sid)
+                key = (world_id, self._journal_scope(scope))
+                if key not in selected or sid is not None:
+                    selected[key] = sid
         words = query.casefold().split()
         if not words:
             return []
         matches = []
-        for world_id in dict.fromkeys(world_ids):
-            with self._world_db(world_id) as db:
+        for (world_id, sid), response_scope in selected.items():
+            with self._world_db(world_id, sid) as db:
                 for row in db.execute("SELECT * FROM episodes ORDER BY sequence DESC"):
                     content = json.loads(row["payload"])["content"].casefold()
                     if all(word in content for word in words):
-                        matches.append(self._episode(row, world_id))
+                        matches.append(
+                            self._episode_response(self._episode(row, world_id), response_scope)
+                        )
         return sorted(matches, key=lambda episode: episode.received_at, reverse=True)[:limit]
 
-    def snapshot(self, principal: Principal, world_id: str) -> dict:
-        world = self.get_world(principal, world_id)
-        with self._world_db(world_id) as db:
+    def snapshot(self, principal: Principal, world_id: str, scope_id=None) -> dict:
+        world = self.get_world(principal, world_id, scope_id=scope_id)
+        with self._world_db(world_id, world.scope_id) as db:
             db.execute("BEGIN")
             try:
                 projection = db.execute(
@@ -721,38 +819,67 @@ class MemoryStore:
                     }
                 )
                 episodes = [
-                    self._episode(row, world_id).model_dump(mode="json")
+                    self._episode_response(self._episode(row, world_id), scope_id).model_dump(
+                        mode="json"
+                    )
                     for row in db.execute("SELECT * FROM episodes ORDER BY sequence")
                 ]
                 audit = [dict(row) for row in db.execute("SELECT * FROM audit ORDER BY sequence")]
             finally:
                 db.rollback()
-        return {
+        result = {
             "world": world.model_dump(mode="json"),
             "episodes": episodes,
             "audit": audit,
             "projection_configuration": json.loads(projection[2]),
         }
+        if scope_id is not None:
+            result["scope"] = self.get_scope(principal, world_id, scope_id).model_dump(mode="json")
+        return result
 
-    def restore(self, principal: Principal, world_id: str, episodes: list[EpisodeInput]) -> dict:
+    def restore(
+        self, principal: Principal, world_id: str, episodes: list[EpisodeInput], scope_id=None
+    ) -> dict:
         # Administrative imports may seed shared worlds; agent capture may not.
         with self._control() as db:
             self._admin(db, principal)
             self._authorized(db, principal, world_id, write=True)
+            scope = self._scope_authorized(db, principal, world_id, scope_id, "write")
+            sid = self._journal_scope(scope)
+            allowed = {sid}
+            if sid is None and scope_id is not None:
+                allowed.add(scope["id"])
+            if any(
+                (str(episode.scope_id) if episode.scope_id else None) not in allowed
+                for episode in episodes
+            ):
+                raise Forbidden("Restore episodes must match the explicit target scope")
+            if any(episode.context_id is not None for episode in episodes):
+                raise Forbidden(
+                    "Restore must clear source context bindings and retain them as origin metadata"
+                )
         counts = {"imported": 0, "replayed": 0}
-        with self._world_db(world_id) as db, self._transaction(db):
+        with self._world_db(world_id, sid) as db, self._transaction(db):
             for episode in episodes:
-                receipt = self._insert(db, principal, world_id, episode)
+                normalized = episode.model_copy(update={"scope_id": UUID(sid) if sid else None})
+                receipt = self._insert(db, principal, world_id, normalized)
                 counts["replayed" if receipt.replayed else "imported"] += 1
         return counts
 
     def projection_worlds(self) -> list[World]:
         with self._control() as db:
             rows = db.execute("SELECT * FROM worlds ORDER BY id").fetchall()
-        return [self._hydrate(row) for row in rows]
+        targets = [self._hydrate(row) for row in rows]
+        with self._control() as db:
+            scopes = db.execute(
+                "SELECT * FROM scopes WHERE kind<>'world-shared' ORDER BY world_id,id"
+            ).fetchall()
+        worlds = {row["id"]: row for row in rows}
+        targets.extend(self._hydrate(worlds[row["world_id"]], row["id"]) for row in scopes)
+        return targets
 
-    def pending_jobs(self, world_id: str) -> list[Episode]:
-        with self._world_db(world_id) as db:
+    def pending_jobs(self, world_id: str, scope_id=None) -> list[Episode]:
+        with self._world_db(world_id, scope_id) as db:
             return [
                 self._episode(row, world_id)
                 for row in db.execute(
@@ -760,8 +887,8 @@ class MemoryStore:
                 )
             ]
 
-    def mark_processing(self, world_id: str, episode_id: str) -> Episode | None:
-        with self._world_db(world_id) as db, self._transaction(db):
+    def mark_processing(self, world_id: str, episode_id: str, scope_id=None) -> Episode | None:
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             if db.execute("SELECT state FROM projection").fetchone()[0] == "degraded":
                 raise Unavailable("World projection requires a rebuild")
             changed = db.execute(
@@ -777,8 +904,10 @@ class MemoryStore:
             row = db.execute("SELECT * FROM episodes WHERE id=?", (episode_id,)).fetchone()
             return self._episode(row, world_id)
 
-    def mark_projected(self, world_id: str, episode_id: str, generation: str) -> None:
-        with self._world_db(world_id) as db, self._transaction(db):
+    def mark_projected(
+        self, world_id: str, episode_id: str, generation: str, scope_id=None
+    ) -> None:
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             state = db.execute("SELECT state FROM projection").fetchone()[0]
             if state == "degraded":
                 raise Unavailable("World projection requires a rebuild")
@@ -791,8 +920,8 @@ class MemoryStore:
             db.execute("UPDATE episodes SET projection_state='projected' WHERE id=?", (episode_id,))
             db.execute("UPDATE projection SET generation=?,state='ready'", (generation,))
 
-    def mark_unknown(self, world_id: str, episode_id: str, error: str) -> None:
-        with self._world_db(world_id) as db, self._transaction(db):
+    def mark_unknown(self, world_id: str, episode_id: str, error: str, scope_id=None) -> None:
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             db.execute("UPDATE projection SET state='degraded'")
             db.execute("UPDATE episodes SET projection_state='unknown' WHERE id=?", (episode_id,))
             db.execute(
@@ -801,25 +930,29 @@ class MemoryStore:
                 (error[:2000], _now(), episode_id),
             )
 
-    def set_projection(self, world_id: str, generation: str | None, state: str) -> None:
+    def set_projection(
+        self, world_id: str, generation: str | None, state: str, scope_id=None
+    ) -> None:
         if state not in {"disabled", "ready", "degraded"}:
             raise ValueError("Invalid projection state")
-        with self._world_db(world_id) as db, self._transaction(db):
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             db.execute("UPDATE projection SET generation=?,state=?", (generation, state))
 
-    def set_projection_configuration(self, world_id: str, configuration: dict) -> None:
+    def set_projection_configuration(
+        self, world_id: str, configuration: dict, scope_id=None
+    ) -> None:
         """Persist public configuration metadata supplied by the trusted adapter."""
-        with self._world_db(world_id) as db, self._transaction(db):
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             db.execute("UPDATE projection SET configuration=?", (_canonical(configuration),))
 
-    def projection_configuration(self, world_id: str) -> dict:
-        with self._world_db(world_id) as db:
+    def projection_configuration(self, world_id: str, scope_id=None) -> dict:
+        with self._world_db(world_id, scope_id) as db:
             return json.loads(db.execute("SELECT configuration FROM projection").fetchone()[0])
 
     def projection_episodes(
-        self, world_id: str, include_unprojected: bool = False
+        self, world_id: str, include_unprojected: bool = False, scope_id=None
     ) -> list[Episode]:
-        with self._world_db(world_id) as db:
+        with self._world_db(world_id, scope_id) as db:
             episodes = [
                 self._episode(row, world_id)
                 for row in db.execute("SELECT * FROM episodes ORDER BY sequence")
@@ -836,8 +969,9 @@ class MemoryStore:
         generation: str,
         episode_ids: list[str],
         configuration: dict | None = None,
+        scope_id=None,
     ) -> None:
-        with self._world_db(world_id) as db, self._transaction(db):
+        with self._world_db(world_id, scope_id) as db, self._transaction(db):
             for episode_id in episode_ids:
                 row = db.execute("SELECT id FROM episodes WHERE id=?", (episode_id,)).fetchone()
                 if row is None:
@@ -861,7 +995,7 @@ class MemoryStore:
     def recover_interrupted_projections(self) -> int:
         recovered = 0
         for world in self.projection_worlds():
-            with self._world_db(world.id) as db, self._transaction(db):
+            with self._world_db(world.id, world.scope_id) as db, self._transaction(db):
                 count = db.execute(
                     "SELECT COUNT(*) FROM episodes WHERE projection_state='processing'"
                 ).fetchone()[0]
