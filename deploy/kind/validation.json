@@ -1,0 +1,70 @@
+{
+  "result": "pass",
+  "tested_at": "2026-10-21T00:23:44.489310+00:00",
+  "kubernetes": "v1.37.0",
+  "kubectl": "v1.37.1",
+  "images": {
+    "falkordb-0": [
+      "docker.io/falkordb/falkordb-server@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925"
+    ],
+    "memory-worlds-0": [
+      "docker.io/library/import-2026-10-21@sha256:37299493f8d0d5093afc7d436fc3151f84c7c0c79e30de6c701714837eb40d19"
+    ]
+  },
+  "source_capture": true,
+  "source_replay_idempotent": true,
+  "source_after_pod_replacement": true,
+  "native_graph_after_pod_replacement": true,
+  "api_authentication": true,
+  "graph_authentication": true,
+  "network_policy_enforcement": "not tested; kindnet does not enforce policies",
+  "node_or_volume_loss_recovery": "not tested",
+  "real_model_quality": "not tested",
+  "kind": "v0.33.0",
+  "python": "3.15.0",
+  "api_docker_config_id": "sha256:63e8956d269183a01299ffe627456b2bc7e37a98a44692e490cad2b543b05976",
+  "installed_source_sha256": {
+    "__init__.py": "e02992cb7a33209472dcb648aa97204a9b0a3c7ae8ba6f090daf529c36e668b5",
+    "api.py": "15edf8242f4a178dd6776d95539dc4c8d2b425647b1c40e415a04028fb5cfd59",
+    "auth.py": "9874ced333714883c56964738caa37193112eee59e6c8822e239646361ea9c5b",
+    "cli.py": "984475a96788bfac9c5b6233d564d2741d0dd549600455d690ef3eadbd7ea885",
+    "client.py": "234eb7254e20161e5eef6c84c49d759043175b891296237b520500ab55bbc7a3",
+    "errors.py": "c8ca2dbd6145d573fc314a6657c9323d9f3afd2d72b147123c92f0268f45e975",
+    "graph.py": "c65dc6017ce2a9de465e16b18f8617dc66a0fd1a10d4111db3924121852518ab",
+    "locking.py": "a9de8b10dd3370fc728ef5d744eccc2192a520ebe0d0d74ca1492e0072e1cdec",
+    "mcp.py": "c39fcd0a96513e77f3de2e0f38908b5ba286ba745dedff7a9b0f53dccce2ae35",
+    "models.py": "c6da2a77ae23e0b1887d85743b55f658f505b9cc1797de77bf5030f4acb9e412",
+    "mounts.py": "d1bc3e4bef384998d940faa0b2aedc252c04a76bbba5bac92d1faffe696f12fd",
+    "outbox.py": "b6178a58d64a17c72b2646a9e8bec8f81ecb2010817a8fb25c41e24800f7312b",
+    "portability.py": "a26af88d35d2d84769cb1f2cddd95459420ab06ccac5e9d6bcc8dbddb2a82237",
+    "router.py": "8f3c70f9c2e9f360c352feef73a7df7f7d88753ce3993d3faf2c4c5c1ce35dd0",
+    "store.py": "6bad88c3103caf75f28add39484ac68fadcd2e5e77c8568dc2cb668246604c4c"
+  },
+  "deployment_files_sha256": {
+    "deploy/k8s/base/api.yaml": "7f3a43317f127fbd7ac480b1f2413cac5cdf573aeec0950743329acda78f77d8",
+    "deploy/k8s/base/falkordb.yaml": "fb656e6ec7cf9152cfab7fec67f32413538363671675763d517adb2c6ee934a9",
+    "deploy/k8s/base/kustomization.yaml": "462391b357aee73b6e4e79d2429da5b051d8b21a4bb8dba55847a4f0a045d98c",
+    "deploy/k8s/base/namespace.yaml": "7fd12368d7cb936089b9c89921b38a2a33a6d54b58a81186428d0ed023de9d0f",
+    "deploy/k8s/base/network-policy.yaml": "5c4c2329240551512b0e058ae1ce5994979fb6292bf42354133ad76b480c369e",
+    "deploy/k8s/neptune.env.example": "e110c70806c7b3f8c06d6137ced105de87eba28b2aae14e2221f66f1f33ca3a9",
+    "deploy/k8s/overlays/graph/kustomization.yaml": "c9d711ec58b1523fe51d920a03fd821212af16586b6b4a0d35d72cfc8b7498f5",
+    "deploy/k8s/overlays/neptune/kustomization.yaml": "6ee7b7caffcce50154e5ace5fc71595872d78a41f38a0fe527a90cb21876f612",
+    "deploy/k8s/overlays/work/kustomization.yaml": "945995338d2f411f0ccf0cbaa58a48187f7849c05e0886c46256dd7bf65a7cc8",
+    "deploy/k8s/runtime.env.example": "b463b53a90c1955c6d6da08ccfdbc639cbf55acfc19d29039526ebc2a9ac67d4",
+    "deploy/kind/cluster.yaml": "467874587eb0e206b062d2e22b3e6e6c872b76371bed628167a0b89bbabf01f2",
+    "scripts/deploy-kind.sh": "1f055b3f1cf9b57e25f027f157bded87adb8f8a3d4c7dca26411026b985df43e",
+    "scripts/install-deploy-tools.sh": "b4344d21e731403b6814b1d6ff3d2e59bba53ef6b396b07728a6093c7e3b6ab7",
+    "scripts/kind-smoke.py": "bbd3c0661e6cc8af1b158cc63efc11e5be4a2b931a73c07004befcb760550fe8",
+    "deploy/Dockerfile": "0687c63b8753059a293637d0e78173062d1c01eb89493f8dbbf9e56ef58be13c"
+  },
+  "test_environment": {
+    "architecture": "linux/arm64",
+    "temporary_host_inotify_instances": {
+      "original": 128,
+      "during_test": 1024,
+      "restored": 128
+    },
+    "isolated_kind_cluster_deleted": true
+  },
+  "scope": "Deployment, authentication, and pod replacement continuity; parser containment changes made after image build are verified separately in the application suite."
+}

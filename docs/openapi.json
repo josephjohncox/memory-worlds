@@ -1,0 +1,1639 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Memory Worlds",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/healthz": {
+      "get": {
+        "summary": "Health",
+        "operationId": "health_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Ready",
+        "operationId": "ready_readyz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "summary": "Me",
+        "operationId": "me_v1_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/worlds": {
+      "get": {
+        "summary": "Worlds",
+        "operationId": "worlds_v1_worlds_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/World"
+                  },
+                  "type": "array",
+                  "title": "Response Worlds V1 Worlds Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "post": {
+        "summary": "Create World",
+        "operationId": "create_world_v1_worlds_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorld"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/World"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/credentials": {
+      "post": {
+        "summary": "Credentials",
+        "operationId": "credentials_v1_credentials_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateToken"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/credentials/{credential_id}": {
+      "delete": {
+        "summary": "Revoke",
+        "operationId": "revoke_v1_credentials__credential_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "credential_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Credential Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/users": {
+      "get": {
+        "summary": "Users",
+        "operationId": "users_v1_users_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/users/{user_id}": {
+      "patch": {
+        "summary": "Update User",
+        "operationId": "update_user_v1_users__user_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/memberships": {
+      "get": {
+        "summary": "Memberships",
+        "operationId": "memberships_v1_worlds__world_id__memberships_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/memberships/{user_id}": {
+      "put": {
+        "summary": "Update Membership",
+        "operationId": "update_membership_v1_worlds__world_id__memberships__user_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MembershipUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/episodes": {
+      "post": {
+        "summary": "Capture",
+        "operationId": "capture_v1_worlds__world_id__episodes_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EpisodeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/episodes/{episode_id}": {
+      "get": {
+        "summary": "Episode",
+        "operationId": "episode_v1_worlds__world_id__episodes__episode_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          },
+          {
+            "name": "episode_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Episode Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Episode"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/publications": {
+      "post": {
+        "summary": "Publish",
+        "operationId": "publish_v1_worlds__world_id__publications_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Publication"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/worlds/{world_id}/status": {
+      "get": {
+        "summary": "Status",
+        "operationId": "status_v1_worlds__world_id__status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "world_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "World Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search": {
+      "post": {
+        "summary": "Search",
+        "operationId": "search_v1_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/mounts": {
+      "get": {
+        "summary": "Mounts",
+        "operationId": "mounts_v1_mounts_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MountView"
+                  },
+                  "type": "array",
+                  "title": "Response Mounts V1 Mounts Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/router/search": {
+      "post": {
+        "summary": "Routed Search",
+        "operationId": "routed_search_v1_router_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RouterSearch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/router/publications": {
+      "post": {
+        "summary": "Routed Publication",
+        "operationId": "routed_publication_v1_router_publications_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RoutedPublication"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Delivery"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/router/deliveries": {
+      "get": {
+        "summary": "Deliveries",
+        "operationId": "deliveries_v1_router_deliveries_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Delivery"
+                  },
+                  "type": "array",
+                  "title": "Response Deliveries V1 Router Deliveries Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/v1/router/deliveries/{delivery_id}/retry": {
+      "post": {
+        "summary": "Retry Delivery",
+        "operationId": "retry_delivery_v1_router_deliveries__delivery_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "delivery_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Delivery Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Delivery"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "CreateToken": {
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "User Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "Agent Id"
+          },
+          "grants": {
+            "patternProperties": {
+              "^[a-zA-Z0-9_-]{1,100}$": {
+                "$ref": "#/components/schemas/Role"
+              }
+            },
+            "type": "object",
+            "maxProperties": 100,
+            "title": "Grants"
+          },
+          "admin": {
+            "type": "boolean",
+            "title": "Admin",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "user_id",
+          "agent_id"
+        ],
+        "title": "CreateToken"
+      },
+      "CreateWorld": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorldKind",
+            "default": "personal"
+          },
+          "owner_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-zA-Z0-9_-]{1,100}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CreateWorld"
+      },
+      "Delivery": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "destination_mount_id": {
+            "type": "string",
+            "title": "Destination Mount Id"
+          },
+          "destination_authority_id": {
+            "type": "string",
+            "title": "Destination Authority Id"
+          },
+          "world_id": {
+            "type": "string",
+            "title": "World Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "user_id": {
+            "type": "string",
+            "title": "User Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "delivered",
+              "blocked"
+            ],
+            "title": "State"
+          },
+          "attempts": {
+            "type": "integer",
+            "title": "Attempts"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "delivered_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered At"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "remote_episode_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Episode Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "destination_mount_id",
+          "destination_authority_id",
+          "world_id",
+          "source_id",
+          "user_id",
+          "agent_id",
+          "state",
+          "attempts",
+          "created_at"
+        ],
+        "title": "Delivery"
+      },
+      "Episode": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "chatgpt",
+              "pi",
+              "publication"
+            ],
+            "title": "Source Type",
+            "default": "text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "source_entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Entry Id"
+          },
+          "parent_entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Entry Id"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "default": false
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "world_id": {
+            "type": "string",
+            "title": "World Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "title": "Sequence"
+          },
+          "digest": {
+            "type": "string",
+            "title": "Digest"
+          },
+          "received_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Received At"
+          },
+          "actor_id": {
+            "type": "string",
+            "title": "Actor Id"
+          },
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "projection_state": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "pending",
+              "processing",
+              "projected",
+              "unknown"
+            ],
+            "title": "Projection State"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "content",
+          "occurred_at",
+          "id",
+          "world_id",
+          "sequence",
+          "digest",
+          "received_at",
+          "actor_id",
+          "agent_id",
+          "projection_state"
+        ],
+        "title": "Episode"
+      },
+      "EpisodeInput": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "chatgpt",
+              "pi",
+              "publication"
+            ],
+            "title": "Source Type",
+            "default": "text"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "source_entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Entry Id"
+          },
+          "parent_entry_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Entry Id"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "content",
+          "occurred_at"
+        ],
+        "title": "EpisodeInput"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MembershipUpdate": {
+        "properties": {
+          "role": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Role"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "title": "MembershipUpdate"
+      },
+      "MountView": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "authority_id": {
+            "type": "string",
+            "title": "Authority Id"
+          },
+          "world_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "World Ids"
+          },
+          "can_publish": {
+            "type": "boolean",
+            "title": "Can Publish"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "url",
+          "authority_id",
+          "world_ids",
+          "can_publish"
+        ],
+        "title": "MountView"
+      },
+      "Publication": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "content",
+          "occurred_at"
+        ],
+        "title": "Publication"
+      },
+      "Receipt": {
+        "properties": {
+          "episode": {
+            "$ref": "#/components/schemas/Episode"
+          },
+          "replayed": {
+            "type": "boolean",
+            "title": "Replayed",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "episode"
+        ],
+        "title": "Receipt"
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "reader",
+          "writer",
+          "manager"
+        ],
+        "title": "Role"
+      },
+      "RoutedPublication": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Source Id"
+          },
+          "content": {
+            "type": "string",
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Content"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Occurred At"
+          },
+          "project": {
+            "type": "boolean",
+            "title": "Project",
+            "default": false
+          },
+          "destination_mount_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "Destination Mount Id"
+          },
+          "world_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "World Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "source_id",
+          "content",
+          "occurred_at",
+          "destination_mount_id",
+          "world_id"
+        ],
+        "title": "RoutedPublication"
+      },
+      "RouterSearch": {
+        "properties": {
+          "mount_ids": {
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,100}$"
+            },
+            "type": "array",
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Mount Ids"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "source",
+              "graph"
+            ],
+            "title": "Mode",
+            "default": "source"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "mount_ids",
+          "query"
+        ],
+        "title": "RouterSearch"
+      },
+      "SearchRequest": {
+        "properties": {
+          "world_ids": {
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,100}$"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "World Ids"
+          },
+          "query": {
+            "type": "string",
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Query"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 10
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "source",
+              "graph"
+            ],
+            "title": "Mode",
+            "default": "source"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "world_ids",
+          "query"
+        ],
+        "title": "SearchRequest"
+      },
+      "UserUpdate": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "title": "UserUpdate"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "World": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "Id"
+          },
+          "authority_id": {
+            "type": "string",
+            "title": "Authority Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WorldKind"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation"
+          },
+          "projection_state": {
+            "type": "string",
+            "enum": [
+              "disabled",
+              "ready",
+              "degraded"
+            ],
+            "title": "Projection State",
+            "default": "disabled"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "authority_id",
+          "name",
+          "kind",
+          "owner_id",
+          "created_at"
+        ],
+        "title": "World"
+      },
+      "WorldKind": {
+        "type": "string",
+        "enum": [
+          "personal",
+          "private-work",
+          "team",
+          "company",
+          "ad-hoc"
+        ],
+        "title": "WorldKind"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}

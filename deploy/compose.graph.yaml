@@ -1,0 +1,41 @@
+# Local graph backend only. Run the daemon on the host with the graph extra and
+# explicitly configured extraction/embedding providers. Agent clients use the
+# authenticated daemon API; this Redis protocol port is for the daemon alone.
+name: memory-worlds-graph
+services:
+  falkordb:
+    image: falkordb/falkordb-server:6.0.0@sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${MEMORY_WORLDS_FALKORDB_PORT:-16379}:6379"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        umask 077
+        case "$$REDISCLI_AUTH" in
+          *[!0-9a-fA-F]*) echo 'Database password must be 64 hex characters' >&2; exit 1 ;;
+        esac
+        [ "$${#REDISCLI_AUTH}" -eq 64 ] || {
+          echo 'Database password must be 64 hex characters' >&2; exit 1;
+        }
+        {
+          printf '%s\n' 'protected-mode yes' 'dir /var/lib/falkordb/data' \
+            'loadmodule /var/lib/falkordb/bin/falkordb.so' \
+            'appendonly yes' 'appendfsync everysec'
+          printf 'requirepass %s\n' "$$REDISCLI_AUTH"
+        } > /run/memory-worlds/redis.conf
+        exec redis-server /run/memory-worlds/redis.conf
+    environment:
+      REDISCLI_AUTH: "${MEMORY_WORLDS_FALKORDB_PASSWORD:?Set a private database password}"
+    volumes:
+      - graph-data:/var/lib/falkordb/data
+    tmpfs:
+      - /run/memory-worlds:rw,noexec,nosuid,size=1m,mode=0700
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    stop_grace_period: 30s
+volumes:
+  graph-data:

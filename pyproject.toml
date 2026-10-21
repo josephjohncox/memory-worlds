@@ -1,0 +1,52 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "memory-worlds"
+version = "0.1.0"
+description = "Local shared agent memory with explicit worlds and portable evidence"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.13,<3.16"
+dependencies = [
+  "fastapi>=0.156.4,<1",
+  "uvicorn>=0.54,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.14.1,<3",
+  "PyJWT[crypto]>=2.15.1,<3",
+]
+
+[project.optional-dependencies]
+graph = ["graphiti-core[falkordb]==0.31.2"]
+neptune = ["graphiti-core[neptune]==0.31.2"]
+mcp = ["mcp>=2.3,<3"]
+
+[dependency-groups]
+dev = ["pytest>=9.1.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17.1,<1"]
+
+[project.scripts]
+memory-worlds = "memory_worlds.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/memory_worlds"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src", "/tests", "/docs", "/deploy", "/scripts", "/packages/pi/src", "/packages/pi/test",
+  "/packages/pi/package.json", "/packages/pi/package-lock.json", "/packages/pi/tsconfig.json",
+  "/packages/pi/README.md", "/packages/pi/LICENSE", "/pyproject.toml", "/README.md", "/LICENSE", "/uv.lock",
+  "/.env.example", "/.python-version", "/.dockerignore", "/.gitignore",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+

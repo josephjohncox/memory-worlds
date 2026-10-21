@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: memory-worlds
+resources:
+  - ../../base
+patches:
+  - target:
+      kind: StatefulSet
+      name: memory-worlds
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: MEMORY_WORLDS_GRAPH_BACKEND
+          value: falkordb
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: MEMORY_WORLDS_FALKORDB_HOST
+          value: falkordb
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: MEMORY_WORLDS_FALKORDB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: memory-worlds-falkordb
+              key: password

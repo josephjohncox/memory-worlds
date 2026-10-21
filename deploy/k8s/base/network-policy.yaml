@@ -1,0 +1,72 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: memory-worlds
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Apply these labels to an authenticated TLS gateway and its namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              memory-worlds-client: "true"
+          podSelector:
+            matchLabels:
+              memory-worlds-client: "true"
+      ports:
+        - protocol: TCP
+          port: 8787
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: falkordb
+      ports:
+        - protocol: TCP
+          port: 6379
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # OIDC, remote authorities, cloud model APIs. Narrow to provider CIDRs or
+    # an egress gateway for the target installation; standard policies lack FQDNs.
+    - ports:
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: graph
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: falkordb
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: memory-worlds
+      ports:
+        - protocol: TCP
+          port: 6379

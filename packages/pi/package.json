@@ -1,0 +1,34 @@
+{
+  "name": "memory-worlds-pi",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Native Pi tools, commands and session memory for Memory Worlds",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "exports": {
+    ".": "./dist/extension.js",
+    "./client": { "types": "./dist/client.d.ts", "import": "./dist/client.js" }
+  },
+  "pi": { "extensions": ["./dist/extension.js"] },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "smoke": "npm run build && node test/runtime-smoke.mjs",
+    "smoke:service": "npm run build && node test/real-service-smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": { "typebox": "1.4.2" },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0",
+    "@types/node": "26.6.5",
+    "typescript": "7.0.2"
+  },
+  "keywords": ["pi-package", "memory", "agents", "knowledge-graph"]
+}
