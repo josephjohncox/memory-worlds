@@ -48,6 +48,8 @@ remain defined by the checked-in configuration.
 | `mise run pi:verify` | Check and test the native Pi package |
 | `mise run pi:smoke` | Run real Pi runtime, scoped service, and classifier-driven sharing smokes |
 | `mise run cli -- --help` | Run the current Memory Worlds CLI |
+| `mise run setup` | Launch guided local/hybrid configuration and provisioning |
+| `mise run setup:smoke` | Verify an isolated actual local setup with Docker and model emulators |
 | `mise run graph:backend-up` | Start FalkorDB for a daemon running directly on the host |
 | `mise run graph:up` | Build and start the configured API and graph Compose stack |
 | `mise run graph:down` | Stop the stack and retain its named volumes |
@@ -61,6 +63,10 @@ different memory backend. `test:graph` requires a reachable FalkorDB and uses
 the actual Graphiti driver with deterministic model responses. `test:container`
 requires Docker and builds the deployment under test. The normal test run reports
 these external checks as skipped unless explicitly enabled.
+
+The [setup controller](setup.md) also works from an installed wheel. Its shell
+entrypoint and mise task delegate to the same Python implementation; setup
+configuration and credentials stay outside the source checkout.
 
 The kind lifecycle smoke supplies deliberately synthetic provider settings and
 captures source records with `project=false`. It checks durable source, native

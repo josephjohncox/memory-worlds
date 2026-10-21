@@ -88,6 +88,9 @@ jobs:
                   output.write(content)
           PY
           mise run python:check
+      - name: Exercise owned local setup with real Graphiti and local model emulators
+        if: matrix.python == '3.15.0'
+        run: mise run setup:smoke
       - name: Build source archive and wheel
         run: mise run python:build
       - name: Audit public distribution contents

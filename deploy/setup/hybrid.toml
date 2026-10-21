@@ -1,0 +1,32 @@
+# Corporate OIDC configuration belongs to the service operator. This native
+# public client authenticates an ordinary user, never a corporate administrator.
+instance = "work"
+mode = "hybrid"
+owner = "owner"
+data_dir = "~/.local/share/memory-worlds/work"
+state_dir = "~/.local/state/memory-worlds/work"
+port = 8788
+graph_port = 16380
+embedding_dimensions = 768
+pi_profiles = true
+mcp_profiles = true
+
+[extraction]
+provider = "openai-compatible"
+model = "YOUR_EXTRACTION_MODEL"
+base_url = "http://127.0.0.1:11434/v1"
+
+[embedding]
+provider = "openai-compatible"
+model = "YOUR_EMBEDDING_MODEL"
+base_url = "http://127.0.0.1:11434/v1"
+
+[corporate]
+url = "https://memory.example.com"
+issuer = "https://company.okta.com/oauth2/default"
+client_id = "YOUR_NATIVE_PUBLIC_CLIENT_ID"
+scopes = ["openid", "memory-worlds"]
+# Explicitly select IDs from authenticated discovery; none are auto-mounted.
+world_ids = []
+# For unattended access, use an existing private token file instead of device login:
+# token_file = "~/.local/state/memory-worlds/work/corporate-user.token"

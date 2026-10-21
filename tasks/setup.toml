@@ -1,0 +1,12 @@
+[setup]
+description = "Configure, provision, run or inspect an owned local/hybrid installation"
+depends = ["python:deps"]
+raw_args = true
+dir = "{{ env.MEMORY_WORLDS_SETUP_CWD | default(value=config_root) }}"
+run = 'uv run --project {{ config_root | quote }} --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- memory-worlds setup'
+
+["setup:smoke"]
+description = "Verify owned local setup with real Docker, emulated models, restart and volume retention"
+depends = ["python:deps"]
+env.MEMORY_WORLDS_RUN_SETUP_TEST = "1"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest tests/test_setup_acceptance.py -q'

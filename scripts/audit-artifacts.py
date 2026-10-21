@@ -225,9 +225,15 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
         prefix = f"memory_worlds-{version}.dist-info"
         if any(safe_parts(name)[0] not in {"memory_worlds", prefix} for name in files):
             fail("Unexpected wheel path")
-        required = {"memory_worlds/__init__.py", f"{prefix}/METADATA", f"{prefix}/licenses/LICENSE"}
+        required = {
+            "memory_worlds/__init__.py",
+            "memory_worlds/setup.py",
+            "memory_worlds/templates/setup-graph.compose.yaml",
+            f"{prefix}/METADATA",
+            f"{prefix}/licenses/LICENSE",
+        }
         if not required <= files.keys():
-            fail("Wheel lacks required module, metadata or license")
+            fail("Wheel lacks required module, setup template, metadata or license")
         metadata(files[f"{prefix}/METADATA"], version)
         if files[f"{prefix}/licenses/LICENSE"] != license_bytes:
             fail("Wheel license differs from the approved license")
@@ -245,6 +251,10 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             "LICENSE",
             "PKG-INFO",
             "deploy/helm/memory-worlds/Chart.yaml",
+            "src/memory_worlds/templates/setup-graph.compose.yaml",
+            "scripts/setup.sh",
+            "tasks/setup.toml",
+            "docs/setup.md",
         }
         if not {prefix + name for name in required} <= files.keys():
             fail("Source archive lacks required source, chart, lock or license files")

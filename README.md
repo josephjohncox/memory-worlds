@@ -23,6 +23,9 @@ For a personal daemon alongside a corporate service, follow the
 
 ## Run locally
 
+Use the [guided local/hybrid setup](docs/setup.md) for a terminal wizard or a
+scripted TOML configuration. The manual steps below remain available.
+
 Linux and macOS are the initial targets. The daemon uses Unix file locking.
 Use [mise](https://mise.jdx.dev/) to install the pinned toolchain and run tasks.
 The checked-in mise, uv, and npm lockfiles record the tool and library versions.

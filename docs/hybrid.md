@@ -1,5 +1,9 @@
 # Run local and corporate memory together
 
+The [guided setup](setup.md) can generate the local authority, credentials,
+selected corporate mounts and separate client profiles. This guide explains the
+same boundaries and the manual configuration steps.
+
 Run two independent authorities: a user-owned local daemon and an
 organization-operated corporate service. Agents use the local API for local
 memory and configured mounts for selected corporate shared worlds. A separate

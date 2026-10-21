@@ -277,9 +277,19 @@ class MemoryStore(ScopedStore):
         if not self._principal(db, principal).admin:
             raise Forbidden("Administrative credential required")
 
-    def _token(self, db: Connection, request: CreateToken) -> str:
-        credential_id = uuid4().hex
-        token = f"mw_{credential_id}.{secrets.token_urlsafe(32)}"
+    def _token(
+        self, db: Connection, request: CreateToken, *, prepared_token: str | None = None
+    ) -> str:
+        # Guided setup durably saves a prepared secret before committing its
+        # credential. Ordinary issuance still generates its one-time secret here.
+        if prepared_token is None:
+            credential_id = uuid4().hex
+            token = f"mw_{credential_id}.{secrets.token_urlsafe(32)}"
+        else:
+            if not re.fullmatch(r"mw_[0-9a-f]{32}\.[A-Za-z0-9_-]{43}", prepared_token):
+                raise InvalidRequest("Invalid prepared setup credential")
+            token = prepared_token
+            credential_id = token[3:35]
         db.execute(
             text(
                 f"INSERT INTO {self._table(db, 'credentials')} "
@@ -301,8 +311,15 @@ class MemoryStore(ScopedStore):
             )
         return token
 
-    def _new_world(self, db: Connection, request: CreateWorld, owner_id: str) -> World:
-        world_id = uuid4().hex
+    def _new_world(
+        self,
+        db: Connection,
+        request: CreateWorld,
+        owner_id: str,
+        *,
+        prepared_id: str | None = None,
+    ) -> World:
+        world_id = UUID(prepared_id).hex if prepared_id is not None else uuid4().hex
         world = World(
             id=world_id,
             authority_id=self.authority_id,
@@ -330,22 +347,31 @@ class MemoryStore(ScopedStore):
         return world
 
     def bootstrap(self, user_id: str = "owner") -> tuple[World, str]:
-        request = CreateToken(user_id=user_id, agent_id="admin", admin=True)
         with self._control() as db, self._transaction(db):
-            if (
-                db.execute(
-                    text(f"SELECT 1 FROM {self._table(db, 'metadata')} WHERE key='bootstrapped'")
-                )
-                .mappings()
-                .fetchone()
-            ):
-                raise Conflict("This authority is already initialized")
-            world = self._new_world(db, CreateWorld(name="Personal"), request.user_id)
-            token = self._token(db, request)
-            db.execute(
-                text(f"INSERT INTO {self._table(db, 'metadata')} VALUES ('bootstrapped', '1')")
-            )
-            return world, token
+            return self._bootstrap(db, user_id)
+
+    def _bootstrap(
+        self,
+        db: Connection,
+        user_id: str,
+        *,
+        prepared_token: str | None = None,
+        prepared_world_id: str | None = None,
+    ) -> tuple[World, str]:
+        """Bootstrap within the caller's transaction, including its setup receipt."""
+        request = CreateToken(user_id=user_id, agent_id="admin", admin=True)
+        metadata = self._table(db, "metadata")
+        if db.execute(select(metadata.c.value).where(metadata.c.key == "bootstrapped")).first():
+            raise Conflict("This authority is already initialized")
+        world = self._new_world(
+            db,
+            CreateWorld(name="Personal"),
+            request.user_id,
+            prepared_id=prepared_world_id,
+        )
+        token = self._token(db, request, prepared_token=prepared_token)
+        db.execute(metadata.insert().values(key="bootstrapped", value="1"))
+        return world, token
 
     def authenticate(self, token: str) -> Principal:
         digest = hashlib.sha256(token.encode()).hexdigest()

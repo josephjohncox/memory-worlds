@@ -1,0 +1,22 @@
+# Copy to a private config directory and replace both model IDs and dimensions.
+# Setup does not install or choose models. This endpoint must already exist.
+instance = "personal"
+mode = "local"
+owner = "owner"
+data_dir = "~/.local/share/memory-worlds/personal"
+state_dir = "~/.local/state/memory-worlds/personal"
+port = 8787
+graph_port = 16379
+embedding_dimensions = 768
+pi_profiles = true
+mcp_profiles = false
+
+[extraction]
+provider = "openai-compatible"
+model = "YOUR_EXTRACTION_MODEL"
+base_url = "http://127.0.0.1:11434/v1"
+
+[embedding]
+provider = "openai-compatible"
+model = "YOUR_EMBEDDING_MODEL"
+base_url = "http://127.0.0.1:11434/v1"
