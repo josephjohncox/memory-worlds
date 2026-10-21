@@ -1,0 +1,17 @@
+graph:
+  backend: falkordb
+runtime:
+  existingSecret: synthetic-runtime
+router:
+  enabled: true
+  mountsExistingSecret: synthetic-mounts
+  tokensExistingSecret: synthetic-remote-tokens
+networkPolicy:
+  allowExternalHTTPS: true
+ingress:
+  enabled: true
+  className: nginx
+  hosts: [memory.example.org]
+  tls:
+    - secretName: synthetic-tls
+      hosts: [memory.example.org]

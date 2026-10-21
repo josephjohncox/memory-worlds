@@ -71,104 +71,7 @@ jobs:
         env:
           # Optional extra names/patterns can stay outside the public source tree.
           PUBLIC_CONTENT_DENY_PATTERN: ${{ vars.PUBLIC_CONTENT_DENY_PATTERN }}
-        run: |
-          uv run --frozen --all-extras --python "${{ matrix.python }}" python - <<'PY'
-          import email
-          import fnmatch
-          import os
-          import re
-          import stat
-          import tarfile
-          import tomllib
-          import zipfile
-          from pathlib import Path, PurePosixPath
-
-          directory = Path("dist")
-          archives = sorted(directory.glob("*.whl")) + sorted(directory.glob("*.tar.gz"))
-          if len(archives) != 2:
-              raise SystemExit("Expected exactly one wheel and one source archive")
-          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
-          if project["name"] != "memory-worlds":
-              raise SystemExit("Project metadata must use the neutral project name")
-          distribution_info = f"memory_worlds-{project['version']}.dist-info"
-
-          forbidden_parts = {
-              ".git", ".aws", ".agents", ".codex", ".venv", "private", "node_modules",
-              "__pycache__", ".env", "daemon.lock",
-          }
-          forbidden_names = (
-              "ChatGPT-*.json", "conversations*.json", "*.sqlite3*", "*.mworld",
-              "*.pem", "*.key", "*credentials*.json",
-          )
-          signatures = re.compile(
-              rb"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"
-              rb"|(?:AKIA|ASIA)[A-Z0-9]{16}"
-              rb"|sk-(?:proj-)?[A-Za-z0-9_-]{20,}"
-              rb"|mw_[a-f0-9]{32}\.[A-Za-z0-9_-]{30,}"
-              rb"|https://chatgpt\.com/(?:c|share)/[A-Za-z0-9_-]+"
-              rb"|/home/[^/\s]+/"
-          )
-          extra = os.environ.get("PUBLIC_CONTENT_DENY_PATTERN", "")
-          public_deny = re.compile(extra, re.IGNORECASE) if extra else None
-
-          def audit_entry(name, data, source_archive):
-              path = PurePosixPath(name)
-              if path.is_absolute() or ".." in path.parts:
-                  raise SystemExit(f"Unsafe archive path: {name}")
-              parts = path.parts[1:] if source_archive else path.parts
-              if not parts:
-                  return
-              if forbidden_parts.intersection(parts) or any(
-                  fnmatch.fnmatch(part.casefold(), pattern.casefold())
-                  for part in parts for pattern in forbidden_names
-              ):
-                  raise SystemExit(f"Private input or credential file in archive: {name}")
-              allowed = {"src", "tests", "docs", "deploy", "scripts", "packages"} if source_archive else {
-                  "memory_worlds", distribution_info,
-              }
-              if source_archive:
-                  allowed.update({
-                      "pyproject.toml", "README.md", "uv.lock", "PKG-INFO", ".gitignore",
-                      ".env.example", ".python-version", ".dockerignore", "LICENSE",
-                  })
-              if parts[0] not in allowed:
-                  raise SystemExit(f"Unexpected public distribution path: {name}")
-              if signatures.search(data):
-                  raise SystemExit(f"Private content signature in archive member: {name}")
-              text = data.decode("utf-8", errors="replace")
-              if public_deny and (public_deny.search(name) or public_deny.search(text)):
-                  raise SystemExit(f"Configured private naming pattern in archive member: {name}")
-              if path.name in {"METADATA", "PKG-INFO"}:
-                  metadata = email.message_from_bytes(data)
-                  if metadata["Name"] != "memory-worlds":
-                      raise SystemExit("Distribution metadata must use the neutral project name")
-                  if any(metadata.get(field) for field in (
-                      "Author", "Author-email", "Maintainer", "Maintainer-email", "Home-page",
-                  )):
-                      raise SystemExit("Review attribution metadata before public distribution")
-
-          for archive in archives:
-              if archive.suffix == ".whl":
-                  with zipfile.ZipFile(archive) as package:
-                      for member in package.infolist():
-                          if not member.is_dir():
-                              kind = stat.S_IFMT(member.external_attr >> 16)
-                              if kind not in {0, stat.S_IFREG}:
-                                  raise SystemExit("Wheels must not contain links or devices")
-                              audit_entry(member.filename, package.read(member), False)
-              else:
-                  with tarfile.open(archive, "r:gz") as package:
-                      for member in package.getmembers():
-                          if member.isdir():
-                              continue
-                          if not member.isfile():
-                              raise SystemExit("Source archives must not contain links or devices")
-                          stream = package.extractfile(member)
-                          if stream is None:
-                              raise SystemExit("Unreadable source archive member")
-                          audit_entry(member.name, stream.read(), True)
-          print("Audited both distribution archives: neutral metadata and no private input signatures")
-          PY
+        run: uv run --frozen --all-extras --python "${{ matrix.python }}" python scripts/audit-artifacts.py --python-only dist
 
   pi:
     name: Native Pi
@@ -224,6 +127,34 @@ jobs:
           print("Native package contains compiled extension/client, documentation and Apache-2.0 license")
           PY
 
+  helm:
+    name: Helm deployment contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.15"
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.4"
+      - name: Install verified Helm
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
+          printf '%s  %s\n' 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/helm.tar.gz" --directory "$RUNNER_TEMP" linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
+      - name: Validate profiles and rejected unsafe values
+        run: |
+          uv sync --frozen
+          uv run --frozen python scripts/check-helm.py
+
   kind:
     name: Kubernetes persistence
     runs-on: ubuntu-latest
@@ -235,8 +166,14 @@ jobs:
           persist-credentials: false
       - name: Install verified deployment tools
         run: scripts/install-deploy-tools.sh /tmp/memory-worlds-tools
+      - name: Install verified Helm
+        run: |
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/helm.tar.gz" https://get.helm.sh/helm-v4.3.1-linux-amd64.tar.gz
+          printf '%s  %s\n' 0403a88ae20913d11b10a2467b50087721fea7581736da6b9d3992f5357fe54b "$RUNNER_TEMP/helm.tar.gz" | sha256sum --check
+          tar --extract --gzip --file "$RUNNER_TEMP/helm.tar.gz" --directory "$RUNNER_TEMP" linux-amd64/helm
+          echo "$RUNNER_TEMP/linux-amd64" >> "$GITHUB_PATH"
       - name: Deploy and verify pod replacement
         env:
           KIND: /tmp/memory-worlds-tools/kind
           KUBECTL: /tmp/memory-worlds-tools/kubectl
-        run: scripts/deploy-kind.sh --smoke --delete
+        run: scripts/deploy-kind.sh --smoke --helm-smoke --delete

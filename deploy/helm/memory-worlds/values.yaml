@@ -1,0 +1,75 @@
+# The source/control/outbox SQLite databases require one daemon on block/local storage.
+replicaCount: 1
+nameOverride: ""
+fullnameOverride: ""
+image:
+  repository: memory-worlds
+  tag: local
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+runtime:
+  # Optional operator-created Secret containing provider/OIDC environment settings.
+  existingSecret: ""
+graph:
+  # disabled leaves capture/source search available without model calls.
+  backend: disabled
+persistence:
+  # Empty storageClass uses the cluster default; "-" explicitly uses no class.
+  storageClass: ""
+  size: 10Gi
+  existingClaim: ""
+resources:
+  requests: {cpu: 100m, memory: 192Mi}
+  limits: {cpu: "2", memory: 2Gi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+falkordb:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: falkordb/falkordb-server
+    tag: 6.0.0
+    digest: sha256:09928c7f8335147f13eec1d686e10a5a9a5a53f2e6df520f2847f94cb7e14925
+    pullPolicy: IfNotPresent
+  auth:
+    # Create this Secret before installation; password is 64 random hex characters.
+    existingSecret: memory-worlds-falkordb
+    passwordKey: password
+  persistence:
+    storageClass: ""
+    size: 10Gi
+    existingClaim: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "2", memory: 2Gi}
+router:
+  enabled: false
+  # Secret keys include mounts.json and the token filenames referenced therein.
+  mountsExistingSecret: ""
+  tokensExistingSecret: ""
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+networkPolicy:
+  enabled: true
+  # Both selectors must match a trusted gateway/client pod.
+  clientNamespaceSelector:
+    matchLabels: {memory-worlds-client: "true"}
+  clientPodSelector:
+    matchLabels: {memory-worlds-client: "true"}
+  # Explicit opt-in for model/OIDC/remote HTTPS; narrow CIDRs in production.
+  allowExternalHTTPS: false
+  externalHTTPSCIDRs: [0.0.0.0/0, "::/0"]
+  # Standard NetworkPolicy peers/ports for local models or private Neptune.
+  extraAPIEgress: []
+tests:
+  enabled: true

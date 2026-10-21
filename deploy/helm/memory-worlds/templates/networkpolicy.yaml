@@ -1,0 +1,120 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-deny"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-api"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.clientNamespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.clientPodSelector | nindent 12 }}
+      ports: [{protocol: TCP, port: 8787}]
+    {{- if .Values.tests.enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: test
+      ports: [{protocol: TCP, port: 8787}]
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    {{- if and .Values.falkordb.enabled (eq .Values.graph.backend "falkordb") }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: falkordb
+      ports: [{protocol: TCP, port: 6379}]
+    {{- end }}
+    {{- if .Values.networkPolicy.allowExternalHTTPS }}
+    - to:
+        {{- range .Values.networkPolicy.externalHTTPSCIDRs }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{protocol: TCP, port: 443}]
+    {{- end }}
+    {{- with .Values.networkPolicy.extraAPIEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- if .Values.falkordb.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-falkordb"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: falkordb
+  policyTypes: [Ingress, Egress]
+  ingress:
+    {{- if eq .Values.graph.backend "falkordb" }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports: [{protocol: TCP, port: 6379}]
+    {{- else }}
+    []
+    {{- end }}
+{{- end }}
+{{- if .Values.tests.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-test"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: test
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "memory-worlds.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: api
+      ports: [{protocol: TCP, port: 8787}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+{{- end }}
+{{- end }}

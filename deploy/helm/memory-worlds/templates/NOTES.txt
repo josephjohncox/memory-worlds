@@ -1,0 +1,19 @@
+Memory Worlds stores source, control, and router data on one retained API PVC.
+Keep replicaCount=1. PVC retention is not a backup. Graph projection is {{ .Values.graph.backend }}.
+
+{{- if .Values.falkordb.enabled }}
+Create Secret {{ .Values.falkordb.auth.existingSecret }} with key {{ .Values.falkordb.auth.passwordKey }} before the graph pod can start.
+{{- end }}
+
+Initialize an empty authority once, keeping the one-time credential outside logs:
+  umask 077
+  kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} exec {{ include "memory-worlds.fullname" . }}-0 -- memory-worlds init > /private/operator/bootstrap.json
+
+Forward the authenticated API to loopback:
+  kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} port-forward --address=127.0.0.1 service/{{ include "memory-worlds.fullname" . }} 8787:8787
+
+Run read-only deployment checks:
+  helm --kube-context YOUR_CONTEXT -n {{ .Release.Namespace }} test {{ .Release.Name }}
+
+NetworkPolicy needs a policy-enforcing CNI. Model/OIDC/remote egress is denied
+unless explicitly permitted. Existing PVCs and Secrets are not deleted on uninstall.

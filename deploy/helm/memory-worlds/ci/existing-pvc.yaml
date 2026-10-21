@@ -1,0 +1,5 @@
+persistence:
+  existingClaim: synthetic-api-pvc
+falkordb:
+  persistence:
+    existingClaim: synthetic-graph-pvc

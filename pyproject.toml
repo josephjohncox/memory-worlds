@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -24,7 +24,7 @@ neptune = ["graphiti-core[neptune]==0.31.2"]
 mcp = ["mcp>=2.3,<3"]
 
 [dependency-groups]
-dev = ["pytest>=9.1.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17.1,<1"]
+dev = ["pytest>=9.1.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17.1,<1", "PyYAML>=6.0.3,<7"]
 
 [project.scripts]
 memory-worlds = "memory_worlds.cli:main"

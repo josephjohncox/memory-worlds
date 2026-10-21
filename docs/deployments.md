@@ -1,5 +1,9 @@
 # Deployments
 
+The [Helm chart](helm.md) packages this topology with validated values, existing
+Secret references, release-specific networking, and optional ingress. The
+Kustomize manifests below remain available for installations that prefer them.
+
 Memory Worlds runs the same authenticated API, scoped-world authorization,
 router, and durable publication outbox locally and in Kubernetes. One API pod
 owns its SQLite directory. FalkorDB has a separate pod and volume. This is a
@@ -39,6 +43,11 @@ remain available on their original PVCs. This proves pod replacement continuity.
 It does not prove restoration after node/volume loss, model extraction quality,
 or network isolation. The base profile intentionally keeps model projection
 disabled until a provider is explicitly configured.
+
+With Helm installed, add `--helm-smoke` to exercise chart installation, the
+read-only Helm test, source/graph persistence through pod replacement and an
+upgrade, and retained PVC reuse through uninstall/reinstall. Credentials stay
+in the private state directory. CI runs both deployment paths with `--delete`.
 
 The clean deployment smoke passed on 2026-10-20 (local date), using kind 0.33.0,
 Kubernetes 1.37.0, kubectl 1.37.1, and Python 3.15.0 on Linux ARM64. The

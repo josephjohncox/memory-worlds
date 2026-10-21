@@ -1,0 +1,58 @@
+{{- if .Values.tests.enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-test"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  activeDeadlineSeconds: 90
+  automountServiceAccountToken: false
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile: {type: RuntimeDefault}
+  containers:
+    - name: http
+      image: {{ include "memory-worlds.image" .Values.image | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command: [python, -c]
+      args:
+        - |
+          import time, urllib.error, urllib.request
+          base = "http://{{ include "memory-worlds.fullname" . }}:8787"
+          client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+          for attempt in range(20):
+              try:
+                  with client.open(base + "/readyz", timeout=3) as response:
+                      assert response.status == 200
+                  break
+              except (urllib.error.URLError, TimeoutError):
+                  if attempt == 19:
+                      raise
+                  time.sleep(2)
+          try:
+              client.open(base + "/v1/worlds", timeout=3)
+          except urllib.error.HTTPError as response:
+              assert response.code == 401, response.code
+          else:
+              raise AssertionError("Protected API accepted an unauthenticated request")
+          print("Readiness and authentication checks passed")
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities: {drop: [ALL]}
+      resources:
+        requests: {cpu: 10m, memory: 32Mi}
+        limits: {cpu: 100m, memory: 128Mi}
+{{- end }}

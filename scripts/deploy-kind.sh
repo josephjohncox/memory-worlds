@@ -6,12 +6,14 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 kind_bin=${KIND:-kind}
 kubectl_bin=${KUBECTL:-kubectl}
 smoke=false
+helm_smoke=false
 delete=false
 for option in "$@"; do
   case "$option" in
     --smoke) smoke=true ;;
+    --helm-smoke) helm_smoke=true ;;
     --delete) delete=true ;;
-    *) echo "Usage: $0 [--smoke] [--delete]" >&2; exit 2 ;;
+    *) echo "Usage: $0 [--smoke] [--helm-smoke] [--delete]" >&2; exit 2 ;;
   esac
 done
 state=${MEMORY_WORLDS_KIND_STATE:-$(mktemp -d "${TMPDIR:-/tmp}/memory-worlds-kind.XXXXXXXX")}
@@ -67,6 +69,10 @@ PY
 if [ "$smoke" = true ]; then
   KUBECTL="$kubectl_bin" python3 "$root/scripts/kind-smoke.py" \
     --kubeconfig "$kubeconfig" --context "$context" --state-dir "$state"
+fi
+if [ "$helm_smoke" = true ]; then
+  KUBECTL="$kubectl_bin" python3 "$root/scripts/helm-smoke.py" \
+    --kubeconfig "$kubeconfig" --context "$context" --state-dir "$state" --image "$image"
 fi
 printf 'Cluster: %s\nKubeconfig: %s\n' "$cluster" "$kubeconfig"
 printf 'Use explicit --kubeconfig and --context for every kubectl operation.\n'

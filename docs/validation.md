@@ -93,8 +93,11 @@ uv run --frozen --all-extras pytest -q
 
 Without the opt-in environment variables, the live graph and container tests
 skip explicitly. The SSH test skips if its required local programs or an
-unprivileged account are unavailable. The CI workflow is authored and locally
-linted; it has not run on a hosted repository yet.
+unprivileged account are unavailable. The initial hosted
+[CI run](https://github.com/josephjohncox/memory-worlds/actions/runs/39523640561)
+passed at source commit `d321cd0f5443fb30d46896f0d84f417a2c1cc4e0`, covering Python
+3.14/3.15, the real Pi runtime, and Kubernetes pod replacement. The Helm and
+artifact tooling extends that baseline with its own checks and workflow runs.
 
 ## Dependency versions
 
@@ -106,6 +109,7 @@ reproducibility rather than following mutable `latest` image tags.
 | --- | --- | --- |
 | Python default | 3.15.0 | [Python release](https://www.python.org/downloads/release/python-3150/) |
 | uv | 0.13.4 | [PyPI](https://pypi.org/project/uv/0.13.4/) |
+| Hatchling build backend | 1.32.4 | [PyPI](https://pypi.org/project/hatchling/1.32.4/) |
 | FastAPI | 0.156.4 | [PyPI](https://pypi.org/project/fastapi/0.156.4/) |
 | Uvicorn | 0.54.0 | [PyPI](https://pypi.org/project/uvicorn/0.54.0/) |
 | HTTPX | 0.28.1 | [PyPI](https://pypi.org/project/httpx/0.28.1/) |
@@ -123,6 +127,7 @@ reproducibility rather than following mutable `latest` image tags.
 | TypeScript | 7.0.2 | [Official package](https://www.npmjs.com/package/typescript/v/7.0.2) |
 | TypeBox | 1.4.2 | [Official package](https://www.npmjs.com/package/typebox/v/1.4.2) |
 | kind | 0.33.0 | [Official release](https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0) |
+| Helm | 4.3.1 | [Official release](https://github.com/helm/helm/releases/tag/v4.3.1) |
 | kubectl / kind node | 1.37.1 / 1.37.0 | [Kubernetes releases](https://kubernetes.io/releases/) |
 
 ## Remaining scope

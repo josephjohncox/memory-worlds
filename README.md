@@ -239,6 +239,18 @@ and source erasure are not implemented in this release.
 
 ## Container and checks
 
+The [Helm chart](deploy/helm/memory-worlds/README.md) deploys the API and optional
+FalkorDB with separate retained volumes, existing Secrets, readiness checks,
+release-scoped networking, and optional TLS ingress. See the
+[installation and upgrade guide](docs/helm.md) for source-only, graph, shared
+OIDC/router, and experimental Neptune profiles.
+
+The private [GitHub repository](https://github.com/josephjohncox/memory-worlds)
+builds the Python wheel/source archive, Pi package, and Helm archive together,
+with a manifest and SHA-256 checksums. After CI passes, it builds a private
+multi-platform container identified by the tested commit and registry digest.
+See [builds and artifact access](docs/releases.md) for local builds and downloads.
+
 The API can run in a container with persistent local storage:
 
 ```sh
@@ -266,4 +278,4 @@ recall quality. See [validation](docs/validation.md) for executed checks.
 Private conversation exports, runtime data, credentials, and local instructions
 are excluded from package and container inputs. Public fixtures are synthetic.
 The Python library and native Pi package are licensed under [Apache-2.0](LICENSE).
-The project has not been published.
+Packages have not been published to public registries.

@@ -1,0 +1,15 @@
+graph:
+  backend: neptune
+falkordb:
+  enabled: false
+runtime:
+  existingSecret: synthetic-neptune
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/synthetic-memory-worlds
+networkPolicy:
+  allowExternalHTTPS: true
+  extraAPIEgress:
+    - to:
+        - ipBlock: {cidr: 10.20.30.0/24}
+      ports: [{protocol: TCP, port: 8182}]

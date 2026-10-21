@@ -1,0 +1,6 @@
+graph:
+  backend: falkordb
+runtime:
+  existingSecret: synthetic-runtime
+networkPolicy:
+  allowExternalHTTPS: true

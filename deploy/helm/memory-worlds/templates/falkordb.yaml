@@ -1,0 +1,141 @@
+{{- if .Values.falkordb.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-falkordb"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: falkordb
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "memory-worlds.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: falkordb
+  ports:
+    - {name: redis, port: 6379, targetPort: redis}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "{{ include "memory-worlds.fullname" . }}-falkordb"
+  labels:
+    {{- include "memory-worlds.labels" . | nindent 4 }}
+    app.kubernetes.io/component: falkordb
+spec:
+  serviceName: "{{ include "memory-worlds.fullname" . }}-falkordb"
+  replicas: {{ .Values.falkordb.replicaCount }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  selector:
+    matchLabels:
+      {{- include "memory-worlds.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: falkordb
+  template:
+    metadata:
+      labels:
+        {{- include "memory-worlds.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: falkordb
+    spec:
+      serviceAccountName: {{ include "memory-worlds.serviceAccountName" . | quote }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: falkordb
+          image: {{ include "memory-worlds.image" .Values.falkordb.image | quote }}
+          imagePullPolicy: {{ .Values.falkordb.image.pullPolicy }}
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              umask 077
+              case "$REDISCLI_AUTH" in
+                *[!0-9a-fA-F]*) echo 'Invalid database credential format' >&2; exit 1 ;;
+              esac
+              [ "${#REDISCLI_AUTH}" -eq 64 ] || exit 1
+              mkdir -p /data/graph
+              {
+                printf '%s\n' 'protected-mode yes' 'dir /data/graph' \
+                  'loadmodule /var/lib/falkordb/bin/falkordb.so' \
+                  'appendonly yes' 'appendfsync everysec' 'save 900 1'
+                printf 'requirepass %s\n' "$REDISCLI_AUTH"
+              } > /run/memory-worlds/redis.conf
+              exec redis-server /run/memory-worlds/redis.conf
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          ports:
+            - {name: redis, containerPort: 6379}
+          env:
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.falkordb.auth.existingSecret | quote }}
+                  key: {{ .Values.falkordb.auth.passwordKey | quote }}
+          resources:
+            {{- toYaml .Values.falkordb.resources | nindent 12 }}
+          startupProbe:
+            exec:
+              command: [/bin/sh, -ec, 'test "$(redis-cli ping)" = PONG']
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            exec:
+              command: [/bin/sh, -ec, 'test "$(redis-cli ping)" = PONG']
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: [/bin/sh, -ec, 'test "$(redis-cli ping)" = PONG']
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: config, mountPath: /run/memory-worlds}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          emptyDir: {medium: Memory, sizeLimit: 1Mi}
+        - name: tmp
+          emptyDir: {sizeLimit: 128Mi}
+        {{- if .Values.falkordb.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.falkordb.persistence.existingClaim | quote }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if not .Values.falkordb.persistence.existingClaim }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.falkordb.persistence.storageClass }}
+        storageClassName: {{ if eq .Values.falkordb.persistence.storageClass "-" }}""{{ else }}{{ .Values.falkordb.persistence.storageClass | quote }}{{ end }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.falkordb.persistence.size }}
+  {{- end }}
+{{- end }}
