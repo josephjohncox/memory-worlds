@@ -1,0 +1,12 @@
+{
+  "passed": true,
+  "original_inotify_max_user_instances": 128,
+  "restored_inotify_max_user_instances": 128,
+  "generated_oidc_namespaces_remaining_before_cluster_deletion": 0,
+  "owned_failed_cluster_removed": true,
+  "owned_successful_cluster_removed": true,
+  "owned_kubeconfig_files_absent": true,
+  "unrelated_clusters_preserved": true,
+  "unrelated_cluster_count": 2,
+  "default_kubeconfig_unchanged": true
+}

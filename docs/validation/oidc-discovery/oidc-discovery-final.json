@@ -1,0 +1,33 @@
+{
+  "kind": "kind-keycloak-oidc-emulation",
+  "passed": true,
+  "api_image": "memory-worlds:discovery-final",
+  "container_image_ids": {
+    "api": "docker.io/library/import-2026-10-21@sha256:eb8e205ec6a6acad1f51ac40e11b055f2f1af844a3fb3ab8b12c8874a7da8559",
+    "keycloak": "quay.io/keycloak/keycloak@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244"
+  },
+  "keycloak_image": "quay.io/keycloak/keycloak:26.8.1@sha256:79c623a22abacf3fe6c00a5fb30f5b7843d717b234033b80995891c06116d244",
+  "checks": {
+    "discovery": true,
+    "jwks": true,
+    "native_cli_device_flow": true,
+    "group_mapping": true,
+    "private_world_isolation": true,
+    "private_scope_isolation": true,
+    "client_audience_scope_rejection": true,
+    "new_token_group_removal": true,
+    "old_group_replay_rejection": true,
+    "delegated_membership_attenuation": true,
+    "service_revocation_descendants": true,
+    "service_user_disable": true,
+    "ordinary_user_cli_discovery": true,
+    "ordinary_user_alias_discovery": true,
+    "discovery_private_metadata_isolation": true,
+    "delegated_discovery_ceiling": true,
+    "discovery_group_removal": true
+  },
+  "fixture_sha256": "4995e01461874720bbfac9be3706b726db3657f5e3be586e165c6bb34211c2a8",
+  "harness_sha256": "2654d15cf42d2dd597aa5b98df7c885c872e0a0376714ea0f5af503335b93823",
+  "runtime_sha256": "467d086f9e2b68c823a3c4fe9890e88930f5a2e40319c875b3362ab89eec3f69",
+  "external_identity_provider": "assumed; no live Okta qualification performed"
+}

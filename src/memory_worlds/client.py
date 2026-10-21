@@ -209,9 +209,7 @@ class Client:
                 raise NotFound("World not found")
         return {
             "worlds": worlds,
-            "scopes": {item.id: self.scopes(item.id) for item in worlds}
-            if include_scopes or world
-            else {},
+            "scopes": {item.id: self.scopes(item.id) for item in worlds} if include_scopes else {},
             "mounts": self.mounts(),
         }
 

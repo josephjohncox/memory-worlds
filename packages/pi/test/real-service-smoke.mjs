@@ -75,6 +75,12 @@ try {
   const configPath = join(dir, "memory-worlds.json");
   const selected = { world_id: metadata.world.id, scope_id: metadata.scope.id };
   const client = new MemoryWorldsClient(url, async () => token);
+  const discovered = await client.discover();
+  assert.deepEqual(discovered.worlds.map(world => world.id), [metadata.world.id]);
+  assert.deepEqual(discovered.scopes[metadata.world.id].map(scope => scope.id).sort(), [metadata.shared_scope_id, metadata.run_scope_id, metadata.scope.id].sort());
+  assert.deepEqual(discovered.mounts, []);
+  assert(!JSON.stringify(discovered).includes(token));
+  assert.deepEqual(await client.discover({ world: "@personal" }), discovered);
   const namedAgent = await client.createIdentity("agent", { name: "Synthetic Pi specialist", alias: "specialist" });
   const aliased = { world_id: "@personal", scope_id: "@notes" };
   await writeFile(configPath, JSON.stringify({ url, tokenFile: tokenPath, agent: "@specialist", cliPath: join(dirname(python), "memory-worlds"), writeScope: aliased, readScopes: [aliased], projectCaptured: false, graphAliases: { project: aliased, global: { world_id: metadata.world.id, scope_id: metadata.shared_scope_id } }, spoolDirectory: join(dir, "private-spool") }));
@@ -105,6 +111,13 @@ try {
   const commands = await command({ type: "get_commands" });
   assert(commands.data.commands.some(command => command.name === "memory"));
   assert(commands.data.commands.some(command => command.name === "graph"));
+  assert.equal((await command({ type: "prompt", message: "/memory status" })).success, true);
+  const beforeDiscovery = (await command({ type: "get_entries" })).data.entries;
+  for (const text of ["/memory discover", "/memory discover @personal"]) assert.equal((await command({ type: "prompt", message: text })).success, true);
+  const discoveryNotices = messages.filter(message => message.type === "extension_ui_request" && message.method === "notify" && message.message?.includes('"mounts": []') && message.message.includes('"scopes": {'));
+  assert.equal(discoveryNotices.length, 2);
+  for (const notice of discoveryNotices) assert.deepEqual(JSON.parse(notice.message), discovered);
+  assert.deepEqual((await command({ type: "get_entries" })).data.entries, beforeDiscovery, "Discovery must leave the native session's memory bindings and capture policy unchanged");
   for (const text of ["/memory status", "/memory capture real-service-bearing-evidence", "/memory source real-service-bearing-evidence"]) {
     assert.equal((await command({ type: "prompt", message: text })).success, true);
   }
@@ -149,11 +162,17 @@ try {
   let childClient, childContext;
   const child = await withSubagent(client, { task: "Review the explicitly selected specialist note", privateWorldId: metadata.world.id, grants: [{ ...selected, operations: ["read"] }], evidence: search.results.map(hit => ({ ...hit, authority_id: metadata.world.authority_id, record_type: "source" })) }, async runtime => {
     childClient = runtime.client; childContext = runtime.context;
+    const visible = await runtime.client.discover();
+    assert.deepEqual(visible.worlds.map(world => world.id), [metadata.world.id]);
+    assert.deepEqual(visible.scopes[metadata.world.id].map(scope => scope.id).sort(), [metadata.scope.id, runtime.privateScope.id].sort());
+    assert.deepEqual(visible.mounts, []);
+    assert(!JSON.stringify(visible).includes(token));
     await runtime.client.captureScope({ world_id: runtime.privateScope.world_id, scope_id: runtime.privateScope.id }, { source_id: "child-private-scratch", content: "unreturned private scratch", occurred_at: new Date().toISOString(), context_id: runtime.context.id });
     return "selected child finding";
   });
   assert.equal(child.result, "selected child finding"); assert.match(childContext.invocation_id, /^[0-9a-f-]{36}$/);
   await assert.rejects(client.episodes({ world_id: child.privateScope.world_id, scope_id: child.privateScope.id }), error => error.status === 403);
+  assert(!(await client.discover()).scopes[metadata.world.id].some(scope => scope.id === child.privateScope.id), "Parent discovery must not reveal the child's private scope");
   await assert.rejects(childClient.identity(), /runtime has ended/);
   assert(!JSON.stringify(child).includes("unreturned private scratch"));
   const archive = join(dir, "synthetic extracted chats");
@@ -186,7 +205,7 @@ try {
   assert(!errors.includes("Failed to load extension"), errors);
   pi.kill("SIGTERM"); await once(pi, "exit"); pi = undefined;
   service.kill("SIGTERM"); await once(service, "exit"); service = undefined;
-  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API, live aliases, stable named agent across independent chats, private long-directory preview/import/replay, exact chunks, bound UUID attribution, private graph capture, delegated child isolation and credential exclusion.");
+  console.log("Real-service Pi smoke passed: actual Pi -> authenticated scoped Python API, ordinary-user discovery and delegated visibility, unchanged discovery state, live aliases, stable named agent across independent chats, private long-directory preview/import/replay, exact chunks, bound UUID attribution, private graph capture, delegated child isolation and credential exclusion.");
 } finally {
   pi?.kill("SIGKILL"); service?.kill("SIGKILL");
   await rm(dir, { recursive: true, force: true });

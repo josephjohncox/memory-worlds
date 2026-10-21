@@ -1,0 +1,20 @@
+{
+  "scripts/qualify-oidc.py": "2654d15cf42d2dd597aa5b98df7c885c872e0a0376714ea0f5af503335b93823",
+  "scripts/qualify-cluster.py": "f29eddf7bfcd275b9bb4d6506d43e8b73f912d01b1e8092718d0c2dca3b1955d",
+  "deploy/qualification/runtime.py": "467d086f9e2b68c823a3c4fe9890e88930f5a2e40319c875b3362ab89eec3f69",
+  "deploy/qualification/realm.json": "4995e01461874720bbfac9be3706b726db3657f5e3be586e165c6bb34211c2a8",
+  "deploy/qualification/kind.yaml": "8732bc9f0836686edeca554ee5689875472e19f8fa9d471a37285621fc868581",
+  "deploy/qualification/cilium.yaml": "2ed0ffc949d24bfd874bba34f1b5da3bcb22b111febeed66fb146120884b6c24",
+  "src/memory_worlds/cli.py": "4f7de039e73a36d1984abe0cbb0f65c5e55063cc2bf113fb2c71c3c8773db01e",
+  "src/memory_worlds/client.py": "e4b2ca6fcf33ef45b1a52c2ab27a94f561a7933cd46ffe3631c29dce67e222d0",
+  "src/memory_worlds/login.py": "207b4ac1f83c660011df6d5a80a67483bb29469fa3b2e092094de0a24a8ef879",
+  "src/memory_worlds/api.py": "a382622c09c72e4f814254c75d9384cfd736846bb4667e943b284dd1f7bb538a",
+  "src/memory_worlds/auth.py": "b65c925fb0037c9bb66bfa28cef15f791942fba948aaca717d8e1686cfe3181a",
+  "src/memory_worlds/store.py": "7c8475b79f00363e2c00664b041d9cea232b1da6c6f6ed804cc8b59d30294252",
+  "src/memory_worlds/scopes.py": "4283dfbb41febffe33cde239b2a69b63e539f31a6264a0d4f8553e953db5ad4c",
+  "src/memory_worlds/mcp.py": "c53c6da93afc7d853e44a43e609485da84553a4c097a3ca8f59522d016c74f10",
+  "mise.toml": "35c2151031fc98f4c1281c090051f631148817b609607d72a7d6b0a20772f8f7",
+  "mise.lock": "bbbc1644fdfb77948004f92d59ce59d144860d4ad6040ffbe8f7b07bd25ab692",
+  "uv.lock": "bc80089ce2b69f1cb4908a4a34727581a66df324836dca34c65d2de5135e300f",
+  "tasks/qualification.toml": "0b4c071c6c55681a44bf32bff1bffaa01cf9ea3845dde850f3bf48549cfaf2ff"
+}

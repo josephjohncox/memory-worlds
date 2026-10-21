@@ -85,6 +85,10 @@ contracts are described separately.
 Memory Worlds already adds multi-agent authenticated service access, SSH
 tunnels, organizational worlds, explicit publications, OIDC memberships,
 federated routing, conservative graph recovery, and Kubernetes persistence.
+Ordinary OIDC users and delegated agents can discover their readable worlds,
+scopes and authorized mounts through the native `memory_discover` tool,
+`/memory discover`, typed clients and MCP. Discovery leaves read selections and
+capture settings unchanged; see [user discovery](discovery.md).
 Its native [chat sharing modes](chat-sharing.md) also support classifier-assisted
 review and selected automatic publication under a user-enabled per-chat rule.
 These do not by themselves establish complete upstream feature parity.

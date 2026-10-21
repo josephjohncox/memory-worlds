@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, chmod, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { MemoryWorldsClient, importDirectory, planDirectory, scopeReferenceSelection } from "memory-worlds-pi/client";
+import { MemoryWorldsClient, importDirectory, planDirectory, readTokenFile, scopeReferenceSelection } from "memory-worlds-pi/client";
 
 const scopeId = "00000000-0000-4000-8000-000000000001", otherId = "00000000-0000-4000-8000-000000000002";
 const selected = { world_id: "private", scope_id: scopeId };
@@ -49,6 +49,107 @@ test("missing or ambiguous aliases do not select the first object", async () => 
   const ambiguous = client(() => [world, { ...world, id: "another" }]);
   await assert.rejects(ambiguous.api.resolveWorld("@personal"), /ambiguous/);
   assert(ambiguous.calls.every(call => call.method === "GET"));
+});
+
+test("discovery returns all visible metadata with one pinned ordinary credential and no writes or extra fields", async () => {
+  const team = { ...world, id: "team", kind: "team", alias: "team", name: "Team" };
+  const teamScope = { ...scope, world_id: "team", kind: "world-shared", alias: "shared" };
+  const mount = { id: "work", name: "Work", url: "https://memory.example.test", world_ids: ["shared"], authority_id: "remote", can_publish: false };
+  const canary = "synthetic-not-metadata", poison = value => ({ ...value, token: canary, content: canary, credentials: { private: canary } });
+  let tokenReads = 0;
+  const f = client(path => {
+    if (path === "/v1/worlds") return [poison(world), poison(team)];
+    if (path === "/v1/mounts") return [poison(mount)];
+    if (path === "/v1/worlds/private/scopes") return [poison(scope)];
+    if (path === "/v1/worlds/team/scopes") return [poison(teamScope)];
+    assert.fail(`Unexpected discovery request: ${path}`);
+  }, async () => `synthetic-discovery-${++tokenReads}`);
+  const result = await f.api.discover();
+  assert.deepEqual(result, { worlds: [world, team], scopes: { private: [scope], team: [teamScope] }, mounts: [mount] });
+  assert.equal(tokenReads, 1);
+  assert(f.calls.every(call => call.method === "GET" && call.body === undefined && call.headers.Authorization === "Bearer synthetic-discovery-1"));
+  assert(!JSON.stringify(result).includes(canary));
+  assert(!JSON.stringify(result).includes("synthetic-discovery-1"));
+});
+
+test("discovery filters scopes by live world alias and can omit scope enumeration", async () => {
+  const team = { ...world, id: "team", alias: "work" };
+  const f = client(path => path === "/v1/worlds" ? [world, team] : path === "/v1/mounts" ? [] : path === "/v1/worlds/private/scopes" ? [scope] : assert.fail("Selected discovery must not enumerate another world"));
+  assert.deepEqual(await f.api.discover({ world: "@personal" }), { worlds: [world], scopes: { private: [scope] }, mounts: [] });
+  f.calls.length = 0;
+  assert.deepEqual(await f.api.discover({ includeScopes: false }), { worlds: [world, team], scopes: {}, mounts: [] });
+  assert.deepEqual(f.calls.map(call => new URL(call.url).pathname), ["/v1/worlds", "/v1/mounts"]);
+  f.calls.length = 0;
+  assert.deepEqual((await f.api.discover({ world: "private", includeScopes: false })).worlds, [world]);
+  assert(f.calls.every(call => call.method === "GET"));
+});
+
+test("discovery never guesses hidden worlds or scopes and rejects missing or ambiguous aliases", async () => {
+  const f = client(path => path === "/v1/worlds" ? [world] : path === "/v1/mounts" ? [] : path === "/v1/worlds/private/scopes" ? [] : assert.fail("Hidden metadata must not be probed"));
+  assert.deepEqual((await f.api.discover()).scopes, { private: [] });
+  for (const reference of ["hidden", "@missing", "@Upper", "../hidden"]) await assert.rejects(f.api.discover({ world: reference }), /visible|Alias|reference/);
+  assert(!f.calls.some(call => new URL(call.url).pathname.includes("hidden")));
+  const ambiguous = client(() => [world, { ...world, id: "other" }]);
+  await assert.rejects(ambiguous.api.discover({ world: "@personal" }), /ambiguous/);
+  assert.equal(ambiguous.calls.length, 1);
+});
+
+test("a live scope denial rejects the complete discovery and does not reveal its response body", async () => {
+  const paths = [];
+  const api = new MemoryWorldsClient("http://127.0.0.1:8787", async () => "synthetic", async (url, options) => {
+    const path = new URL(url).pathname; paths.push(path);
+    assert.equal(options.method, "GET");
+    return path.endsWith("/scopes") ? new Response("synthetic-private-denial", { status: 403 }) : new Response(JSON.stringify(path === "/v1/worlds" ? [world] : []));
+  });
+  await assert.rejects(api.discover(), error => error.status === 403 && !error.message.includes("synthetic-private-denial"));
+  assert.deepEqual(paths, ["/v1/worlds", "/v1/mounts", "/v1/worlds/private/scopes"]);
+});
+
+test("discovery rejects foreign or duplicate scope metadata rather than assigning it to a visible world", async () => {
+  for (const scopes of [[{ ...scope, world_id: "hidden" }], [scope, { ...scope }]]) {
+    const f = client(path => path === "/v1/worlds" ? [world] : path === "/v1/mounts" ? [] : scopes);
+    await assert.rejects(f.api.discover(), error => error.code === "invalid_discovery_metadata");
+  }
+});
+
+test("discovery has an aggregate bound and never silently truncates the visible catalog", async () => {
+  const other = { ...world, id: "other", alias: "other" };
+  const large = { ...scope, name: "x".repeat(1_100_000) };
+  const f = client(path => path === "/v1/worlds" ? [world, other] : path === "/v1/mounts" ? [] : [{ ...large, world_id: path.includes("/other/") ? "other" : "private" }]);
+  await assert.rejects(f.api.discover(), /Discovery exceeds 2 MiB; select one world or omit scopes/);
+  assert.equal((await f.api.discover({ world: "private" })).scopes.private.length, 1);
+  assert.deepEqual((await f.api.discover({ includeScopes: false })).scopes, {});
+});
+
+test("aborted or invalid discovery options do not read credentials or issue network requests", async () => {
+  let tokenReads = 0;
+  const f = client(() => assert.fail("No request allowed"), async () => { tokenReads++; return "synthetic"; });
+  await assert.rejects(f.api.discover({}, AbortSignal.abort()));
+  for (const options of [{ includeScopes: "yes" }, { world: "" }, { world: "x".repeat(101) }]) await assert.rejects(f.api.discover(options));
+  assert.equal(tokenReads, 0); assert.equal(f.calls.length, 0);
+});
+
+test("discovery redacts credential-reader, fetch, parser and cancellation diagnostics including their causes", async () => {
+  const canary = `synthetic-private-discovery-${randomUUID()}`;
+  const diagnostic = () => new Error(`Private transport or token diagnostic: ${canary}`, { cause: new Error(canary) });
+  const apis = [
+    new MemoryWorldsClient("http://127.0.0.1:8787", () => readTokenFile(join(tmpdir(), canary)), async () => assert.fail("Missing credential must stop dispatch")),
+    new MemoryWorldsClient("http://127.0.0.1:8787", async () => { throw diagnostic(); }, async () => assert.fail("Invalid credential must stop dispatch")),
+    new MemoryWorldsClient("http://127.0.0.1:8787", async () => "synthetic", async () => { throw diagnostic(); }),
+    new MemoryWorldsClient("http://127.0.0.1:8787", async () => "synthetic", async () => new Response(`{"${canary}":invalid-json}`)),
+  ];
+  for (const api of apis) await assert.rejects(api.discover(), error => {
+    assert.equal(error.message, "Memory Worlds discovery failed; verify service and current credential");
+    assert.equal(error.cause, undefined);
+    assert(!String(error).includes(canary));
+    return true;
+  });
+  await assert.rejects(apis[0].discover({}, AbortSignal.abort(diagnostic())), error => {
+    assert.equal(error.name, "AbortError");
+    assert.equal(error.message, "Memory Worlds discovery was cancelled");
+    assert.equal(error.cause, undefined);
+    return true;
+  });
 });
 
 test("alias SDK mutations use current PUT routes and validate returned identities", async () => {

@@ -58,7 +58,7 @@ function usabilityClient(f) {
     { id: privateScope, world_id: "private", scope_id: privateScope, alias: "notes", kind: "agent-persistent" },
   ];
   f.client.identity = async () => ({ authority_id: "a", credential_id: "fixture", user_id: "alice", agent_id: "editor", worlds: [{ ...world, alias: "personal" }] });
-  for (const name of ["resolveWorld", "resolveScope", "resolveSelection"]) f.client[name] = MemoryWorldsClient.prototype[name];
+  for (const name of ["resolveWorld", "resolveScope", "resolveSelection", "discover"]) f.client[name] = MemoryWorldsClient.prototype[name];
   f.client.identities = async kind => [{ id: rootScope, kind, name: "Named specialist", alias: "architect", owner_id: "alice", created_at: timestamp }];
   f.client.resolveIdentity = async (kind, reference) => {
     const selected = (await f.client.identities(kind)).find(item => item.id === reference || `@${item.alias}` === reference);
@@ -80,6 +80,63 @@ test("configured and command aliases resolve live and persist only canonical sco
   assert.deepEqual(saved.graphAliases.project, saved.writeScope);
   assert(!JSON.stringify(saved).includes("@personal"));
   assert(!f.notices.some(notice => notice.type === "error"));
+});
+
+test("native discovery tool and command enumerate live metadata without changing memory context or capture", async () => {
+  const f = usabilityClient(fixture({ automaticCapture: true }));
+  await f.run("session_start", { reason: "startup" });
+  const before = structuredClone(f.entries), widget = f.widgets.get("memory-worlds");
+  const tool = f.tools.get("memory_discover");
+  assert(tool);
+  const full = JSON.parse((await tool.execute("discovery", {}, undefined, undefined, f.ctx)).content[0].text);
+  assert.deepEqual(full.worlds.map(item => item.id), ["private"]);
+  assert.deepEqual(full.scopes.private.map(item => item.id), [rootScope, privateScope]);
+  assert.deepEqual(full.mounts.map(item => item.id), ["team"]);
+  await f.command("discover @personal");
+  const selected = JSON.parse(f.notices.at(-1).text);
+  assert.deepEqual(selected, full);
+  const minimal = JSON.parse((await tool.execute("summary", { world: "@personal", include_scopes: false }, undefined, undefined, f.ctx)).content[0].text);
+  assert.deepEqual(minimal.scopes, {});
+  assert.deepEqual(f.entries, before);
+  assert.equal(f.widgets.get("memory-worlds"), widget);
+  assert.equal(f.captures.length, 0); assert.equal(f.publications.length, 0);
+  assert(!JSON.stringify(full).includes("tokenFile"));
+  assert(!f.notices.some(item => item.type === "error"));
+});
+
+test("discovery tool propagates cancellation and live denial without recording or mutating selections", async () => {
+  const f = usabilityClient(fixture());
+  await f.run("session_start", { reason: "startup" });
+  const before = structuredClone(f.entries), denied = new Error("synthetic-safe-denial");
+  let seen;
+  f.client.discover = async (_options, signal) => { seen = signal; signal.throwIfAborted(); throw denied; };
+  await assert.rejects(f.tools.get("memory_discover").execute("denied", {}, undefined, undefined, f.ctx), error => error === denied);
+  await assert.rejects(f.tools.get("memory_discover").execute("aborted", {}, AbortSignal.abort(), undefined, f.ctx), error => error.name === "AbortError");
+  assert.equal(seen.aborted, true);
+  assert.deepEqual(f.entries, before);
+  let calls = 0; f.client.discover = async () => { calls++; };
+  await f.command("discover private extra");
+  assert.equal(calls, 0);
+  assert.match(f.notices.at(-1).text, /at most one WORLD/);
+  assert.deepEqual(f.entries, before);
+});
+
+test("discovery diagnostics cannot expose transport or parser details through native tools or command notices", async () => {
+  const f = usabilityClient(fixture());
+  await f.run("session_start", { reason: "startup" });
+  const before = structuredClone(f.entries), canary = "synthetic-private-discovery-path-and-credential";
+  for (const transport of [async () => { throw new Error(canary, { cause: new Error(canary) }); }, async () => new Response(`{"${canary}":invalid-json}`)]) {
+    const api = new MemoryWorldsClient("http://127.0.0.1:8787", async () => "synthetic", transport);
+    f.client.discover = api.discover.bind(api);
+    await assert.rejects(f.tools.get("memory_discover").execute("failure", {}, undefined, undefined, f.ctx), error => {
+      assert.match(error.message, /discovery failed/);
+      assert.equal(error.cause, undefined); assert(!String(error).includes(canary)); return true;
+    });
+    await f.command("discover");
+    assert.equal(f.notices.at(-1).type, "error");
+    assert(!f.notices.at(-1).text.includes(canary));
+  }
+  assert.deepEqual(f.entries, before);
 });
 
 test("named agent configuration remains stable across independent chats with fresh invocations", async () => {
@@ -235,7 +292,7 @@ test("graceful Pi shutdown preserves a verified sharing rule for the same chat's
 test("the extension registers native tools, command, UI and lifecycle hooks", async () => {
   const f = fixture();
   await f.run("session_start", { reason: "startup" });
-  assert.deepEqual([...f.tools.keys()], ["memory_search", "memory_capture", "graph", "memory_status"]);
+  assert.deepEqual([...f.tools.keys()], ["memory_search", "memory_capture", "graph", "memory_discover", "memory_status"]);
   assert.equal(f.tools.has("memory_publish"), false);
   assert.match(f.widgets.get("memory-worlds"), /capture off/);
   await f.run("agent_end");

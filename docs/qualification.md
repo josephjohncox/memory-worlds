@@ -77,7 +77,10 @@ The checks cover discovery and JWKS, native CLI device login, private token-file
 permissions, company and team group grants, private world and scope isolation,
 rejected audience/client/scope claims, membership removal on a fresh token,
 rejection of older group claims, descendant grant attenuation, service credential
-revocation, and service user disable. Group removal cannot invalidate an
+revocation, and service user disable. Ordinary-user discovery also runs the
+actual CLI with that device-flow access token, resolves visible world aliases,
+excludes private/sibling metadata, checks the delegated catalog ceiling, and
+rechecks discovery after group removal. Group removal cannot invalidate an
 unexpired JWT until the service observes new claims or an operator revokes it;
 that protocol limit also applies to real identity providers.
 

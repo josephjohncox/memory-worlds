@@ -1,0 +1,8 @@
+{
+  "kind_config_sha256": "8732bc9f0836686edeca554ee5689875472e19f8fa9d471a37285621fc868581",
+  "cilium_version": "1.20.3",
+  "cilium_chart_sha256": "0805a5273118c436c9772bb9566d87ec558d8b25cc2ce5dc32918ecdd36f2c7c",
+  "cluster_ready": true,
+  "default_kind_cni_disabled": true,
+  "network_traffic_qualification_rerun": false
+}

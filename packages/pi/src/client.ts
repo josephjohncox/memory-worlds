@@ -50,6 +50,8 @@ export interface Scope extends ScopeSelection {
   parent_invocation_id?: string | null; coordinator_credential_id?: string | null; generation?: string | null; projection_state: string;
 }
 export interface ScopeGrant extends ScopeSelection { operations: ScopeOperation[] }
+export interface DiscoveryOptions { world?: string; includeScopes?: boolean }
+export interface DiscoveryResult { worlds: World[]; scopes: Record<string, Scope[]>; mounts: Mount[] }
 export type IdentityKind = "agent" | "run" | "invocation";
 export interface NamedIdentity {
   id: string; kind: IdentityKind; owner_id: string; name: string; alias: string | null; created_at: string;
@@ -173,6 +175,9 @@ function world(value: unknown): World {
   if (item.alias !== undefined && item.alias !== null) checkedAlias(string(item.alias));
   return item as unknown as World;
 }
+function metadata<T extends object>(value: T, keys: readonly (keyof T)[]): T {
+  return Object.fromEntries(keys.filter(key => value[key] !== undefined).map(key => [key, value[key]])) as T;
+}
 
 /** Direct authenticated HTTP client. No MCP, graph ports, session files or storage ownership. */
 export class MemoryWorldsClient {
@@ -229,6 +234,37 @@ export class MemoryWorldsClient {
   }
   async worlds(signal?: AbortSignal): Promise<World[]> {
     return array(await this.request("/v1/worlds", undefined, signal)).map(world);
+  }
+  /** Read visible metadata with one credential; selection and capture remain unchanged. */
+  async discover(options: DiscoveryOptions = {}, signal?: AbortSignal): Promise<DiscoveryResult> {
+    options = { ...options };
+    if (options.includeScopes !== undefined && typeof options.includeScopes !== "boolean") throw new MemoryWorldsReferenceError("includeScopes must be a boolean");
+    if (options.world !== undefined && (typeof options.world !== "string" || !options.world.length || options.world.length > 100)) throw new MemoryWorldsReferenceError("Invalid world reference");
+    try { return await this.withCredentialSession(async client => {
+      let worlds = (await client.worlds(signal)).map(item => metadata(item, ["id", "authority_id", "name", "kind", "owner_id", "alias", "created_at", "generation", "projection_state", "scope_id"]));
+      if (options.world !== undefined) {
+        const id = aliasReference(options.world) ? aliasMatch(worlds, options.world).id : await client.resolveWorld(options.world, signal);
+        worlds = worlds.filter(item => item.id === id);
+        if (!worlds.length) throw new MemoryWorldsReferenceError("No visible world matches that selection");
+      }
+      const mounts = (await client.mounts(signal)).map(item => metadata(item, ["id", "name", "url", "world_ids", "authority_id", "can_publish"])), scopes: [string, Scope[]][] = [];
+      let bytes = Buffer.byteLength(JSON.stringify(worlds)) + Buffer.byteLength(JSON.stringify(mounts)) + 64;
+      const bounded = () => { if (bytes > 2_097_152) throw new MemoryWorldsReferenceError("Discovery exceeds 2 MiB; select one world or omit scopes"); };
+      bounded();
+      if (options.includeScopes !== false) for (const world of worlds) {
+        const visible = (await client.scopes(world.id, signal)).map(item => metadata(item, ["id", "world_id", "scope_id", "kind", "name", "alias", "created_at", "run_id", "agent_id", "invocation_id", "parent_invocation_id", "coordinator_credential_id", "generation", "projection_state"]));
+        if (visible.some(scope => scope.world_id !== world.id) || new Set(visible.map(scope => scope.id.toLowerCase())).size !== visible.length) throw new MemoryWorldsError(502, "invalid_discovery_metadata");
+        bytes += Buffer.byteLength(JSON.stringify(visible)) + Buffer.byteLength(JSON.stringify(world.id)) + 4;
+        bounded(); scopes.push([world.id, visible]);
+      }
+      return { worlds, scopes: Object.fromEntries(scopes), mounts };
+    }, signal); } catch (error) {
+      if (signal?.aborted) throw new DOMException("Memory Worlds discovery was cancelled", "AbortError");
+      if (error instanceof MemoryWorldsError || error instanceof MemoryWorldsReferenceError) throw error;
+      // Token readers, fetch implementations and JSON parsers can include private
+      // paths, credentials or response snippets in their diagnostics and causes.
+      throw new Error("Memory Worlds discovery failed; verify service and current credential");
+    }
   }
   async resolveWorld(reference: string, signal?: AbortSignal): Promise<string> {
     if (aliasReference(reference)) return aliasMatch(await this.worlds(signal), reference).id;

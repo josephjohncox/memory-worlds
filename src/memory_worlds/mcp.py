@@ -31,6 +31,24 @@ def create_mcp(url: str, token: str):
     mcp = MCPServer("Memory Worlds", version=__version__)
 
     @mcp.tool()
+    def memory_discover(world: str | None = None, include_scopes: bool = True) -> dict[str, Any]:
+        """Discover this caller's readable worlds, scopes and configured mounts.
+
+        Accepts an ordinary API access token or delegated agent credential, without
+        administrator privileges. Optional world selection accepts an ID or @alias.
+        Discovery does not select reads, enable capture, or change write destinations.
+        """
+        try:
+            with Client(url, token) as client:
+                return client.discover(world=world, include_scopes=include_scopes)
+        except Exception:
+            # SDK tool results are masked, but its server logger includes the
+            # exception chain. Validation errors can quote upstream private data.
+            raise RuntimeError(
+                "Memory discovery failed; verify service, credential and world selection"
+            ) from None
+
+    @mcp.tool()
     def memory_worlds() -> list[World]:
         """List the caller's readable memory worlds. Selection does not enable writes."""
         with Client(url, token) as client:

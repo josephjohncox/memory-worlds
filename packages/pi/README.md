@@ -131,6 +131,7 @@ inspect authority/world/scope/source attribution.
 | Command | Behavior |
 | --- | --- |
 | `/memory status` | Current context, selections, capture policy and deliveries |
+| `/memory discover [WORLD]` | List visible worlds, readable scopes and authorized mounts together |
 | `/memory worlds` | Discover authorized worlds |
 | `/memory scopes WORLD` | Discover authorized scopes in a world |
 | `/memory world-alias WORLD NAME\|none` | Set or clear an authorized world alias |
@@ -162,7 +163,8 @@ inspect authority/world/scope/source attribution.
 | `/memory spool status` | Inspect the configured local queue |
 | `/memory spool drain` | Dispatch sources pinned to the current credential and authority |
 
-The model receives `memory_search`, `memory_capture`, `memory_status`, and `graph`.
+The model receives `memory_discover`, `memory_search`, `memory_capture`,
+`memory_status`, and `graph`.
 Publication requires a user command or a user-enabled sharing rule. A model tool
 cannot enable a rule or choose its destination. An explicit selected note remains
 available when automatic capture is off. See [chat sharing modes](../../docs/chat-sharing.md)
@@ -173,6 +175,30 @@ read/target selections, graph bindings, selected publication and local sharing
 destinations. Remote mount worlds retain their remote IDs. The typed client offers
 `resolveWorld`, `resolveScope`, `resolveSelection`, `setWorldAlias`, and
 `setScopeAlias`; alias lookup never grants permission.
+
+Discovery works with an ordinary user credential, including an OIDC access token;
+an administrator token is unnecessary. `/memory discover` returns
+`{worlds, scopes, mounts}`, where `scopes` maps each visible world ID to its readable
+scopes. `/memory discover @personal` selects one live visible world by alias.
+Discovery returns metadata and identifiers without source contents or credentials.
+It does not select read scopes or mounts, enable capture, or change a write target.
+
+The same operation is available to harnesses through the typed client:
+
+```ts
+const available = await client.discover();
+const personal = await client.discover({world: "@personal"});
+const worldsAndMounts = await client.discover({includeScopes: false});
+```
+
+The `memory_discover` model tool accepts optional `world` and `include_scopes`
+arguments; scope discovery defaults to true. It lists only scopes the current
+credential can read. A write or publish grant alone does not expose private scope
+metadata. Mounts are authorized local router references; discovery does not query
+the remote system or enumerate its private scopes. A live authorization failure
+rejects the operation. Token-file, transport and parser diagnostics are redacted
+before they can enter a model tool result. Results exceeding 2 MiB fail explicitly; select a world or
+omit scopes to reduce the result.
 
 ## Import extracted directories
 
@@ -333,8 +359,11 @@ The runner passes only the task brief and selected evidence from delegated reada
 scopes and rejects inherited messages. Its fresh temporary cwd and agent directory
 use in-memory sessions/settings and load no ambient context files, extensions,
 skills, prompt templates, MCP, shell or filesystem tools. The model runtime is an
-explicit operator dependency. Normal children receive only scoped memory search
-and invocation-private capture tools. Their token stays in a closure and is cleared
+explicit operator dependency. Normal children receive `memory_discover`, scoped
+memory search, and invocation-private capture tools. Discovery uses only the
+child's delegated credential: it reveals readable delegated scopes and the child's
+own private scope, without inheriting the parent's wider roster or remote mounts.
+Their token stays in a closure and is cleared
 and revoked on success, failure or cancellation. This SDK boundary is not an
 operating-system process sandbox.
 

@@ -1,0 +1,46 @@
+{
+  "kind": "final-local-oidc-normal-user-discovery-qualification",
+  "passed": true,
+  "checked_at_utc": "2026-10-21T06:27:15.284728+00:00",
+  "check_count": 17,
+  "new_discovery_checks": [
+    "ordinary_user_cli_discovery",
+    "ordinary_user_alias_discovery",
+    "discovery_private_metadata_isolation",
+    "delegated_discovery_ceiling",
+    "discovery_group_removal"
+  ],
+  "api_image_config_digest": "sha256:841de3649f87276c424ef7bfef1ce1f3001d826a2d4b2c15273f165f207154a0",
+  "actual_pod_api_image_index_digest": "sha256:eb8e205ec6a6acad1f51ac40e11b055f2f1af844a3fb3ab8b12c8874a7da8559",
+  "actual_pod_api_image_manifest_digest": "sha256:dbe10d8c26544f341dc9887e0e29f22f94f26c81cfd623c76eab82f3b0923080",
+  "all29_image_modules_match_workspace": true,
+  "source_hashes_verified_before_and_after_run": true,
+  "current_cli_sha256": "4f7de039e73a36d1984abe0cbb0f65c5e55063cc2bf113fb2c71c3c8773db01e",
+  "current_client_sha256": "e4b2ca6fcf33ef45b1a52c2ab27a94f561a7933cd46ffe3631c29dce67e222d0",
+  "current_harness_sha256": "2654d15cf42d2dd597aa5b98df7c885c872e0a0376714ea0f5af503335b93823",
+  "runtime_python": "3.15.0",
+  "image_commit_label_inferred": false,
+  "source_binding": "Exact per-file hashes bind the final image, current host CLI/client and harness. A separate final signed-source receipt must bind these bytes to a source commit.",
+  "supersedes_previous_discovery_qualification": true,
+  "exercised_interfaces": [
+    "local OIDC discovery/JWKS",
+    "native CLI device login",
+    "HTTP API authorization",
+    "ordinary user CLI discovery"
+  ],
+  "native_mcp_tool_runtime_exercised": false,
+  "initial_infrastructure_attempt": {
+    "status": "failed before OIDC execution",
+    "observation": "kubeadm admin ClusterRoleBinding bootstrap hit client rate-limiter deadline; no fsnotify error observed in owned kubelet logs",
+    "retry": "One fresh owned setup retry succeeded with recorded temporary1024; original128 restored after qualification"
+  },
+  "live_tenant_or_model_calls": false,
+  "external_identity_provider": "assumed; real local Keycloak emulator exercised, no live Okta tenant",
+  "receipts": {
+    "cleanup.json": "ae4a1ecb37f2f927982c504d229db4470f7dca5a53617db66f5731ffd98ef94c",
+    "cluster-prerequisites.json": "539a11f320e773a8d28c6bbe881ead638c0a13c899d4c389c85d20966a412f9f",
+    "harness-source-hashes.json": "d46e589520de69e28dc01f15c75a5a13b64dedf6b902b7fcb43b49e75922b63a",
+    "image-module-binding.json": "48e6acdfeff37c54516c287519ef2de46fd04773852a3d4928128a49c4406971",
+    "oidc-discovery-final.json": "42eea111a970905ff403b0690334db31c24320f5d89aed08ecadb3ce80d8687b"
+  }
+}

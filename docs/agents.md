@@ -1,7 +1,9 @@
 # Agent clients
 
-Each agent receives its own token and an explicit set of world grants. All
+Each agent uses a user API access token or its own delegated credential. All
 clients use the running HTTP daemon, including clients in remote shells.
+Ordinary OIDC users can discover their accessible worlds without an administrator
+token. Child credentials discover only their delegated audience.
 
 ```python
 import os
@@ -40,7 +42,7 @@ For MCP clients, install the MCP extra and configure a stdio server command:
 ```
 
 Use your client's secret mechanism for the token, or pass `--token-file` before
-`mcp`. The tools include `memory_worlds`, `memory_search`, `memory_capture`,
+`mcp`. The tools include `memory_discover`, `memory_worlds`, `memory_search`, `memory_capture`,
 `memory_publish`, `memory_mounts`, `memory_remote_search`, and `memory_deliveries`,
 plus `memory_scopes`, `memory_scope_status`, `memory_episodes`,
 `memory_bind_context`, and `memory_context` for scoped agent contexts.
@@ -59,5 +61,5 @@ publication uses an explicit user slash command or an enabled per-chat rule.
 See [chat sharing modes](chat-sharing.md) and [sharing](sharing.md) for
 remote mount configuration, OIDC membership, and outbox receipts.
 
-Use [discovery](../README.md#discover-worlds-scopes-and-mounts) to find canonical IDs
+Use [user and harness discovery](discovery.md) to find canonical IDs
 and aliases. For native user login and team mappings, see [OIDC and Okta](oidc-okta.md).

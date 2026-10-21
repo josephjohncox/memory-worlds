@@ -163,12 +163,21 @@ mise run cli -- --url https://memory.example.org login \
 mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token me
 mise run cli -- --url https://memory.example.org \
+  --token-file /private/memory-worlds/session.token discover --scopes --json
+mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token worlds
 mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token scopes WORLD_ID
 mise run cli -- --url https://memory.example.org \
   --token-file /private/memory-worlds/session.token mounts
 ```
+
+These discovery commands require only the signed-in user's API access token.
+Company/team memberships come from the configured group map or explicit user
+membership; private scopes still require their own grants. A user can discover
+their accessible world IDs without an operator credential or an operator
+listing the worlds for them. Native Pi and MCP expose the same filtered catalog
+through `memory_discover`; see [user and harness discovery](discovery.md).
 
 The CLI prints the verification URL and short code to stderr. Complete login in
 a browser on any suitable device; an SSH session needs no callback listener.

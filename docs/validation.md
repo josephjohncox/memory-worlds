@@ -1,5 +1,24 @@
 # Validation
 
+## Ordinary-user discovery
+
+The discovery follow-up passed 100 targeted Python tests covering signed OIDC
+identities, HTTP/Python/CLI discovery, MCP, scope clients and the qualification
+harness. Native Pi passed 150 tests, TypeScript checks and all three actual
+runtime/service/sharing smokes. An actual isolated Pi model exercised delegated
+discovery and continued after sanitized credential-file, transport and malformed
+JSON errors. MCP validation errors disclose private input in neither tool output
+nor server error logs. Explicit `include_scopes: false` also works with a selected
+world; the CLI explicitly includes scopes for its documented `--world` convenience.
+
+The final local image passed all 17 Keycloak 26.8.1 checks in kind with Cilium
+1.20.3, including actual device-flow CLI discovery and aliases, private/sibling
+metadata isolation, delegated catalog limits and group removal. Its installed
+29 Python modules match the current service source byte for byte. The
+[qualification receipts](validation/oidc-discovery/README.md) retain module and
+harness hashes, the actual image/config binding and cleanup evidence. These are
+local protocol checks using generated identities, without a live Okta tenant.
+
 ## Memory Worlds 0.3.0
 
 Executed locally on Linux ARM64 with the locked mise toolchain. Hosted CI and

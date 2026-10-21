@@ -21,7 +21,7 @@ export interface ExtensionDependencies {
   review?: (selected: readonly MemoryProposal[], signal: AbortSignal) => Promise<unknown>;
   classifySharing?: (ctx: ExtensionContext, selected: readonly SharingCandidate[], settings: SharingSettings, signal: AbortSignal) => Promise<SharingDecision[]>;
 }
-const HELP = "/memory status | worlds | read WORLD [SCOPE]|none | target WORLD SCOPE|off | scopes WORLD | world-alias WORLD NAME|none | scope-alias WORLD SCOPE NAME|none | alias project|global WORLD SCOPE | agent UUID|@alias | run UUID|@alias|off | identities agent|run|invocation | identity KIND create ALIAS NAME | identity KIND name REF NAME | identity KIND alias REF ALIAS|none | import DIRECTORY [--preview] [--format FORMAT] [--source-timezone ZONE] [--fallback-timestamp ISO] [--all-branches] [--source-only] | share WORLD SCOPE TEXT | sharing private|review WORLD SCOPE|auto WORLD SCOPE|pending|approve ID|dismiss ID|retry | capture on|off|TEXT | search QUERY | source QUERY | mounts | mount MOUNT,...|none | publish MOUNT WORLD TEXT | deliveries";
+const HELP = "/memory status | discover [WORLD] | worlds | read WORLD [SCOPE]|none | target WORLD SCOPE|off | scopes WORLD | world-alias WORLD NAME|none | scope-alias WORLD SCOPE NAME|none | alias project|global WORLD SCOPE | agent UUID|@alias | run UUID|@alias|off | identities agent|run|invocation | identity KIND create ALIAS NAME | identity KIND name REF NAME | identity KIND alias REF ALIAS|none | import DIRECTORY [--preview] [--format FORMAT] [--source-timezone ZONE] [--fallback-timestamp ISO] [--all-branches] [--source-only] | share WORLD SCOPE TEXT | sharing private|review WORLD SCOPE|auto WORLD SCOPE|pending|approve ID|dismiss ID|retry | capture on|off|TEXT | search QUERY | source QUERY | mounts | mount MOUNT,...|none | publish MOUNT WORLD TEXT | deliveries";
 const CAPTURE_INTENT_TYPE = "memory-worlds:capture-intent:v1";
 const PUBLICATION_INTENT_TYPE = "memory-worlds:publication-intent:v1";
 class CommandError extends Error {}
@@ -416,7 +416,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         let argument = parsed?.[2] ?? "";
         let rest = argument.trim().split(/\s+/).filter(Boolean);
         if (!command && ctx.hasUI) {
-          command = await ctx.ui.select("Memory Worlds", ["status", "worlds", "mounts", "search", "capture", "sharing", "agent", "run", "identities", "import", "deliveries"]) ?? "";
+          command = await ctx.ui.select("Memory Worlds", ["status", "discover", "worlds", "mounts", "search", "capture", "sharing", "agent", "run", "identities", "import", "deliveries"]) ?? "";
           if (["search", "capture"].includes(command)) {
             const text = await ctx.ui.editor(command === "capture" ? "Capture selected text to private memory" : "Search memory evidence");
             if (!text?.trim()) return;
@@ -462,6 +462,10 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         }
         if (!command || command === "help") { ctx.ui.notify(HELP, "info"); return; }
         if (command === "status") { ctx.ui.notify(cleanTerminal(JSON.stringify(await status(ctx), null, 2)), "info"); return; }
+        if (command === "discover") {
+          if (rest.length > 1) throw new CommandError("discover accepts at most one WORLD or @alias");
+          ctx.ui.notify(cleanTerminal(JSON.stringify(await client.discover({ world: rest[0] }, signal(ctx)), null, 2)), "info"); return;
+        }
         if (command === "import") {
           const parsed = directoryArguments(argument, config.cliPath, ctx.cwd);
           const options = { ...parsed.options, signal: signal(ctx) };
@@ -730,6 +734,12 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
         ctx.ui.notify("/graph status | project|global|both | search QUERY | episodes | add TEXT | ingest PATH | curate [NUMBER]. Bind aliases with /memory alias project|global WORLD SCOPE.", "info");
       } catch (error) { report(ctx, error); }
     },
+  });
+  pi.registerTool({
+    name: "memory_discover", label: "Discover authorized memory",
+    description: "List visible worlds, readable scopes and authorized mounts using the current credential. Returns IDs, names and aliases without source content. Discovery does not select reads, enable capture or grant access.",
+    parameters: Type.Object({ world: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })), include_scopes: Type.Optional(Type.Boolean()) }),
+    execute: async (_id, params, abort, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await ready().client.discover({ world: params.world, includeScopes: params.include_scopes }, signal(ctx, abort))) }], details: {} }),
   });
   pi.registerTool({
     name: "memory_status", label: "Memory Worlds status", description: "List authorized worlds, selected read scopes, capture policy and delivery counts. Credentials are never returned.",

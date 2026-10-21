@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryWorldsClient, MemoryWorldsError, scopeSelection } from "memory-worlds-pi/client";
+import { MemoryWorldsClient, MemoryWorldsError, readTokenFile, scopeSelection } from "memory-worlds-pi/client";
 import { parseConfig } from "../dist/config.js";
 import { executeGraph, graphLimit, graphSelections } from "memory-worlds-pi/graph";
 import { withSubagent, runPiSubagent, createIsolatedPiSession } from "memory-worlds-pi/orchestrator";
@@ -204,7 +204,84 @@ test("actual native Pi child factory loads no ambient files, extensions, skills 
     assert(!child.systemPrompt.includes("AGENTS.md"));
     await child.dispose(); child = undefined;
     child = await createIsolatedPiSession(runtime, { modelRuntime, model });
-    assert.deepEqual(child.toolNames, ["memory_search", "memory_capture"]);
+    assert.deepEqual(child.toolNames, ["memory_discover", "memory_search", "memory_capture"]);
+  } finally { await child?.dispose(); await rm(folder, { recursive: true, force: true }); }
+});
+
+test("an actual isolated Pi model discovers through only its delegated client without parent credentials or discovery writes", async () => {
+  const [{ ModelRuntime }, { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools }, { mkdtemp, rm }, { join }, { tmpdir }] = await Promise.all([
+    import("@earendil-works/pi-coding-agent"), import("@earendil-works/pi-ai"), import("node:fs/promises"), import("node:path"), import("node:os"),
+  ]);
+  const folder = await mkdtemp(join(tmpdir(), "mw-isolated-discovery-")); let child;
+  const credential = "synthetic-invocation-private-credential", parentCredential = "synthetic-parent-credential-not-provided", calls = [];
+  const diagnosticCanary = "synthetic-private-token-path-fetch-and-json-canary";
+  let failure;
+  const childWorld = { ...world, alias: "personal" };
+  const client = new MemoryWorldsClient("http://127.0.0.1:8787", async () => failure === "credential" ? readTokenFile(join(folder, diagnosticCanary)) : credential, async (url, options) => {
+    const path = new URL(url).pathname; calls.push({ path, method: options.method });
+    assert.equal(options.headers.Authorization, `Bearer ${credential}`);
+    assert.equal(options.method, "GET");
+    if (failure === "fetch") throw new Error(diagnosticCanary, { cause: new Error(diagnosticCanary) });
+    if (failure === "json") return new Response(`{"${diagnosticCanary}":invalid-json}`);
+    if (path === "/v1/worlds") return reply([childWorld]);
+    if (path === "/v1/mounts") return reply([]);
+    if (path === "/v1/worlds/personal/scopes") return reply([privateScope]);
+    assert.fail("Child discovery must not search sources, probe other worlds or write context");
+  });
+  try {
+    const modelRuntime = await ModelRuntime.create({ authPath: join(folder, "auth.json"), modelsPath: null, modelsStorePath: join(folder, "catalog.json"), allowModelNetwork: false, refreshOnCreate: false });
+    const provider = fauxProvider({ provider: "isolated-discovery-fixture", models: [{ id: "synthetic-model", input: ["text"] }] });
+    const result = { worlds: [childWorld], scopes: { personal: [privateScope] }, mounts: [] };
+    const inspect = context => {
+      assert.deepEqual(getCurrentTools(context.messages).map(tool => tool.name), ["memory_discover", "memory_search", "memory_capture"]);
+      assert(!JSON.stringify(context).includes(credential)); assert(!JSON.stringify(context).includes(parentCredential));
+      assert(!JSON.stringify(context).includes(diagnosticCanary));
+    };
+    provider.setResponses([
+      context => { inspect(context); return fauxAssistantMessage(fauxToolCall("memory_discover", {}), { stopReason: "toolUse" }); },
+      context => {
+        inspect(context);
+        const message = context.messages.find(item => item.role === "toolResult" && item.toolName === "memory_discover");
+        assert(message && !message.isError, "Actual Pi must execute its registered discovery tool");
+        assert.deepEqual(JSON.parse(message.content.find(item => item.type === "text").text), result);
+        return fauxAssistantMessage("Selected delegated metadata discovered.");
+      },
+      context => { inspect(context); return fauxAssistantMessage(fauxToolCall("memory_discover", { world: "@personal", include_scopes: false }), { stopReason: "toolUse" }); },
+      context => {
+        inspect(context);
+        const message = context.messages.filter(item => item.role === "toolResult" && item.toolName === "memory_discover").at(-1);
+        assert.deepEqual(JSON.parse(message.content.find(item => item.type === "text").text), { ...result, scopes: {} });
+        return fauxAssistantMessage("Selected world metadata discovered.");
+      },
+    ]);
+    modelRuntime.registerNativeProvider(provider.provider);
+    const model = modelRuntime.getModel("isolated-discovery-fixture", "synthetic-model"); assert(model);
+    child = await createIsolatedPiSession({ context, privateScope, client, prompt: "Explicit discovery brief" }, { modelRuntime, model });
+    await child.prompt("Discover the memory visible to this invocation.");
+    assert.equal(child.getLastAssistantText(), "Selected delegated metadata discovered.");
+    await child.prompt("Discover @personal without enumerating scopes.");
+    assert.equal(child.getLastAssistantText(), "Selected world metadata discovered.");
+    assert.equal(provider.state.callCount, 4);
+    assert.deepEqual(calls.map(call => call.path), ["/v1/worlds", "/v1/mounts", "/v1/worlds/personal/scopes", "/v1/worlds", "/v1/mounts"]);
+    for (failure of ["credential", "fetch", "json"]) {
+      provider.appendResponses([
+        context => { inspect(context); return fauxAssistantMessage(fauxToolCall("memory_discover", {}), { stopReason: "toolUse" }); },
+        context => {
+          inspect(context);
+          const message = context.messages.filter(item => item.role === "toolResult" && item.toolName === "memory_discover").at(-1);
+          assert.equal(message.isError, true);
+          assert.equal(message.content.find(item => item.type === "text").text, "Memory Worlds discovery failed; verify service and current credential");
+          return fauxAssistantMessage("Discovery failure kept private.");
+        },
+      ]);
+      await child.prompt(`Check discovery failure: ${failure}.`);
+      assert.equal(child.getLastAssistantText(), "Discovery failure kept private.");
+    }
+    assert.equal(provider.state.callCount, 10);
+    assert(calls.every(call => call.method === "GET"));
+    assert(!JSON.stringify(child.messages).includes(credential));
+    assert(!JSON.stringify(child.messages).includes(parentCredential));
+    assert(!JSON.stringify(child.messages).includes(diagnosticCanary));
   } finally { await child?.dispose(); await rm(folder, { recursive: true, force: true }); }
 });
 

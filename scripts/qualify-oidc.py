@@ -362,6 +362,45 @@ def device_cli(api: str, issuer: str, password: str, directory: Path) -> tuple[s
             process.wait(timeout=5)
 
 
+def discover_cli(api: str, token_file: Path, *, world: str | None = None) -> dict:
+    """Use the ordinary device-flow credential, excluding inherited operator settings."""
+    command = [
+        sys.executable,
+        "-m",
+        "memory_worlds.cli",
+        "--url",
+        api,
+        "--token-file",
+        str(token_file),
+        "discover",
+        "--scopes",
+        "--json",
+    ]
+    if world is not None:
+        command.extend(["--world", world])
+    result = subprocess.run(
+        command,
+        cwd=ROOT,
+        env={
+            key: value for key, value in os.environ.items() if not key.startswith("MEMORY_WORLDS_")
+        },
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    if result.returncode:
+        raise RuntimeError("Ordinary OAuth user CLI discovery failed")
+    try:
+        found = json.loads(result.stdout)
+        if not isinstance(found, dict) or not isinstance(found.get("worlds"), list):
+            raise ValueError
+        if not isinstance(found.get("scopes"), dict):
+            raise ValueError
+        return found
+    except (ValueError, TypeError):
+        raise RuntimeError("Ordinary OAuth user CLI discovery returned invalid JSON") from None
+
+
 def exercise(
     api: str, issuer: str, password: str, admin_password: str, bootstrap: dict, directory: Path
 ) -> dict:
@@ -409,7 +448,49 @@ def exercise(
         if not {team["id"], company["id"]}.issubset({world["id"] for world in worlds}):
             raise RuntimeError("Signed local groups did not map to shared worlds")
         private = next(world for world in worlds if world["kind"] == "private-work")
+        for world, alias in ((team, "data-team"), (company, "company")):
+            call(
+                f"/v1/worlds/{world['id']}/alias",
+                bootstrap["operator_token"],
+                method="PUT",
+                body={"alias": alias},
+            )
+        call(
+            f"/v1/worlds/{private['id']}/alias",
+            bootstrap["operator_token"],
+            method="PUT",
+            body={"alias": "personal"},
+        )
         bob = token("bob")
+        bob_private = next(
+            world for world in call("/v1/me", bob)["worlds"] if world["kind"] == "private-work"
+        )
+        hidden_scope = call(
+            f"/v1/worlds/{team['id']}/scopes",
+            bootstrap["operator_token"],
+            method="POST",
+            body={
+                "kind": "invocation-private",
+                "name": "Synthetic hidden sibling",
+                "alias": "hidden-sibling",
+            },
+            expected=201,
+        )
+        found = discover_cli(api, directory / "device.token")
+        expected_worlds = {team["id"], company["id"], private["id"]}
+        if {world["id"] for world in found["worlds"]} != expected_worlds:
+            raise RuntimeError("Ordinary OAuth discovery included an unauthorized world")
+        if {scope["id"] for scope in found["scopes"][team["id"]]} != {team["scope_id"]}:
+            raise RuntimeError("Ordinary OAuth discovery included a hidden scope")
+        if bob_private["id"] in found["scopes"] or hidden_scope["name"] in json.dumps(found):
+            raise RuntimeError("Ordinary OAuth discovery exposed another private audience")
+        selected = discover_cli(api, directory / "device.token", world="@data-team")
+        if [world["id"] for world in selected["worlds"]] != [team["id"]]:
+            raise RuntimeError("Ordinary OAuth world alias discovery selected another world")
+        if [scope["alias"] for scope in selected["scopes"][team["id"]]] != ["shared"]:
+            raise RuntimeError("Ordinary OAuth scope alias discovery exposed a private scope")
+        call("/v1/users", original, expected=403)
+        call(f"/v1/worlds/{team['id']}/memberships", original, expected=403)
         call(f"/v1/worlds/{private['id']}/scopes", bob, expected=403)
         call(
             f"/v1/worlds/{bootstrap['operator_world']}/scopes/{bootstrap['operator_scope']}",
@@ -435,6 +516,19 @@ def exercise(
             },
         )
         call(f"/v1/worlds/{team['id']}/scopes/{team['scope_id']}", delegated["token"])
+        child_worlds = call("/v1/worlds", delegated["token"])
+        if {world["id"] for world in child_worlds} != {team["id"], private["id"]}:
+            raise RuntimeError("Delegated discovery inherited ungranted user memberships")
+        if any(world["generation"] is not None for world in child_worlds):
+            raise RuntimeError("Delegated discovery exposed shared projection metadata")
+        if [
+            scope["id"] for scope in call(f"/v1/worlds/{private['id']}/scopes", delegated["token"])
+        ] != [delegated["private_scope"]["id"]]:
+            raise RuntimeError("Delegated discovery exposed its parent or sibling scope")
+        if delegated["private_scope"]["id"] in {
+            scope["id"] for scope in call(f"/v1/worlds/{private['id']}/scopes", original)
+        }:
+            raise RuntimeError("Parent discovery exposed an ungranted child private scope")
         host = f"http://127.0.0.1:{urlsplit(issuer).port}"
         admin = check_status(
             http.post(
@@ -478,6 +572,15 @@ def exercise(
             raise RuntimeError("Group changes replaced the stable private identity")
         call("/v1/me", original, expected=401)
         call(f"/v1/worlds/{team['id']}/scopes/{team['scope_id']}", delegated["token"], expected=403)
+        if {world["id"] for world in call("/v1/worlds", delegated["token"])} != {private["id"]}:
+            raise RuntimeError("Delegated discovery retained a removed parent group")
+        fresh_file = directory / "fresh-device.token"
+        descriptor = os.open(fresh_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "w") as stream:
+            stream.write(newer + "\n")
+        fresh_found = discover_cli(api, fresh_file)
+        if {world["id"] for world in fresh_found["worlds"]} != {company["id"], private["id"]}:
+            raise RuntimeError("Ordinary OAuth CLI discovery retained a removed group")
         call(
             f"/v1/credentials/{who['credential_id']}",
             bootstrap["operator_token"],
@@ -506,6 +609,11 @@ def exercise(
         "delegated_membership_attenuation": True,
         "service_revocation_descendants": True,
         "service_user_disable": True,
+        "ordinary_user_cli_discovery": True,
+        "ordinary_user_alias_discovery": True,
+        "discovery_private_metadata_isolation": True,
+        "delegated_discovery_ceiling": True,
+        "discovery_group_removal": True,
     }
 
 

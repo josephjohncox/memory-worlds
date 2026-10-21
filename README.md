@@ -91,13 +91,16 @@ the HTTP process; `/readyz` also checks that required background workers are run
 
 ## Discover worlds, scopes, and mounts
 
+Discovery uses an ordinary user or agent token. On a corporate service, sign in
+with Okta/OIDC and use that API access token; no administrator token or preknown
+world IDs are required. Results contain only the caller's accessible objects.
+See [user and harness discovery](docs/discovery.md) for corporate login and Pi/MCP setup.
+
 ```sh
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token discover --scopes
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token worlds --table
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token mounts --table
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token world-alias WORLD_ID personal
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token resolve world @personal
-mise run cli -- --token-file ~/.config/memory-worlds/admin.token discover --world @personal --json
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token discover --scopes
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token worlds --table
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token mounts --table
+mise run cli -- --token-file ~/.config/memory-worlds/editor.token discover --world WORLD_ID --json
 ```
 
 Worlds and scopes have display names and optional lowercase aliases. Use
@@ -106,6 +109,8 @@ contexts, graph namespaces, and authorization. Aliases resolve only among visibl
 objects. Multiple visible matches require an explicit ID. Scope aliases require a
 manage grant; world aliases require the operator. `--select @personal:@notes`
 selects one world/scope pair. Mounted worlds retain IDs from their remote authority.
+An operator can assign a world alias with `world-alias WORLD_ID personal`;
+ordinary users then resolve the visible alias with `resolve world @personal`.
 
 ## Worlds and private data
 

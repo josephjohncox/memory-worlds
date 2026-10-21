@@ -831,7 +831,9 @@ def run(args):
         elif args.command == "worlds":
             listing(client.worlds(), "worlds") if args.table else emit(client.worlds())
         elif args.command == "discover":
-            found = client.discover(world=args.world, include_scopes=args.scopes)
+            found = client.discover(
+                world=args.world, include_scopes=args.scopes or args.world is not None
+            )
             if args.json:
                 emit(found)
             else:
