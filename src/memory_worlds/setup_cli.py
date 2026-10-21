@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .errors import MemoryError
 from .setup_config import SetupConfig, load_config
-from .setup_files import private_read
+from .setup_files import check_path, private_read
 
 
 def add_setup_parser(subparsers) -> None:
@@ -32,9 +32,10 @@ def add_setup_parser(subparsers) -> None:
             operation.add_argument("--adopt-admin-file", type=Path)
 
 
-def validate_setup(config: SetupConfig) -> dict:
-    if config.adopt_admin_file is not None:
-        private_read(config.adopt_admin_file, maximum=256)
+def validate_setup(config: SetupConfig, *, adopt_admin_file: Path | None = None) -> dict:
+    adoption = adopt_admin_file if adopt_admin_file is not None else config.adopt_admin_file
+    if adoption is not None:
+        private_read(check_path(adoption), maximum=256)
     for settings in (config.extraction, config.embedding):
         if settings.api_key_file is not None:
             content = private_read(settings.api_key_file, maximum=16386)
@@ -113,11 +114,9 @@ def run_setup_command(args):
             return {"configured": True, "instance": config.instance, "next": "setup apply"}
         from .setup_provision import apply_setup
 
-        validate_setup(config)
-        return apply_setup(
-            config,
-            adopt_admin_file=getattr(args, "adopt_admin_file", None) or config.adopt_admin_file,
-        )
+        adoption = getattr(args, "adopt_admin_file", None) or config.adopt_admin_file
+        validate_setup(config, adopt_admin_file=adoption)
+        return apply_setup(config, adopt_admin_file=adoption)
     config = load_config(args.config)
     if command == "validate":
         return validate_setup(config)
@@ -130,10 +129,9 @@ def run_setup_command(args):
     if command == "apply":
         from .setup_provision import apply_setup
 
-        validate_setup(config)
-        return apply_setup(
-            config, adopt_admin_file=args.adopt_admin_file or config.adopt_admin_file
-        )
+        adoption = args.adopt_admin_file or config.adopt_admin_file
+        validate_setup(config, adopt_admin_file=adoption)
+        return apply_setup(config, adopt_admin_file=adoption)
     if command == "run":
         from .setup_runtime import run_setup
 

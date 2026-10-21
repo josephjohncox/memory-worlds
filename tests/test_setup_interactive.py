@@ -14,11 +14,13 @@ import httpx
 import pytest
 
 from memory_worlds import setup_interactive as setup
+from memory_worlds import setup_wizard
 from memory_worlds.errors import MemoryError
 from memory_worlds.setup_config import (
     CorporateSettings,
     ProviderSettings,
     SetupConfig,
+    config_bytes,
     load_config,
     save_config,
 )
@@ -804,3 +806,539 @@ def test_interactive_adoption_saves_only_reference_and_applies_existing_authorit
     assert receipt["authority_id"] == store.authority_id
     assert store.get_world(store.authenticate(secret), original.id).id == original.id
     assert not config.path("operator.token").exists(), "existing administrator token is referenced"
+
+
+def test_openai_default_key_choice_uses_required_existing_private_file(tmp_path):
+    key = private(tmp_path / "provider.key", "synthetic-openai-provider-key\n")
+    values = local_answers(tmp_path)
+    values[8:12] = ["openai", "explicit-extraction", "", "", str(key)]
+    respond, prompts = answers(values)
+    output = []
+    result = setup.wizard(tmp_path / "setup.toml", input_fn=respond, output_fn=output.append)
+    assert result.extraction.api_key_file == key
+    assert "Extraction API key (file/new) [file]: " in prompts
+    assert "synthetic-openai-provider-key" not in "\n".join(output)
+
+
+def test_hybrid_device_review_names_oauth_session_audiences_and_conditional_files(
+    corporate, tmp_path, monkeypatch
+):
+    values = local_answers(tmp_path)
+    values.pop()
+    values[0] = "hybrid"
+    values[-2:] = ["no", "yes"]
+    values += [
+        SERVICE,
+        "device",
+        ISSUER,
+        "native-public-client",
+        "openid memory-worlds",
+        "1",
+        "yes",
+    ]
+    respond, _ = answers(values)
+    monkeypatch.setattr(
+        setup,
+        "device_login",
+        lambda *args, token_output, **kwargs: private(token_output, FIRST_TOKEN + "\n"),
+    )
+    output = []
+    config = setup.wizard(tmp_path / "setup.toml", input_fn=respond, output_fn=output.append)
+    text = "\n".join(output)
+    assert f"OAuth issuer: {ISSUER}" in text
+    assert "OAuth public client ID: native-public-client" in text
+    assert "Requested OAuth scopes: openid memory-worlds" in text
+    assert "Corporate credential ID: ordinary-session" in text
+    assert all(
+        label in text
+        for label in (
+            "Local personal agent:",
+            "Local work research:",
+            "Direct corporate user:",
+            "no local scope IDs or mounts",
+            "no default write target",
+        )
+    )
+    assert str(config.path("mcp-personal.json")) in text
+    assert str(config.path("mcp-work.json")) in text
+    assert str(config.path("corporate.token")) in text
+    assert str(config.path("pi-personal.json")) not in text
+    assert str(config.path("pi-corporate.json")) not in text
+    assert FIRST_TOKEN not in text
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "wizard-prepared",
+        "provider",
+        "configuration",
+        "connection-prepared",
+        "token",
+        "binding",
+        "connection-complete",
+        "wizard-complete",
+    ],
+)
+def test_actual_process_death_resumes_approved_hybrid_wizard_without_questionnaire(
+    corporate, tmp_path, monkeypatch, boundary
+):
+    values = local_answers(tmp_path)
+    values[11:12] = ["new", "yes"]
+    values.pop()
+    values[0] = "hybrid"
+    values += [SERVICE, "file", str(corporate["source"]), "1", "yes"]
+    metadata = private(
+        tmp_path / "wizard-input.json",
+        json.dumps(
+            {
+                "answers": values,
+                "identity": corporate["identity"],
+                "worlds": corporate["worlds"],
+            }
+        ),
+    )
+    output = tmp_path / "config" / "setup.toml"
+    script = """
+import json, os, sys
+from pathlib import Path
+from memory_worlds import setup_interactive as setup, setup_wizard
+from memory_worlds.models import World
+metadata = json.loads(Path(sys.argv[1]).read_bytes())
+output, boundary = Path(sys.argv[2]), sys.argv[3]
+setup._discover = lambda url, token: (
+    metadata['identity'], [World.model_validate(item) for item in metadata['worlds']]
+)
+original = setup.write_private
+def exit_after_publication(path, data, **kwargs):
+    result = original(path, data, **kwargs)
+    matched = (
+        boundary == 'provider' and path.name == 'extraction.key'
+        or boundary == 'configuration' and path == output
+        or boundary == 'token' and path.name == 'corporate.token'
+        or boundary == 'binding' and path.name == 'corporate.json'
+        or boundary.startswith('connection-') and path.name == 'connection.json'
+            and json.loads(data)['phase'] == boundary.removeprefix('connection-')
+        or boundary.startswith('wizard-') and path == setup_wizard.intent_path(output)
+            and json.loads(data)['phase'] == boundary.removeprefix('wizard-')
+    )
+    if matched:
+        os._exit(73)
+    return result
+setup.write_private = setup_wizard.write_private = exit_after_publication
+answers = iter(metadata['answers'])
+setup.wizard(output, input_fn=lambda _: next(answers),
+    secret_fn=lambda _: 'synthetic-provider-key', output_fn=lambda _: None)
+raise AssertionError('The requested process-death boundary was not reached')
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(metadata), str(output), boundary],
+        capture_output=True,
+        timeout=15,
+    )
+    assert child.returncode == 73, child.stderr.decode()
+    intent_path = setup_wizard.intent_path(output)
+    assert intent_path.exists()
+    journal = intent_path.read_text()
+    assert FIRST_TOKEN not in journal and "synthetic-provider-key" not in journal
+    offline = boundary in {"token", "binding", "connection-complete", "wizard-complete"}
+    if offline:
+        corporate["source"].unlink()
+
+        def forbidden_discovery(*_args, **_kwargs):
+            raise AssertionError("A committed corporate connection must finalize offline")
+
+        monkeypatch.setattr(setup, "_discover", forbidden_discovery)
+
+    def unexpected_question(prompt):
+        raise AssertionError("Recovery must not repeat the questionnaire: " + prompt)
+
+    hidden, messages = [], []
+
+    def secret(prompt):
+        hidden.append(prompt)
+        return "synthetic-provider-key"
+
+    result = setup.wizard(
+        output, input_fn=unexpected_question, secret_fn=secret, output_fn=messages.append
+    )
+    assert result == load_config(output)
+    assert result.corporate.world_ids == ["team"]
+    assert result.path("extraction.key").read_text() == "synthetic-provider-key\n"
+    binding = json.loads(result.path("corporate.json").read_bytes())
+    assert binding["authority_id"] == AUTHORITY and binding["user_id"] == "alice"
+    assert binding["world_ids"] == ["team"]
+    assert not intent_path.exists()
+    assert len(hidden) == (1 if boundary == "wizard-prepared" else 0)
+    assert not result.data_dir.exists()
+    if offline:
+        assert not corporate["requests"]
+
+
+def test_wizard_resume_rejects_unexpected_key_config_and_identity_changes(
+    corporate, tmp_path, monkeypatch
+):
+    config = corporate["config"]
+    config.extraction.api_key_file = config.path("extraction.key")
+    output = tmp_path / "setup.toml"
+    pending = {config.path("extraction.key"): b"synthetic-provider-key\n"}
+    identity = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    intent = setup_wizard.begin(output, config, pending, identity)
+    requests = len(corporate["requests"])
+    with pytest.raises(MemoryError, match="Re-entered provider key"):
+        setup.wizard(output, secret_fn=lambda _: "different-key", output_fn=lambda _: None)
+    assert len(corporate["requests"]) == requests
+    setup_wizard.publish(output, intent, config, pending, None)
+    original = output.read_bytes()
+    private(output, "unrelated replacement TOML")
+    with pytest.raises(MemoryError, match="configuration changed"):
+        setup.wizard(output, output_fn=lambda _: None)
+    assert len(corporate["requests"]) == requests
+    private(output, original.decode())
+    corporate["identity"]["user_id"] = "different-user"
+    with pytest.raises(MemoryError, match="identity changed"):
+        setup.wizard(output, output_fn=lambda _: None)
+    assert not config.path("corporate.token").exists()
+
+
+@pytest.mark.parametrize("changed", ["authority_id", "user_id", "world_ids", "journal"])
+def test_wizard_recovery_refuses_unrelated_or_malformed_committed_connection_before_network(
+    corporate, tmp_path, monkeypatch, changed
+):
+    config = corporate["config"]
+    setup.connect_setup(config)
+    identity = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    if changed in {"authority_id", "user_id"}:
+        identity[changed] = "different-approved-identity"
+    elif changed == "world_ids":
+        config.corporate.world_ids = ["company"]
+    output = tmp_path / "setup.toml"
+    intent = setup_wizard.begin(output, config, {}, identity)
+    setup_wizard.publish(output, intent, config, {}, None)
+    if changed == "journal":
+        journal_path = config.path("connection.json")
+        journal = json.loads(journal_path.read_bytes())
+        journal["after_binding"]["user_id"] = []
+        private(journal_path, setup._encode(journal).decode())
+    requests = len(corporate["requests"])
+
+    def no_discovery(*_args, **_kwargs):
+        raise AssertionError("Invalid committed state must be refused before network access")
+
+    monkeypatch.setattr(setup, "_discover", no_discovery)
+    with pytest.raises(MemoryError, match="journal is invalid|differs from the approved"):
+        setup.wizard(output, output_fn=lambda _: None)
+    assert len(corporate["requests"]) == requests
+    assert setup_wizard.intent_path(output).exists()
+
+
+def test_wizard_recovery_reauthenticates_after_binding_publication_was_rolled_back(
+    corporate, tmp_path, monkeypatch
+):
+    values = local_answers(tmp_path)
+    values.pop()
+    values[0] = "hybrid"
+    values += [SERVICE, "file", str(corporate["source"]), "1", "yes"]
+    respond, _ = answers(values)
+    output = tmp_path / "setup.toml"
+    original = setup.write_private
+
+    def lose_binding_acknowledgement(path, data, **kwargs):
+        result = original(path, data, **kwargs)
+        if path.name == "corporate.json":
+            raise OSError("synthetic lost binding acknowledgement")
+        return result
+
+    monkeypatch.setattr(setup, "write_private", lose_binding_acknowledgement)
+    with pytest.raises(OSError, match="lost binding"):
+        setup.wizard(output, input_fn=respond, output_fn=lambda _: None)
+    config = load_config(output)
+    assert config.path("corporate.json").exists()
+    assert not config.path("corporate.token").exists()
+    monkeypatch.setattr(setup, "write_private", original)
+    discover = setup._discover
+    reauthenticated = []
+
+    def discover_after_rollback(url, token):
+        journal = json.loads(config.path("connection.json").read_bytes())
+        assert journal["phase"] == "abandoned"
+        assert not config.path("corporate.json").exists()
+        assert not config.path("corporate.token").exists()
+        reauthenticated.append(True)
+        return discover(url, token)
+
+    monkeypatch.setattr(setup, "_discover", discover_after_rollback)
+    setup.wizard(output, output_fn=lambda _: None)
+    assert reauthenticated == [True]
+    assert json.loads(config.path("connection.json").read_bytes())["phase"] == "complete"
+    assert not setup_wizard.intent_path(output).exists()
+
+
+@pytest.mark.parametrize("missing_outputs", [False, True])
+def test_foreign_prepared_connection_after_process_exit_is_refused_without_mutation(
+    corporate, tmp_path, monkeypatch, missing_outputs
+):
+    config = corporate["config"]
+    output = tmp_path / "setup.toml"
+    alice = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    intent = setup_wizard.begin(output, config, {}, alice)
+    setup_wizard.publish(output, intent, config, {}, None)
+    bob = {**corporate["identity"], "user_id": "bob"}
+    metadata = private(
+        tmp_path / "bob.json",
+        json.dumps(
+            {
+                "identity": bob,
+                "worlds": corporate["worlds"],
+            }
+        ),
+    )
+    script = """
+import json, os, sys
+from pathlib import Path
+from memory_worlds import setup_interactive as setup
+from memory_worlds.models import World
+from memory_worlds.setup_config import load_config
+metadata = json.loads(Path(sys.argv[2]).read_bytes())
+setup._discover = lambda url, token: (
+    metadata['identity'], [World.model_validate(item) for item in metadata['worlds']]
+)
+original = setup.write_private
+def exit_after_token(path, data, **kwargs):
+    result = original(path, data, **kwargs)
+    if path.name == 'corporate.token':
+        os._exit(73)
+    return result
+setup.write_private = exit_after_token
+setup.connect_setup(load_config(Path(sys.argv[1])))
+raise AssertionError('Token publication boundary was not reached')
+"""
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(output), str(metadata)],
+        capture_output=True,
+        timeout=15,
+    )
+    assert child.returncode == 73, child.stderr.decode()
+    journal_path = config.path("connection.json")
+    assert json.loads(journal_path.read_bytes())["phase"] == "prepared"
+    assert not config.path("corporate.json").exists()
+    if missing_outputs:
+        key = config.path("extraction.key")
+        config.extraction.api_key_file = key
+        intent["config"] = config.model_dump(mode="json")
+        intent["config_sha256"] = hashlib.sha256(config_bytes(config)).hexdigest()
+        intent["keys"] = [
+            {
+                "path": str(key),
+                "sha256": hashlib.sha256(b"pending-provider-key\n").hexdigest(),
+            }
+        ]
+        private(setup_wizard.intent_path(output), setup_wizard._encode(intent).decode())
+        output.unlink()
+    state_paths = list(config.state_dir.iterdir())
+    paths = [setup_wizard.intent_path(output), *state_paths]
+    if not missing_outputs:
+        paths.append(output)
+    before = {path: path.read_bytes() for path in paths}
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Foreign state must fail before questions or network access")
+
+    monkeypatch.setattr(setup, "_discover", forbidden)
+    with pytest.raises(MemoryError, match="differs from the approved wizard intent"):
+        setup.wizard(output, input_fn=forbidden, secret_fn=forbidden, output_fn=lambda _: None)
+    assert {path: path.read_bytes() for path in paths} == before
+    assert set(config.state_dir.iterdir()) == set(state_paths)
+    assert not config.path("corporate.json").exists()
+    if missing_outputs:
+        assert not output.exists()
+        assert not config.path("extraction.key").exists()
+    assert not corporate["requests"]
+
+
+def test_foreign_before_binding_is_refused_without_abandoning_prepared_connection(
+    corporate, tmp_path, monkeypatch
+):
+    config = corporate["config"]
+    config.corporate.world_ids = ["company"]
+    setup.connect_setup(config)
+    journal_path = config.path("connection.json")
+    connection = json.loads(journal_path.read_bytes())
+    before_binding = connection["after_binding"]
+    after_binding = {
+        **before_binding,
+        "world_ids": ["team"],
+        "token_sha256": hashlib.sha256((NEXT_TOKEN + "\n").encode()).hexdigest(),
+    }
+    connection.update(
+        {
+            "phase": "prepared",
+            "before_binding": before_binding,
+            "after_binding": after_binding,
+            "before_binding_sha256": hashlib.sha256(setup._encode(before_binding)).hexdigest(),
+            "after_binding_sha256": hashlib.sha256(setup._encode(after_binding)).hexdigest(),
+            "before_token_sha256": before_binding["token_sha256"],
+            "after_token_sha256": after_binding["token_sha256"],
+        }
+    )
+    private(journal_path, setup._encode(connection).decode())
+    config.corporate.world_ids = ["team"]
+    identity = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    output = tmp_path / "setup.toml"
+    intent = setup_wizard.begin(output, config, {}, identity)
+    setup_wizard.publish(output, intent, config, {}, None)
+    before = {path: path.read_bytes() for path in config.state_dir.iterdir()}
+    requests = len(corporate["requests"])
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("Foreign rollback state must fail before questions or network access")
+
+    monkeypatch.setattr(setup, "_discover", forbidden)
+    with pytest.raises(MemoryError, match="differs from the approved wizard intent"):
+        setup.wizard(output, input_fn=forbidden, secret_fn=forbidden, output_fn=lambda _: None)
+    assert {path: path.read_bytes() for path in config.state_dir.iterdir()} == before
+    assert len(corporate["requests"]) == requests
+
+
+@pytest.mark.parametrize(
+    "field,invalid",
+    [
+        ("authority_id", []),
+        ("user_id", ""),
+        ("credential_id", None),
+        ("world_ids", ["team", "team"]),
+        ("world_ids", ["../../elsewhere"]),
+        ("token_sha256", "not-a-sha256"),
+        ("token_file", "/unowned/token"),
+    ],
+)
+@pytest.mark.parametrize("location", ["journal", "binding"])
+def test_malformed_corporate_binding_fields_are_rejected_before_network(
+    corporate, field, invalid, location
+):
+    config = corporate["config"]
+    setup.connect_setup(config)
+    path = config.path("connection.json" if location == "journal" else "corporate.json")
+    value = json.loads(path.read_bytes())
+    binding = value["after_binding"] if location == "journal" else value
+    binding[field] = invalid
+    if location == "journal":
+        value["after_binding_sha256"] = hashlib.sha256(setup._encode(binding)).hexdigest()
+    private(path, setup._encode(value).decode())
+    requests = len(corporate["requests"])
+    with pytest.raises(MemoryError):
+        setup.connect_setup(config)
+    assert len(corporate["requests"]) == requests
+
+
+@pytest.mark.parametrize("boundary", ["provider", "configuration"])
+def test_local_wizard_resumes_after_lost_file_publication_acknowledgement(
+    tmp_path, monkeypatch, boundary
+):
+    output = tmp_path / "setup.toml"
+    values = local_answers(tmp_path)
+    values[11:12] = ["new", "yes"]
+    respond, _ = answers(values)
+    original = setup_wizard.write_private
+
+    def lose_acknowledgement(path, data, **kwargs):
+        result = original(path, data, **kwargs)
+        if path == (tmp_path / "state" / "extraction.key" if boundary == "provider" else output):
+            raise OSError("synthetic lost wizard publication acknowledgement")
+        return result
+
+    monkeypatch.setattr(setup_wizard, "write_private", lose_acknowledgement)
+    with pytest.raises(OSError, match="lost wizard"):
+        setup.wizard(
+            output, input_fn=respond, secret_fn=lambda _: "provider-key", output_fn=lambda _: None
+        )
+    assert setup_wizard.intent_path(output).exists()
+    monkeypatch.setattr(setup_wizard, "write_private", original)
+
+    def no_prompt(prompt):
+        raise AssertionError(
+            "No prompt should be required after durable file publication: " + prompt
+        )
+
+    result = setup.wizard(output, input_fn=no_prompt, secret_fn=no_prompt, output_fn=lambda _: None)
+    assert load_config(output) == result
+    assert not setup_wizard.intent_path(output).exists()
+    assert result.extraction.api_key_file.read_text() == "provider-key\n"
+    assert not result.data_dir.exists()
+
+
+@pytest.mark.parametrize("change", ["output", "config_hash", "key_path", "identity"])
+def test_unrelated_or_malformed_wizard_intent_is_rejected_before_questions_or_network(
+    corporate, tmp_path, change
+):
+    config = corporate["config"]
+    output = tmp_path / "setup.toml"
+    pending = {config.path("extraction.key"): b"provider-key\n"}
+    config.extraction.api_key_file = config.path("extraction.key")
+    identity = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    intent = setup_wizard.begin(output, config, pending, identity)
+    if change == "output":
+        intent["output"] = str(tmp_path / "unrelated.toml")
+    elif change == "config_hash":
+        intent["config_sha256"] = "0" * 64
+    elif change == "key_path":
+        intent["keys"][0]["path"] = str(tmp_path / "unowned.key")
+    else:
+        intent["identity"]["user_id"] = []
+    private(setup_wizard.intent_path(output), json.dumps(intent))
+
+    def no_prompt(_prompt):
+        raise AssertionError("Invalid intent must fail before questionnaire or secret entry")
+
+    with pytest.raises(MemoryError, match="Wizard intent is invalid"):
+        setup.wizard(output, input_fn=no_prompt, secret_fn=no_prompt, output_fn=lambda _: None)
+    assert not corporate["requests"]
+    assert not output.exists()
+    assert not config.path("extraction.key").exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "state/extraction.key",
+        "state/corporate.json",
+        "state/pi-personal.json/setup.toml",
+        "data/setup.toml",
+        "state",
+    ],
+)
+def test_wizard_refuses_configuration_paths_that_conflict_with_its_outputs(tmp_path, name):
+    respond, _ = answers(local_answers(tmp_path)[:-1])
+    with pytest.raises(MemoryError, match="conflicts with managed state or source data"):
+        setup.wizard(tmp_path / name, input_fn=respond, output_fn=lambda _: None)
+    assert not (tmp_path / "state").exists()
+    assert not (tmp_path / "data").exists()
+
+
+def test_completed_wizard_intent_never_recreates_missing_outputs(corporate, tmp_path):
+    config = corporate["config"]
+    output = tmp_path / "setup.toml"
+    identity = {
+        key: corporate["identity"][key] for key in ("authority_id", "user_id", "credential_id")
+    }
+    intent = setup_wizard.begin(output, config, {}, identity)
+    intent["phase"] = "complete"
+    private(setup_wizard.intent_path(output), setup_wizard._encode(intent).decode())
+
+    def no_prompt(_prompt):
+        raise AssertionError("Completed intent must not prompt for secrets or a questionnaire")
+
+    with pytest.raises(MemoryError, match="Completed wizard configuration is missing"):
+        setup.wizard(output, input_fn=no_prompt, secret_fn=no_prompt, output_fn=lambda _: None)
+    assert not output.exists()
+    assert not corporate["requests"]

@@ -132,7 +132,10 @@ def test_owned_runtime_projection_restart_and_retained_graph(tmp_path):
             # Explicit reconnect can acquire the controller lock while the API owns its data.
             with setup_lock(config):
                 assert child.poll() is None
-            assert doctor_setup(config)["api"] == "ready"
+            diagnosis = doctor_setup(config)
+            assert diagnosis["api"] == "health_ready"
+            assert diagnosis["api_identity"] == "not_verified"
+            assert diagnosis["personal_credential"] == "valid"
             with Client(config.url, credential) as client:
                 receipt = client.capture(
                     resource["world_id"],

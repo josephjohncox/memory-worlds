@@ -146,7 +146,12 @@ class SetupConfig(BaseModel):
             self.state_dir or Path.home() / ".local/state/memory-worlds" / self.instance
         )
         if self.adopt_admin_file is not None:
-            self.adopt_admin_file = check_path(self.adopt_admin_file)
+            # A per-operation override can supersede a stale external reference.
+            # Keep the saved value in the digest; inspect only the selected file
+            # when validate/apply consumes it.
+            self.adopt_admin_file = self.adopt_admin_file.expanduser().absolute()
+            if ".." in self.adopt_admin_file.parts:
+                raise MemoryError("setup paths must not contain parent traversal")
         for path in (self.data_dir, self.state_dir):
             if path in (Path("/"), Path.home(), Path("/tmp")):
                 raise ValueError("setup requires dedicated data and state directories")
@@ -189,7 +194,7 @@ class SetupConfig(BaseModel):
 def load_config(path: Path) -> SetupConfig:
     path = check_path(path)
     try:
-        values = tomllib.loads(private_read(path, private=False).decode())
+        values = tomllib.loads(private_read(path, private=False, managed=True).decode())
         for key in ("data_dir", "state_dir", "adopt_admin_file"):
             if key in values and isinstance(values[key], str):
                 target = Path(values[key]).expanduser()
@@ -210,7 +215,8 @@ def load_config(path: Path) -> SetupConfig:
         ) from None
 
 
-def save_config(config: SetupConfig, path: Path, *, expected_hash: str | None = None) -> str:
+def config_bytes(config: SetupConfig) -> bytes:
+    """Render the single current TOML format without publishing a file."""
     values = config.model_dump(mode="json", exclude_none=True)
     lines = ["# Memory Worlds setup; credentials are referenced by private file path."]
 
@@ -224,4 +230,8 @@ def save_config(config: SetupConfig, path: Path, *, expected_hash: str | None = 
         if isinstance(value, dict):
             lines.extend(["", f"[{key}]"])
             lines.extend(assignment(field, content) for field, content in value.items())
-    return write_private(path, "\n".join(lines) + "\n", expected_hash=expected_hash)
+    return ("\n".join(lines) + "\n").encode()
+
+
+def save_config(config: SetupConfig, path: Path, *, expected_hash: str | None = None) -> str:
+    return write_private(path, config_bytes(config), expected_hash=expected_hash)

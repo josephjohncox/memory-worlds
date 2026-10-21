@@ -6,7 +6,9 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from pathlib import Path
 from types import SimpleNamespace
@@ -50,6 +52,7 @@ def provisioned(tmp_path, **changes):
         "world_id": uuid4().hex,
         "scope_id": str(uuid4()),
         "credential_id": uuid4().hex,
+        "agent_id": str(uuid4()),
         "token_file": str(configured.path("personal.token")),
     }
     state = {
@@ -76,6 +79,22 @@ def provisioned(tmp_path, **changes):
     write_private(configured.data_dir / "daemon.lock", "stopped")
     with sqlite3.connect(configured.data_dir / "control.sqlite3") as db:
         db.execute("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        db.execute(
+            "CREATE TABLE credentials (id TEXT PRIMARY KEY, token_hash TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, agent_id TEXT NOT NULL, admin INTEGER NOT NULL, "
+            "revoked INTEGER NOT NULL DEFAULT 0)"
+        )
+        db.execute("CREATE TABLE credential_contexts (credential_id TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE identity_sessions (credential_id TEXT PRIMARY KEY)")
+        db.execute(
+            "INSERT INTO credentials VALUES (?, ?, ?, ?, 0, 0)",
+            (
+                personal["credential_id"],
+                hashlib.sha256(b"synthetic-personal-agent").hexdigest(),
+                state["user_id"],
+                personal["agent_id"],
+            ),
+        )
         db.executemany(
             "INSERT INTO metadata VALUES (?, ?)",
             [
@@ -469,13 +488,14 @@ def test_doctor_absent_state_creates_no_directories_or_store(tmp_path, monkeypat
         "_command",
         lambda *_args, **_kwargs: pytest.fail("Absent setup must not query Docker"),
     )
-    assert runtime.doctor_setup(configured)["state"] == "missing"
+    result = runtime.doctor_setup(configured)
+    assert result["state"] == "missing" and result["authority"] == "not_checked"
     assert not configured.state_dir.exists() and not configured.data_dir.exists()
 
 
-@pytest.mark.parametrize("identity_matches,ready", [(True, True), (False, True), (True, False)])
-def test_doctor_is_readonly_and_reports_pinned_identity_and_health_without_secrets(
-    tmp_path, monkeypatch, identity_matches, ready
+@pytest.mark.parametrize("ready", [True, False])
+def test_doctor_is_readonly_and_reports_offline_binding_and_unauthenticated_health(
+    tmp_path, monkeypatch, ready
 ):
     configured, state = provisioned(tmp_path)
     docker_fixture(monkeypatch, state, exists=True)
@@ -491,17 +511,6 @@ def test_doctor_is_readonly_and_reports_pinned_identity_and_health_without_secre
     def respond(request):
         requests.append(request)
         assert request.method == "GET" and not request.content
-        if request.url.path == "/v1/me":
-            assert request.headers["authorization"] == "Bearer synthetic-personal-agent"
-            return httpx.Response(
-                200,
-                json={
-                    "authority_id": state["authority_id"] if identity_matches else "unrelated",
-                    "user_id": state["user_id"],
-                    "credential_id": state["resources"]["personal"]["credential_id"],
-                    "secret": "synthetic-private-response-content",
-                },
-            )
         assert "authorization" not in request.headers
         return httpx.Response(200 if ready or request.url.path == "/healthz" else 503)
 
@@ -511,11 +520,12 @@ def test_doctor_is_readonly_and_reports_pinned_identity_and_health_without_secre
         lambda **kwargs: real_client(**kwargs, transport=httpx.MockTransport(respond)),
     )
     result = runtime.doctor_setup(configured)
-    assert result["api"] == (
-        "identity_mismatch" if not identity_matches else "ready" if ready else "not_ready"
-    )
+    assert result["authority"] == "valid"
+    assert result["personal_credential"] == "valid"
+    assert result["api"] == ("health_ready" if ready else "not_ready")
+    assert result["api_identity"] == "not_verified"
     assert result["graph"] == "healthy" and result["model_processing"] == "not_checked"
-    assert {request.url.path for request in requests} == {"/healthz", "/readyz", "/v1/me"}
+    assert {request.url.path for request in requests} == {"/healthz", "/readyz"}
     assert "synthetic-personal-agent" not in json.dumps(result)
     assert "synthetic-private-response-content" not in json.dumps(result)
     after = {
@@ -546,6 +556,331 @@ def test_stopped_doctor_never_sends_bearer_to_an_unrelated_loopback_listener(tmp
     assert result["daemon"] == "stopped" and result["api"] == "daemon_stopped"
     assert result["graph"] == "healthy"
     assert requests == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "identity", "bootstrapped", "ownership"])
+def test_doctor_distinguishes_authority_storage_from_valid_managed_files(
+    tmp_path, monkeypatch, failure
+):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / "control.sqlite3"
+    if failure == "missing":
+        path.unlink()
+    else:
+        key, value = {
+            "identity": ("authority_id", uuid4().hex),
+            "bootstrapped": ("bootstrapped", "0"),
+            "ownership": (f"setup:{configured.instance}", "{}"),
+        }[failure]
+        with sqlite3.connect(path) as db:
+            db.execute("UPDATE metadata SET value=? WHERE key=?", (value, key))
+    docker_fixture(monkeypatch, state)
+    before = {
+        str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    result = runtime.doctor_setup(configured)
+    assert result["state"] == result["credentials"] == "valid"
+    assert result["authority"] == ("missing" if failure == "missing" else "mismatch")
+    assert result["daemon"] == "stopped" and result["api"] == "daemon_stopped"
+    assert {
+        str(path): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    } == before
+
+
+def test_doctor_checks_authority_even_when_a_managed_credential_is_missing(tmp_path, monkeypatch):
+    configured, _ = provisioned(tmp_path)
+    configured.path("personal.token").unlink()
+    monkeypatch.setattr(
+        runtime,
+        "_command",
+        lambda *_args, **_kwargs: pytest.fail("Invalid setup must not query Docker"),
+    )
+    result = runtime.doctor_setup(configured)
+    assert result["state"] == result["credentials"] == "invalid"
+    assert result["authority"] == "valid"
+
+
+def test_doctor_stopped_wal_header_creates_no_source_sidecars(tmp_path, monkeypatch):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / "control.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+    db.close()
+    assert not Path(str(path) + "-wal").exists()
+    assert not Path(str(path) + "-shm").exists()
+    docker_fixture(monkeypatch, state)
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    assert runtime.doctor_setup(configured)["authority"] == "valid"
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert not Path(str(path) + "-wal").exists()
+    assert not Path(str(path) + "-shm").exists()
+
+
+@pytest.mark.parametrize("bootstrapped", ["1", "0"])
+def test_doctor_reads_committed_crash_wal_without_creating_missing_source_shm(
+    tmp_path, monkeypatch, bootstrapped
+):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / "control.sqlite3"
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import os, sqlite3, sys; db=sqlite3.connect(sys.argv[1]); "
+            "db.execute('PRAGMA journal_mode=WAL'); "
+            "db.execute(\"INSERT INTO metadata VALUES ('doctor-wal-fixture', 'committed')\"); "
+            "db.execute(\"UPDATE metadata SET value=? WHERE key='bootstrapped'\", "
+            "(sys.argv[2],)); db.commit(); os._exit(0)",
+            str(path),
+            bootstrapped,
+        ],
+        check=True,
+        timeout=10,
+    )
+    wal = Path(str(path) + "-wal")
+    shm = Path(str(path) + "-shm")
+    assert wal.stat().st_size > 32
+    shm.unlink()
+    docker_fixture(monkeypatch, state)
+    before = {
+        str(item): (item.read_bytes(), item.stat().st_mtime_ns)
+        for item in tmp_path.rglob("*")
+        if item.is_file()
+    }
+    result = runtime.doctor_setup(configured)
+    assert result["authority"] == ("valid" if bootstrapped == "1" else "mismatch")
+    assert not shm.exists()
+    assert {
+        str(item): (item.read_bytes(), item.stat().st_mtime_ns)
+        for item in tmp_path.rglob("*")
+        if item.is_file()
+    } == before
+
+
+def test_doctor_running_authority_queries_only_binding_rows_in_one_private_snapshot(
+    tmp_path, monkeypatch
+):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / "control.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE excluded_content (secret TEXT)")
+        db.execute("INSERT INTO excluded_content VALUES ('synthetic-excluded-content')")
+        db.commit()
+        with DaemonLock(configured.data_dir):
+            docker_fixture(monkeypatch, state)
+            real_connect = sqlite3.connect
+            statements = []
+
+            def read_snapshot(database, **kwargs):
+                assert str(configured.data_dir) not in database
+                assert database.endswith("?mode=ro") and kwargs["uri"]
+                connection = real_connect(database, **kwargs)
+                connection.set_trace_callback(statements.append)
+
+                def authorize(action, table, *_args):
+                    if action == sqlite3.SQLITE_READ:
+                        assert table in {
+                            "metadata",
+                            "credentials",
+                            "credential_contexts",
+                            "identity_sessions",
+                        }
+                    return sqlite3.SQLITE_OK
+
+                connection.set_authorizer(authorize)
+                return connection
+
+            monkeypatch.setattr(runtime.sqlite3, "connect", read_snapshot)
+            assert runtime._running(configured)
+            before = {
+                str(item): (item.read_bytes(), item.stat().st_mtime_ns)
+                for item in configured.data_dir.iterdir()
+                if item.is_file()
+            }
+            assert runtime._doctor_inspect(configured, state, "synthetic-personal-agent") == {
+                "authority": "valid",
+                "personal_credential": "valid",
+            }
+            assert len(statements) == 2 and "FROM metadata" in statements[0]
+            assert "FROM credentials WHERE id=" in statements[1]
+            assert {
+                str(item): (item.read_bytes(), item.stat().st_mtime_ns)
+                for item in configured.data_dir.iterdir()
+                if item.is_file()
+            } == before
+
+
+@pytest.mark.parametrize("unavailable", ["size", "changing"])
+def test_doctor_never_calls_an_uncertain_snapshot_valid(tmp_path, monkeypatch, unavailable):
+    configured, state = provisioned(tmp_path)
+    docker_fixture(monkeypatch, state)
+    if unavailable == "size":
+        monkeypatch.setattr(runtime, "_DOCTOR_AUTHORITY_MAXIMUM", 1)
+    else:
+        original = runtime.os.read
+        path = configured.data_dir / "control.sqlite3"
+
+        def changing_read(descriptor, maximum):
+            content = original(descriptor, maximum)
+            if os.fstat(descriptor).st_ino == path.stat().st_ino:
+                info = path.stat()
+                os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns + 1))
+            return content
+
+        monkeypatch.setattr(runtime.os, "read", changing_read)
+    result = runtime.doctor_setup(configured)
+    assert result["state"] == result["credentials"] == "valid"
+    assert result["authority"] == "unavailable"
+
+
+def test_doctor_withholds_credentials_for_an_unverified_running_authority(tmp_path, monkeypatch):
+    configured, state = provisioned(tmp_path)
+    (configured.data_dir / "control.sqlite3").unlink()
+    docker_fixture(monkeypatch, state)
+    monkeypatch.setattr(runtime, "_running", lambda _config: True)
+    monkeypatch.setattr(
+        runtime.httpx,
+        "Client",
+        lambda **_kwargs: pytest.fail("Unverified authority must not receive bearer credentials"),
+    )
+    result = runtime.doctor_setup(configured)
+    assert result["authority"] == "missing"
+    assert result["daemon"] == "running" and result["api"] == "authority_unverified"
+
+
+def test_doctor_refuses_a_hardlinked_authority_without_touching_either_alias(tmp_path, monkeypatch):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / "control.sqlite3"
+    alias = tmp_path / "control-alias.sqlite3"
+    os.link(path, alias)
+    docker_fixture(monkeypatch, state)
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    assert runtime.doctor_setup(configured)["authority"] == "mismatch"
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert alias.read_bytes() == before[0]
+
+
+@pytest.mark.parametrize(
+    "change,expected",
+    [
+        ("token_hash", "mismatch"),
+        ("id", "missing"),
+        ("user_id", "mismatch"),
+        ("agent_id", "mismatch"),
+        ("admin", "mismatch"),
+        ("revoked", "revoked"),
+        ("credential_contexts", "mismatch"),
+        ("identity_sessions", "mismatch"),
+    ],
+)
+def test_doctor_checks_the_personal_credential_binding_offline(
+    tmp_path, monkeypatch, change, expected
+):
+    configured, state = provisioned(tmp_path)
+    credential_id = state["resources"]["personal"]["credential_id"]
+    with sqlite3.connect(configured.data_dir / "control.sqlite3") as db:
+        if change in {"credential_contexts", "identity_sessions"}:
+            db.execute(f"INSERT INTO {change} VALUES (?)", (credential_id,))
+        else:
+            value = 1 if change in {"admin", "revoked"} else "synthetic-mismatch"
+            db.execute(f"UPDATE credentials SET {change}=? WHERE id=?", (value, credential_id))
+    docker_fixture(monkeypatch, state)
+    monkeypatch.setattr(
+        runtime.httpx,
+        "Client",
+        lambda **_kwargs: pytest.fail("Stopped credential inspection must remain offline"),
+    )
+    result = runtime.doctor_setup(configured)
+    assert result["state"] == result["credentials"] == result["authority"] == "valid"
+    assert result["personal_credential"] == expected
+    assert "synthetic-personal-agent" not in json.dumps(result)
+
+
+def test_doctor_sends_no_bearer_when_a_replacement_listener_takes_the_daemon_port(
+    tmp_path, monkeypatch
+):
+    requests = []
+
+    class Listener(BaseHTTPRequestHandler):
+        def do_GET(self):
+            requests.append((self.path, dict(self.headers)))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def log_message(self, *_args):
+            pass
+
+    original_listener = ThreadingHTTPServer(("127.0.0.1", 0), Listener)
+    port = original_listener.server_address[1]
+    configured, state = provisioned(tmp_path, port=port)
+    docker_fixture(monkeypatch, state)
+    command = runtime._command
+    replacement = None
+    thread = None
+    with DaemonLock(configured.data_dir) as daemon:
+        assert runtime._running(configured)
+
+        def replace_after_ownership_check(arguments, environment, **kwargs):
+            nonlocal replacement, thread
+            if replacement is None:
+                daemon.__exit__()
+                original_listener.server_close()
+                replacement = ThreadingHTTPServer(("127.0.0.1", port), Listener)
+                thread = threading.Thread(
+                    target=replacement.serve_forever,
+                    kwargs={"poll_interval": 0.05},
+                    daemon=True,
+                )
+                thread.start()
+                assert not runtime._running(configured)
+            return command(arguments, environment, **kwargs)
+
+        monkeypatch.setattr(runtime, "_command", replace_after_ownership_check)
+        try:
+            result = runtime.doctor_setup(configured)
+        finally:
+            original_listener.server_close()
+            if replacement is not None:
+                replacement.shutdown()
+                replacement.server_close()
+            if thread is not None:
+                thread.join(timeout=2)
+    assert result["authority"] == result["personal_credential"] == "valid"
+    assert result["daemon"] == "running"  # The observation preceded the replacement.
+    assert result["api"] == "health_ready" and result["api_identity"] == "not_verified"
+    assert {path for path, _headers in requests} == {"/healthz", "/readyz"}
+    assert all(
+        all(name.lower() != "authorization" for name in headers) for _path, headers in requests
+    )
+    assert "synthetic-personal-agent" not in json.dumps(requests)
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm"])
+def test_runtime_authority_check_refuses_hardlinked_storage_before_sqlite_opens(
+    tmp_path, monkeypatch, suffix
+):
+    configured, state = provisioned(tmp_path)
+    path = configured.data_dir / ("control.sqlite3" + suffix)
+    if suffix:
+        write_private(path, "synthetic-sidecar")
+    alias = tmp_path / "storage-alias"
+    os.link(path, alias)
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    monkeypatch.setattr(
+        runtime.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: pytest.fail("Linked authority storage must not reach SQLite"),
+    )
+    with pytest.raises(Conflict, match="one hard link"):
+        runtime._authority(configured, state)
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert alias.read_bytes() == before[0]
 
 
 def test_foreground_handoff_allows_connection_lock_while_daemon_lock_stays_held(

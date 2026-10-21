@@ -1,9 +1,12 @@
 """Setup must be inspectable offline and never turn configuration into code."""
 
+import errno
 import hashlib
 import json
 import os
 import stat
+import subprocess
+import sys
 
 import pytest
 from pydantic import ValidationError
@@ -15,7 +18,9 @@ from memory_worlds.setup_files import (
     ensure_private_dir,
     load_state,
     private_read,
+    read_json,
     setup_lock,
+    unlink_private,
     write_private,
 )
 
@@ -187,6 +192,130 @@ def test_private_read_bounds_and_does_not_block_on_fifo(tmp_path):
     os.mkfifo(fifo, mode=0o600)
     with pytest.raises(MemoryError, match="bounded"):
         private_read(fifo)
+
+
+@pytest.mark.parametrize("operation", ["read", "read_json", "replace", "unchanged", "unlink"])
+def test_managed_files_reject_hard_links_without_changing_either_alias(tmp_path, operation):
+    folder = tmp_path / "private"
+    target, alias = folder / "managed.token", tmp_path / "retained-token"
+    original = b'{"secret":"original"}\n'
+    digest = write_private(target, original)
+    os.link(target, alias)
+    before = target.stat()
+    with pytest.raises(MemoryError, match="hard link"):
+        if operation == "read":
+            private_read(target, managed=True)
+        elif operation == "read_json":
+            read_json(target)
+        elif operation == "unlink":
+            unlink_private(target, expected_hash=digest)
+        else:
+            write_private(
+                target,
+                original if operation == "unchanged" else b"rotated-token\n",
+                expected_hash=digest,
+            )
+    assert target.read_bytes() == alias.read_bytes() == original
+    assert target.stat().st_ino == alias.stat().st_ino == before.st_ino
+    assert target.stat().st_nlink == 2
+
+
+def test_external_private_references_can_have_hard_links(tmp_path):
+    target, alias = tmp_path / "provider.key", tmp_path / "provider-key-alias"
+    target.write_bytes(b"external-provider-key\n")
+    target.chmod(0o600)
+    os.link(target, alias)
+    assert private_read(alias) == b"external-provider-key\n"
+
+
+def test_new_private_file_publication_refuses_destination_that_appears(tmp_path, monkeypatch):
+    import memory_worlds.setup_files as files
+
+    folder = tmp_path / "private"
+    target = folder / "managed.token"
+    rename = files._rename_new
+
+    def raced(directory, source, destination):
+        target.write_bytes(b"foreign content\n")
+        target.chmod(0o600)
+        rename(directory, source, destination)
+
+    monkeypatch.setattr(files, "_rename_new", raced)
+    with pytest.raises(Conflict, match="appeared"):
+        write_private(target, "managed secret\n")
+    assert target.read_bytes() == b"foreign content\n"
+    assert list(folder.iterdir()) == [target]
+
+
+def test_process_exit_immediately_after_publication_leaves_one_managed_link(tmp_path):
+    folder = tmp_path / "private"
+    script = """
+import os
+import sys
+from pathlib import Path
+import memory_worlds.setup_files as files
+publish = files._rename_new
+def exit_after_publication(*args):
+    publish(*args)
+    os._exit(29)
+files._rename_new = exit_after_publication
+files.write_private(Path(sys.argv[1]) / "managed.token", "durable secret\\n")
+"""
+    result = subprocess.run([sys.executable, "-c", script, str(folder)], check=False)
+    assert result.returncode == 29
+    target = folder / "managed.token"
+    assert private_read(target, managed=True) == b"durable secret\n"
+    assert target.stat().st_nlink == 1
+    assert list(folder.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("code", [errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP, errno.EIO])
+def test_atomic_publication_error_preserves_existing_files(tmp_path, monkeypatch, code):
+    import memory_worlds.setup_files as files
+
+    folder = tmp_path / "private"
+    ensure_private_dir(folder)
+    source, destination = folder / "prepared", folder / "foreign"
+    source.write_bytes(b"prepared secret")
+    destination.write_bytes(b"foreign content")
+
+    class FailingRename:
+        def __call__(self, *args):
+            files.ctypes.set_errno(code)
+            return -1
+
+    class Library:
+        renameat2 = FailingRename()
+        renameatx_np = FailingRename()
+
+    monkeypatch.setattr(files.ctypes, "CDLL", lambda *args, **kwargs: Library())
+    with files._directory(folder) as directory:
+        with pytest.raises(OSError if code == errno.EIO else MemoryError):
+            files._rename_new(directory, source.name, destination.name)
+    assert source.read_bytes() == b"prepared secret"
+    assert destination.read_bytes() == b"foreign content"
+
+
+def test_atomic_publication_rejects_unsupported_platform_without_changes(tmp_path, monkeypatch):
+    import memory_worlds.setup_files as files
+
+    monkeypatch.setattr(files.sys, "platform", "unsupported")
+    with pytest.raises(MemoryError, match="Linux or macOS"):
+        write_private(tmp_path / "private" / "output", "prepared secret")
+    assert list((tmp_path / "private").iterdir()) == []
+
+
+def test_setup_lock_rejects_hard_links_without_modifying_aliased_file(tmp_path):
+    config = configuration(tmp_path)
+    victim = tmp_path / "unrelated"
+    victim.write_bytes(b"do not modify\n")
+    victim.chmod(0o600)
+    ensure_private_dir(config.state_dir)
+    os.link(victim, config.path("setup.lock"))
+    with pytest.raises(MemoryError, match="hard link"):
+        with setup_lock(config):
+            pytest.fail("aliased setup lock must not be acquired")
+    assert victim.read_bytes() == config.path("setup.lock").read_bytes() == b"do not modify\n"
 
 
 def test_lock_exclusion_and_readonly_missing_state(tmp_path):

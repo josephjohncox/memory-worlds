@@ -76,7 +76,7 @@ def _matching(config: SetupConfig, value: dict):
 
 def _journal(config: SetupConfig, value: dict):
     path = config.path("provision.json")
-    previous = _hash(private_read(path, maximum=_MAXIMUM)) if _exists(path) else None
+    previous = _hash(private_read(path, maximum=_MAXIMUM, managed=True)) if _exists(path) else None
     write_private(path, _json(value), expected_hash=previous)
 
 
@@ -168,6 +168,7 @@ def _read_journal(config: SetupConfig) -> dict:
 
 def _control_metadata(data_dir: Path) -> dict | None:
     """Inspect current SQLite ownership without constructing an initializing store."""
+    _check_control_files(data_dir)
     path = data_dir / "control.sqlite3"
     if not _exists(path):
         return None
@@ -185,11 +186,24 @@ def _control_metadata(data_dir: Path) -> dict | None:
         raise Conflict("Existing authority cannot be adopted as current SQLite storage") from None
 
 
+def _check_control_files(data_dir: Path) -> None:
+    """Reject aliased SQLite storage before opening SQLite or creating its schema."""
+    for name in ("control.sqlite3", "control.sqlite3-wal", "control.sqlite3-shm"):
+        path = check_path(data_dir / name)
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise Conflict("Authority control storage must be regular files with one hard link")
+
+
 @contextmanager
 def _readonly_control(data_dir: Path):
     # With no WAL, immutable mode prevents even a read-only SQLite connection
     # creating new -wal/-shm files. Apply holds the stopped-daemon lock. A
     # remaining WAL must instead be read by SQLite's normal recovery protocol.
+    _check_control_files(data_dir)
     path = data_dir / "control.sqlite3"
     suffix = "?mode=ro" if _exists(Path(str(path) + "-wal")) else "?mode=ro&immutable=1"
     db = sqlite3.connect(path.as_uri() + suffix, uri=True)
@@ -223,7 +237,7 @@ def _corporate(config: SetupConfig) -> dict | None:
             not isinstance(bound.get(key), str) or not bound[key]
             for key in ("authority_id", "user_id", "credential_id", "token_sha256")
         )
-        or _hash(private_read(expected_path, maximum=16_386)) != bound["token_sha256"]
+        or _hash(private_read(expected_path, maximum=16_386, managed=True)) != bound["token_sha256"]
     ):
         raise Conflict(
             "Corporate connection does not match the selected setup; reconnect explicitly"
@@ -277,7 +291,7 @@ def _secret(config: SetupConfig, journal: dict, name: str, *, committed: bool) -
     key = str(path)
     expected = journal["secrets"].get(key)
     if _exists(path):
-        data = private_read(path, maximum=256)
+        data = private_read(path, maximum=256, managed=True)
         if expected is None or _hash(data) != expected:
             raise Conflict("Setup secret changed or is not owned by this setup")
         return data
@@ -580,7 +594,7 @@ def _write_owned(config: SetupConfig, journal: dict, name: str, data: bytes):
     before = journal["files"].get(key)
     pending = journal["file_intents"].get(key)
     if _exists(path):
-        current = _hash(private_read(path, maximum=_MAXIMUM))
+        current = _hash(private_read(path, maximum=_MAXIMUM, managed=True))
         if pending and current == pending["after"] == desired:
             journal["files"][key] = desired
             del journal["file_intents"][key]
@@ -605,7 +619,7 @@ def _check_files(journal: dict):
         path = Path(key)
         if not _exists(path):
             raise Conflict("A managed setup file is missing; review before reapplying")
-        actual = _hash(private_read(path))
+        actual = _hash(private_read(path, managed=True))
         pending = journal["file_intents"].get(key)
         if actual != expected and not (pending and actual == pending["after"]):
             raise Conflict("A managed setup file changed outside setup")
@@ -630,7 +644,7 @@ def _finish_state(config: SetupConfig, journal: dict) -> dict:
         "stage": "complete",
     }
     path = config.path("state.json")
-    current = _hash(private_read(path)) if _exists(path) else None
+    current = _hash(private_read(path, managed=True)) if _exists(path) else None
     data = _json(state)
     journal["state_intent"] = {"before": current, "after": _hash(data)}
     _journal(config, journal)
@@ -666,7 +680,7 @@ def _apply_stopped(config: SetupConfig, corporate, previous, adopt_admin_file):
             raise Conflict("Provisioned authority ownership is missing; refusing reinitialization")
         _state_matches(previous, journal)
         if previous:
-            actual = _hash(private_read(config.path("state.json")))
+            actual = _hash(private_read(config.path("state.json"), managed=True))
             pending = journal.get("state_intent")
             expected = journal.get("state_hash")
             if actual != expected and not (
@@ -720,6 +734,7 @@ def _apply_stopped(config: SetupConfig, corporate, previous, adopt_admin_file):
     graph = _secret(config, journal, "graph.token", committed=ownership is not None)
     if not re.fullmatch(rb"[0-9a-f]{64}\n", graph):
         raise Conflict("Setup graph credential is invalid")
+    _check_control_files(config.data_dir)
     store = MemoryStore(config.data_dir, authority_id=journal["authority_id"])
     if store.authority_id != journal["authority_id"]:
         raise Conflict("Local authority binding changed")

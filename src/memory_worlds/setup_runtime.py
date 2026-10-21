@@ -1,4 +1,4 @@
-"""Owned foreground local runtime; never provisions or inspects source contents."""
+"""Owned foreground runtime and bounded private-storage diagnostics."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from contextlib import ExitStack, closing, contextmanager
 from importlib.resources import files
@@ -26,7 +27,7 @@ import httpx
 from .errors import Conflict
 from .errors import MemoryError as InvalidRequest
 from .graph import GraphConfig
-from .setup_files import load_state, private_read, setup_lock
+from .setup_files import _directory, load_state, private_read, setup_lock
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -54,6 +55,7 @@ _LABELS = {
     "compose_project": "memory-worlds.setup.project",
 }
 _COMPOSE_FILE = "compose.graph.yaml"
+_DOCTOR_AUTHORITY_MAXIMUM = 64 * 1024 * 1024
 
 
 def graph_compose_bytes(config: SetupConfig, state: dict) -> bytes:
@@ -78,7 +80,7 @@ def _state(config: SetupConfig) -> dict:
 
 def _secret(path: Path, *, maximum: int = 16_386, expected_hash: str | None = None) -> str:
     try:
-        content = private_read(path, maximum=maximum)
+        content = private_read(path, maximum=maximum, managed=expected_hash is not None)
         if expected_hash is not None and hashlib.sha256(content).hexdigest() != expected_hash:
             raise Conflict("A setup-managed credential was changed outside setup")
         value = content.decode("ascii").strip()
@@ -103,7 +105,9 @@ def _verify_files(state: dict) -> None:
         if not isinstance(name, str) or not Path(name).is_absolute():
             raise InvalidRequest("Setup managed file paths must be absolute")
         path = Path(name)
-        if hashlib.sha256(private_read(path)).hexdigest() != _managed_hash(state, path):
+        if hashlib.sha256(private_read(path, managed=True)).hexdigest() != _managed_hash(
+            state, path
+        ):
             raise Conflict("A setup-managed file was changed outside setup")
 
 
@@ -153,7 +157,9 @@ def runtime_environment(config: SetupConfig) -> dict[str, str]:
         if _corporate(config) != state.get("corporate"):
             raise Conflict("Corporate connection no longer matches the provisioned identity")
         path = config.path("mounts.json")
-        if hashlib.sha256(private_read(path)).hexdigest() != _managed_hash(state, path):
+        if hashlib.sha256(private_read(path, managed=True)).hexdigest() != _managed_hash(
+            state, path
+        ):
             raise Conflict("Setup mount configuration was changed outside setup")
         environment["MEMORY_WORLDS_MOUNTS_FILE"] = str(path)
     GraphConfig.from_env(environment)
@@ -162,7 +168,7 @@ def runtime_environment(config: SetupConfig) -> dict[str, str]:
 
 def _template(config: SetupConfig, state: dict) -> Path:
     path = config.path(_COMPOSE_FILE)
-    content = private_read(path)
+    content = private_read(path, managed=True)
     digest = hashlib.sha256(content).hexdigest()
     if state.get("files", {}).get(str(path)) != digest or content != graph_compose_bytes(
         config, state
@@ -288,8 +294,9 @@ def _stopped(config: SetupConfig):
             "Setup authority has no daemon ownership lock; run setup apply"
         ) from None
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise InvalidRequest("Setup daemon ownership lock is not a regular file")
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise InvalidRequest("Setup daemon ownership lock must be a regular file with one link")
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -317,6 +324,13 @@ def _authority(config: SetupConfig, state: dict) -> None:
     path = config.data_dir / "control.sqlite3"
     if path.is_symlink() or not path.is_file():
         raise Conflict("Setup authority is absent or is not a regular SQLite authority")
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            info = Path(str(path) + suffix).lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise Conflict("Setup authority storage must be a regular file with one hard link")
     try:
         with closing(
             sqlite3.connect(f"file:{quote(str(path), safe='/')}?mode=ro", uri=True)
@@ -327,23 +341,170 @@ def _authority(config: SetupConfig, state: dict) -> None:
                     ("authority_id", "bootstrapped", f"setup:{config.instance}"),
                 )
             )
-        if rows.get("authority_id") != state["authority_id"] or rows.get("bootstrapped") != "1":
-            raise ValueError
-        ownership = json.loads(rows[f"setup:{config.instance}"])
-        if not isinstance(ownership, dict) or any(
-            state.get(key) != value for key, value in ownership.items()
-        ):
-            raise ValueError
-        for key, expected in (
-            ("instance", config.instance),
-            ("config_digest", config.digest),
-            ("data_dir", str(config.data_dir)),
-            ("state_dir", str(config.state_dir)),
-        ):
-            if ownership.get(key) != expected:
-                raise ValueError
+        _validate_authority_metadata(config, state, rows)
     except (sqlite3.Error, ValueError, KeyError, TypeError):
         raise Conflict("Setup authority does not match its provisioned ownership") from None
+
+
+def _validate_authority_metadata(config: SetupConfig, state: dict, rows: dict) -> None:
+    if rows.get("authority_id") != state["authority_id"] or rows.get("bootstrapped") != "1":
+        raise ValueError
+    ownership = json.loads(rows[f"setup:{config.instance}"])
+    if not isinstance(ownership, dict) or any(
+        state.get(key) != value for key, value in ownership.items()
+    ):
+        raise ValueError
+    for key, expected in (
+        ("instance", config.instance),
+        ("config_digest", config.digest),
+        ("data_dir", str(config.data_dir)),
+        ("state_dir", str(config.state_dir)),
+    ):
+        if ownership.get(key) != expected:
+            raise ValueError
+
+
+def _file_identity(info: os.stat_result) -> tuple:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_mode,
+        info.st_uid,
+        info.st_nlink,
+    )
+
+
+def _authority_snapshot(config: SetupConfig, destination: Path, deadline: float) -> str | None:
+    """Copy stable control/WAL bytes; SQLite never opens any original authority file.
+
+    Immutable mode ignores a WAL, while ordinary read-only SQLite can create or
+    update its shared-memory sidecar. Let SQLite recover a private temporary copy
+    instead. A changing, oversized, or busy source is explicitly unavailable.
+    """
+    with _directory(config.data_dir) as directory, ExitStack() as opened:
+        captured = {}
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            name = "control.sqlite3" + suffix
+            try:
+                fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            except FileNotFoundError:
+                if not suffix:
+                    return "missing"
+                captured[name] = None
+                continue
+            opened.callback(os.close, fd)
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_nlink != 1:
+                return "mismatch"
+            captured[name] = (fd, _file_identity(info))
+            if suffix == "-journal" or info.st_size > _DOCTOR_AUTHORITY_MAXIMUM:
+                return "unavailable"
+        total = sum(item[1][2] for item in captured.values() if item is not None)
+        if total > _DOCTOR_AUTHORITY_MAXIMUM:
+            return "unavailable"
+        for name in ("control.sqlite3", "control.sqlite3-wal"):
+            item = captured[name]
+            if item is None:
+                continue
+            descriptor, identity = item
+            with (destination / name).open("xb") as target:
+                os.chmod(target.fileno(), 0o600)
+                remaining = identity[2]
+                while remaining:
+                    if time.monotonic() >= deadline:
+                        return "unavailable"
+                    block = os.read(descriptor, min(remaining, 1_048_576))
+                    if not block:
+                        return "unavailable"
+                    target.write(block)
+                    remaining -= len(block)
+        for name, item in captured.items():
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                if item is not None:
+                    return "unavailable"
+                continue
+            if item is None or _file_identity(current) != item[1]:
+                return "unavailable"
+            if _file_identity(os.fstat(item[0])) != item[1]:
+                return "unavailable"
+    return None
+
+
+def _doctor_personal_credential(db: sqlite3.Connection, state: dict, token: str) -> str:
+    """Check the setup personal credential without sending it to a network peer."""
+    try:
+        personal = state["resources"]["personal"]
+        row = db.execute(
+            "SELECT id, token_hash, user_id, agent_id, admin, revoked, "
+            "EXISTS(SELECT 1 FROM credential_contexts WHERE credential_id=credentials.id), "
+            "EXISTS(SELECT 1 FROM identity_sessions WHERE credential_id=credentials.id) "
+            "FROM credentials WHERE id=?",
+            (personal["credential_id"],),
+        ).fetchone()
+        if row is None:
+            return "missing"
+        if row[5] == 1:
+            return "revoked"
+        expected = (
+            personal["credential_id"],
+            hashlib.sha256(token.encode()).hexdigest(),
+            state["user_id"],
+            personal["agent_id"],
+            0,
+            0,
+            0,
+            0,
+        )
+        return "valid" if row == expected else "mismatch"
+    except sqlite3.Error:
+        return "unavailable"
+    except (KeyError, TypeError, ValueError):
+        return "mismatch"
+
+
+def _doctor_inspect(config: SetupConfig, state: dict, token: str | None = None) -> dict[str, str]:
+    """Inspect authority and optional credential within the same private snapshot."""
+    result = {"authority": "unavailable", "personal_credential": "not_checked"}
+    if not config.data_dir.exists():
+        return {**result, "authority": "missing"}
+    deadline = time.monotonic() + 2
+    try:
+        for _ in range(2):
+            with tempfile.TemporaryDirectory(prefix="memory-worlds-doctor-") as temporary:
+                path = Path(temporary)
+                status = _authority_snapshot(config, path, deadline)
+                if status is not None:
+                    if status != "unavailable" or time.monotonic() >= deadline:
+                        return {**result, "authority": status}
+                    continue
+                with closing(
+                    sqlite3.connect((path / "control.sqlite3").as_uri() + "?mode=ro", uri=True)
+                ) as db:
+                    db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1_048_576)
+                    db.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                    rows = dict(
+                        db.execute(
+                            "SELECT key, value FROM metadata WHERE key IN (?, ?, ?)",
+                            ("authority_id", "bootstrapped", f"setup:{config.instance}"),
+                        )
+                    )
+                    _validate_authority_metadata(config, state, rows)
+                    result["authority"] = "valid"
+                    if token is not None:
+                        result["personal_credential"] = _doctor_personal_credential(
+                            db, state, token
+                        )
+                    return result
+    except (sqlite3.Error, ValueError, KeyError, TypeError):
+        return {**result, "authority": "mismatch"}
+    except (InvalidRequest, OSError):
+        return result
+    return result
 
 
 def _available(host: str, port: int) -> None:
@@ -393,9 +554,9 @@ def _wait_for_daemon(config: SetupConfig, child) -> None:
     while time.monotonic() < deadline:
         if child.poll() is not None:
             raise InvalidRequest("Setup daemon exited before acquiring its authority lock")
-        if _running(config) and private_read(config.data_dir / "daemon.lock", maximum=32) == str(
-            child.pid
-        ).encode("ascii"):
+        if _running(config) and private_read(
+            config.data_dir / "daemon.lock", maximum=32, managed=True
+        ) == str(child.pid).encode("ascii"):
             return
         time.sleep(0.05)
     raise InvalidRequest("Setup daemon did not acquire its authority lock before startup deadline")
@@ -506,9 +667,12 @@ def doctor_setup(config: SetupConfig) -> dict:
         "instance": config.instance,
         "url": config.url,
         "state": "missing",
+        "authority": "not_checked",
         "daemon": "stopped",
         "credentials": "not_checked",
+        "personal_credential": "not_checked",
         "api": "not_checked",
+        "api_identity": "not_verified",
         "graph": "not_checked",
         "model_processing": "not_checked",
     }
@@ -516,6 +680,12 @@ def doctor_setup(config: SetupConfig) -> dict:
         return result
     try:
         state = _state(config)
+    except (InvalidRequest, OSError, KeyError, ValueError):
+        result["state"] = "invalid"
+        return result
+    result["state"] = "valid"
+    credential = None
+    try:
         _template(config, state)
         environment = runtime_environment(config)
         personal = state["resources"]["personal"]
@@ -526,6 +696,9 @@ def doctor_setup(config: SetupConfig) -> dict:
         )
     except (InvalidRequest, OSError, KeyError, ValueError):
         result["state"] = "invalid"
+        result["credentials"] = "invalid"
+    result.update(_doctor_inspect(config, state, credential))
+    if result["state"] != "valid":
         return result
     try:
         docker = _docker(environment)
@@ -541,31 +714,22 @@ def doctor_setup(config: SetupConfig) -> dict:
         # Never disclose its private credential merely to diagnose that listener.
         result["api"] = "daemon_stopped"
         return result
+    if result["authority"] != "valid":
+        # Diagnose readiness only after establishing the local storage identity.
+        result["api"] = "authority_unverified"
+        return result
     try:
+        # The daemon may exit and its loopback port may be reused after the lock
+        # check. Health probes therefore never include any private credential and
+        # never claim to establish the HTTP peer's identity.
         with httpx.Client(
             base_url=config.url, trust_env=False, follow_redirects=False, timeout=2
         ) as client:
             health = client.get("/healthz")
             ready = client.get("/readyz")
-            response = client.get("/v1/me", headers={"Authorization": f"Bearer {credential}"})
-        if len(response.content) > 2_097_152 or response.status_code != 200:
-            result["api"] = (
-                "credential_rejected" if response.status_code in {401, 403} else "unavailable"
-            )
-        else:
-            identity = response.json()
-            matches = (
-                identity.get("authority_id") == state["authority_id"]
-                and identity.get("user_id") == state["user_id"]
-                and identity.get("credential_id") == personal["credential_id"]
-            )
-            result["api"] = (
-                "ready"
-                if matches and health.status_code == ready.status_code == 200
-                else "identity_mismatch"
-                if not matches
-                else "not_ready"
-            )
+        result["api"] = (
+            "health_ready" if health.status_code == ready.status_code == 200 else "not_ready"
+        )
     except (httpx.HTTPError, TypeError, ValueError, AttributeError):
         result["api"] = "unavailable"
     return result

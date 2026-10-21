@@ -31,6 +31,17 @@ paths, model destinations, credential audiences and generated files before
 applying. Existing local authorities require explicit adoption and their local
 administrator credential; corporate login supplies no local administrative rights.
 
+After approval, the wizard records a private `<config filename>.wizard.json`
+intent beside the requested TOML. If setup is interrupted, rerun the same command
+with the same `--config` path to resume that intent. The intent contains settings,
+identity pins and file hashes, never provider keys or access tokens. If interruption
+occurred before a newly entered provider key reached its private file, enter that
+same key again when prompted. Changed files and unrelated pre-existing state are
+refused. Provider files and the TOML are saved before the corporate connection is
+published; the intent is removed after completion. A valid committed connection
+can finish recovery offline, without the original external token file or a new
+discovery request. An uncommitted connection can still require fresh login.
+
 ## Scripted local setup
 
 Save this as `~/.config/memory-worlds/local/setup.toml` in a private directory.
@@ -90,7 +101,9 @@ To adopt an existing stopped SQLite authority, point `data_dir` at it and add
 setting. The wizard's **adopt** choice records that private file reference.
 `setup apply --adopt-admin-file FILE` overrides the configured reference for the
 operation. Adoption requires a live local administrator credential; a corporate
-user token cannot authorize it.
+user token cannot authorize it. The override is validated instead of the saved
+reference for that application; it does not rewrite the TOML. Standalone
+`setup validate` continues to check the saved reference.
 
 Run verifies ownership and file hashes, starts the installation's graph, waits
 for its health check and serves the API in the foreground. The API and graph
@@ -165,15 +178,31 @@ MEMORY_WORLDS_CONFIG="$HOME/.local/state/memory-worlds/local/pi-personal.json" p
 Private directories use mode 0700 and secret/state files use 0600. Keep operator
 credentials out of routine agents. Source SQLite and active graph storage stay
 outside synchronized folders; use [completed backups](recovery.md) for transport.
+Setup-managed files, locks and authority SQLite files must each have one hard
+link. Setup refuses linked managed files before reading or replacing them;
+external provider-key and administrator-token references may have multiple links.
+Atomic no-overwrite publication uses the supported Linux/macOS rename primitives.
 
-Doctor checks configuration/state/file consistency, graph ownership/health and
-the API's readiness and authenticated identity without reading source contents
-or initializing a store. Missing setup paths remain absent. It does not test
-model extraction; a healthy graph and API do not establish model availability.
-Authenticated API checks require the authority's daemon lock to be held; a
-stopped authority's credential is never sent to another listener reusing its
-loopback port. Model processing uses the explicitly configured providers, which
-may be remote.
+Doctor reports durable authority validity separately from configuration/state/file
+consistency, graph ownership/health and API readiness. `credentials` reports
+managed credential-file consistency. `personal_credential` checks the personal
+token's offline binding to its expected credential ID, user and agent, including
+revocation and its native, non-admin credential shape; it does not prove grants
+or authenticate an HTTP peer. These ownership and credential queries use the
+same bounded private snapshot of SQLite and its WAL; doctor never
+initializes a store or creates sidecars in the source directory. The temporary
+snapshot contains raw control-storage bytes and is removed after inspection.
+Missing setup paths remain absent. Inspection allows two attempts within a
+two-second budget and at most 64 MiB across control storage and sidecars.
+Concurrent changes or storage beyond that bound produce an unavailable diagnostic.
+It does not test model extraction; a healthy graph and API do not establish
+model availability.
+Doctor sends no bearer credentials over HTTP. A running daemon can exit and its
+loopback port can be reused between inspection and a request. Doctor therefore
+probes only unauthenticated health/readiness endpoints and reports
+`api = "health_ready"` when both respond successfully; `api_identity` remains
+`"not_verified"`. Model processing uses the explicitly configured providers,
+which may be remote.
 
 The optional acceptance check uses an isolated owned Docker project and local
 model emulators. It exercises actual extraction/recall, interruption, repeated

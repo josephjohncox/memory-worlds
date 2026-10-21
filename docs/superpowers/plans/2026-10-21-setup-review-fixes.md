@@ -14,7 +14,9 @@ to fix them all. Keep the current configuration and authorization contracts.
 3. Give doctor a separate durable-authority diagnostic. Inspect metadata through
    read-only source descriptors, with bounded private snapshots when WAL recovery
    is needed. Never initialize storage or create source SQLite sidecars. Report
-   uncertainty explicitly rather than asserting a valid authority.
+   uncertainty explicitly rather than asserting a valid authority. Inspect the
+   personal credential binding in that same snapshot; send no bearer in HTTP
+   health probes. Health readiness does not establish the HTTP peer's identity.
 4. Require a single hard link for setup-managed files, locks, and authority
    storage. Keep external provider-key and administrator-token references distinct.
    Verify refusal preserves both aliases and never truncates source data.

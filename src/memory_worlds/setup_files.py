@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
 import os
 import secrets
 import stat
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -73,32 +76,66 @@ def ensure_private_dir(path: Path) -> None:
         _private_directory(descriptor)
 
 
-def _read_at(directory: int, name: str, *, maximum: int, private: bool) -> bytes:
+def _read_at(directory: int, name: str, *, maximum: int, private: bool, managed: bool) -> bytes:
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     with os.fdopen(fd, "rb") as stream:
         before = os.fstat(stream.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
             raise MemoryError("setup input must be a bounded regular file")
+        if managed and before.st_nlink != 1:
+            raise MemoryError("setup managed files must have exactly one hard link")
         if private and (before.st_uid != os.geteuid() or stat.S_IMODE(before.st_mode) & 0o077):
             raise MemoryError("setup secret and state files must be owned with mode 0600")
         content = stream.read(maximum + 1)
         after = os.fstat(stream.fileno())
-        if len(content) > maximum or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+        if len(content) > maximum or (
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+            before.st_nlink,
+        ) != (
             after.st_size,
             after.st_mtime_ns,
             after.st_ctime_ns,
+            after.st_nlink,
         ):
             raise Conflict("setup input changed while being read")
         return content
 
 
-def private_read(path: Path, maximum: int = 1_048_576, *, private: bool = True) -> bytes:
+def private_read(
+    path: Path, maximum: int = 1_048_576, *, private: bool = True, managed: bool = False
+) -> bytes:
+    """Read a private reference; managed outputs also require exclusive inode ownership."""
     path = check_path(path)
     try:
         with _directory(path.parent) as directory:
-            return _read_at(directory, path.name, maximum=maximum, private=private)
+            return _read_at(directory, path.name, maximum=maximum, private=private, managed=managed)
     except OSError:
         raise MemoryError("setup input file cannot be read safely") from None
+
+
+def _rename_new(directory: int, source: str, destination: str) -> None:
+    """Atomically publish one name without overwriting or creating a second hard link."""
+    if sys.platform == "linux":
+        name, flag = "renameat2", 1  # Linux RENAME_NOREPLACE.
+    elif sys.platform == "darwin":
+        name, flag = "renameatx_np", 4  # Darwin RENAME_EXCL (sys/stdio.h).
+    else:
+        raise MemoryError("setup atomic file publication requires Linux or macOS")
+    library = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = getattr(library, name)
+    except AttributeError:
+        raise MemoryError("setup requires atomic no-replace file publication support") from None
+    rename.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+    rename.restype = ctypes.c_int
+    result = rename(directory, os.fsencode(source), directory, os.fsencode(destination), flag)
+    if result != 0:
+        code = ctypes.get_errno()
+        if code in {errno.ENOSYS, errno.EINVAL, errno.EOPNOTSUPP}:
+            raise MemoryError("setup requires atomic no-replace file publication support")
+        raise OSError(code, os.strerror(code))
 
 
 def write_private(path: Path, data: bytes | str, *, expected_hash: str | None = None) -> str:
@@ -115,7 +152,7 @@ def write_private(path: Path, data: bytes | str, *, expected_hash: str | None = 
         if original is not None:
             if expected_hash is None:
                 raise Conflict("setup refuses to overwrite an unowned file")
-            actual = _read_at(directory, path.name, maximum=1_048_576, private=True)
+            actual = _read_at(directory, path.name, maximum=1_048_576, private=True, managed=True)
             if hashlib.sha256(actual).hexdigest() != expected_hash:
                 raise Conflict("setup managed file was changed outside setup")
             if digest == expected_hash:
@@ -136,13 +173,7 @@ def write_private(path: Path, data: bytes | str, *, expected_hash: str | None = 
                 os.fsync(stream.fileno())
             if original is None:
                 try:
-                    os.link(
-                        temporary,
-                        path.name,
-                        src_dir_fd=directory,
-                        dst_dir_fd=directory,
-                        follow_symlinks=False,
-                    )
+                    _rename_new(directory, temporary, path.name)
                 except FileExistsError:
                     raise Conflict("setup destination appeared during creation") from None
             else:
@@ -170,7 +201,7 @@ def unlink_private(path: Path, *, expected_hash: str) -> None:
     with _directory(path.parent) as directory:
         _private_directory(directory)
         before = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
-        content = _read_at(directory, path.name, maximum=1_048_576, private=True)
+        content = _read_at(directory, path.name, maximum=1_048_576, private=True, managed=True)
         if hashlib.sha256(content).hexdigest() != expected_hash:
             raise Conflict("setup refuses to remove a changed managed file")
         after = os.stat(path.name, dir_fd=directory, follow_symlinks=False)
@@ -201,10 +232,11 @@ def setup_lock(config: SetupConfig):
         info = os.fstat(fd)
         if (
             not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
             or info.st_uid != os.geteuid()
             or stat.S_IMODE(info.st_mode) & 0o077
         ):
-            raise MemoryError("setup lock must be an owned private regular file")
+            raise MemoryError("setup lock must be an owned private regular file with one hard link")
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -219,7 +251,7 @@ def read_json(path: Path) -> dict:
         raise ValueError
 
     try:
-        result = json.loads(private_read(path), parse_constant=invalid_constant)
+        result = json.loads(private_read(path, managed=True), parse_constant=invalid_constant)
     except (UnicodeError, ValueError, RecursionError):
         raise MemoryError("setup state must contain valid JSON") from None
     if not isinstance(result, dict):

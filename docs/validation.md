@@ -1,5 +1,39 @@
 # Validation
 
+## Guided setup review fixes
+
+The final setup fixes passed the complete Python suite: **806 passed, 31 skipped**
+on Python 3.15.0. Skips cover separately enabled infrastructure checks and backend
+environments. Ruff, formatting and installed dependency consistency passed.
+Native Pi passed 153 tests and TypeScript checks; Helm passed eight profiles and
+rejected 40 unsafe configurations. The tracked source-content audit passed.
+
+The separate real Docker setup acceptance passed Graphiti/FalkorDB extraction
+and recall with local HTTP model emulators, interruption, repeat apply, restart,
+retained volumes and owned-resource cleanup. A real mise/bootstrap/controller
+test preserved a caller-relative config filename containing spaces and shell
+metacharacters without evaluating it.
+
+Process-exit tests cover first-run intent, provider-key, TOML and corporate
+connection publication. A committed connection finalizes offline without its
+external source token or discovery. Unrelated pending/rollback identities and
+world selections are rejected before recovery writes or hidden-key prompts,
+including when config/key outputs are absent. Adoption overrides supersede
+missing, symlink and non-directory saved references without rewriting the TOML.
+
+Doctor inspects authority and personal credential bindings in one bounded private
+SQLite/WAL snapshot without source-side SQLite connections or new sidecars. An
+actual loopback listener replacement receives only unauthenticated health probes;
+doctor reports endpoint identity as unverified. Managed hard-link refusal and
+atomic no-overwrite publication passed alias-preservation and process-exit tests.
+Linux native rename was exercised; the macOS branch was reviewed but not executed
+on this host.
+
+Three independent final reviews (GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna) found no
+remaining actionable finding in their assigned CLI/files, wizard and runtime
+scopes after regression fixes. These checks used no live corporate identity
+provider, paid model or AWS resource.
+
 ## Ordinary-user discovery
 
 The discovery follow-up passed 100 targeted Python tests covering signed OIDC

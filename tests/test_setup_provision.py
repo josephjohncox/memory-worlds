@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -223,6 +224,87 @@ def test_unowned_existing_authority_requires_authenticated_adoption(tmp_path):
     assert store.get_world(store.authenticate(administrator), original.id).id == original.id
     assert receipt["resources"]["personal"]["world_id"] != original.id
     assert apply_setup(config)["replayed"] is True
+
+
+def test_adoption_refuses_hard_linked_control_database_before_sqlite_open(tmp_path, monkeypatch):
+    config = config_for(tmp_path)
+    store = MemoryStore(config.data_dir)
+    _, administrator = store.bootstrap("original-owner")
+    admin_file = tmp_path / "admin.token"
+    write_private(admin_file, administrator + "\n")
+    control = config.data_dir / "control.sqlite3"
+    alias = tmp_path / "retained-control.sqlite3"
+    os.link(control, alias)
+    before = snapshot(config.data_dir)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("linked authority storage must be rejected before SQLite is opened")
+
+    monkeypatch.setattr(provisioning.sqlite3, "connect", forbidden)
+    monkeypatch.setattr(MemoryStore, "__init__", forbidden)
+    with pytest.raises(Conflict, match="hard link"):
+        apply_setup(config, adopt_admin_file=admin_file)
+    after = snapshot(config.data_dir)
+    assert {key: value for key, value in after.items() if key != "daemon.lock"} == before
+    assert alias.read_bytes() == before["control.sqlite3"] == control.read_bytes()
+    assert alias.stat().st_ino == control.stat().st_ino
+    assert not config.path("provision.json").exists()
+
+
+@pytest.mark.parametrize("name", ["control.sqlite3", "control.sqlite3-wal", "control.sqlite3-shm"])
+def test_repeated_apply_refuses_hard_linked_sqlite_files_before_mutation(
+    tmp_path, monkeypatch, name
+):
+    config = config_for(tmp_path)
+    apply_setup(config)
+    path = config.data_dir / name
+    if not path.exists():
+        path.write_bytes(b"synthetic sidecar that SQLite must not open")
+    alias = tmp_path / "retained-sqlite-file"
+    os.link(path, alias)
+    before = path.read_bytes()
+    state_before = snapshot(config.state_dir)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("linked SQLite storage must be rejected before opening or writing")
+
+    monkeypatch.setattr(provisioning.sqlite3, "connect", forbidden)
+    monkeypatch.setattr(MemoryStore, "__init__", forbidden)
+    with pytest.raises(Conflict, match="hard link"):
+        apply_setup(config)
+    assert path.read_bytes() == alias.read_bytes() == before
+    assert snapshot(config.state_dir) == state_before
+
+
+def test_repeated_apply_refuses_hard_linked_managed_token_without_rotating(tmp_path):
+    config = config_for(tmp_path)
+    apply_setup(config)
+    path = config.path("personal.token")
+    alias = tmp_path / "retained-personal.token"
+    os.link(path, alias)
+    original = path.read_bytes()
+    with pytest.raises(MemoryError, match="hard link"):
+        apply_setup(config)
+    assert path.read_bytes() == alias.read_bytes() == original
+
+
+def test_adoption_and_provider_keys_accept_external_hard_linked_references(tmp_path):
+    config = config_for(tmp_path)
+    store = MemoryStore(config.data_dir)
+    _, administrator = store.bootstrap("original-owner")
+    admin_file, admin_alias = tmp_path / "admin.token", tmp_path / "admin-alias.token"
+    key_file, key_alias = tmp_path / "provider.key", tmp_path / "provider-alias.key"
+    write_private(admin_file, administrator + "\n")
+    write_private(key_file, "external-provider-key\n")
+    os.link(admin_file, admin_alias)
+    os.link(key_file, key_alias)
+    config.extraction.api_key_file = key_alias
+    config.embedding.api_key_file = key_alias
+    receipt = apply_setup(config, adopt_admin_file=admin_alias)
+    assert receipt["authority_id"] == store.authority_id
+    assert apply_setup(config)["replayed"] is True
+    assert admin_alias.read_bytes() == admin_file.read_bytes() == (administrator + "\n").encode()
+    assert key_file.read_bytes() == key_alias.read_bytes() == b"external-provider-key\n"
 
 
 def test_durable_secrets_precede_bootstrap_commit_and_retry_after_rollback(tmp_path, monkeypatch):

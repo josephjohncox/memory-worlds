@@ -11,19 +11,19 @@ import hashlib
 import json
 import os
 import re
-import warnings
 from collections.abc import Callable
-from getpass import GetPassWarning, getpass
+from getpass import getpass
 from pathlib import Path
 from uuid import uuid4
 
 import httpx
 from pydantic import ValidationError
 
+from . import setup_wizard
 from .errors import MemoryError
 from .login import device_login
 from .models import World, WorldKind
-from .setup_config import CorporateSettings, ProviderSettings, SetupConfig, save_config
+from .setup_config import CorporateSettings, ProviderSettings, SetupConfig
 from .setup_files import (
     check_path,
     ensure_private_dir,
@@ -135,13 +135,13 @@ def _binding(config: SetupConfig) -> tuple[dict | None, bytes | None, bytes | No
         if os.path.lexists(token_path):
             raise MemoryError("An unbound corporate token already occupies the managed path")
         return None, None, None
-    data = private_read(path)
+    data = private_read(path, managed=True)
     value = _json(data)
     if not isinstance(value, dict) or set(value) != _BINDING_FIELDS:
         raise MemoryError("Corporate connection binding is invalid")
     if value.get("url") != config.corporate.url or value.get("token_file") != str(token_path):
         raise MemoryError("Corporate connection URL or managed token path changed")
-    previous = private_read(token_path, maximum=16386)
+    previous = private_read(token_path, maximum=16386, managed=True)
     if value.get("token_sha256") != _hash(previous):
         raise MemoryError("Managed corporate token does not match its connection binding")
     return value, data, previous
@@ -221,11 +221,15 @@ def _recover_connection(config: SetupConfig) -> bytes | None:
         if os.path.lexists(config.path("corporate.json")):
             raise MemoryError("Corporate connection journal is missing; refusing unowned binding")
         return None
-    data = private_read(path)
+    data = private_read(path, managed=True)
     intent = _connection_intent(config, data)
     token_path, binding_path = config.path("corporate.token"), config.path("corporate.json")
-    token = private_read(token_path, maximum=16386) if os.path.lexists(token_path) else None
-    binding = private_read(binding_path) if os.path.lexists(binding_path) else None
+    token = (
+        private_read(token_path, maximum=16386, managed=True)
+        if os.path.lexists(token_path)
+        else None
+    )
+    binding = private_read(binding_path, managed=True) if os.path.lexists(binding_path) else None
     token_hash = _hash(token) if token is not None else None
     binding_hash = _hash(binding) if binding is not None else None
     before, after = intent["before_binding"], intent["after_binding"]
@@ -287,7 +291,7 @@ def _connect(
                     scopes=tuple(corporate.scopes),
                     token_output=stage,
                 )
-                candidate = private_read(stage, maximum=16386)
+                candidate = private_read(stage, maximum=16386, managed=True)
                 stage_hash = _hash(candidate)
                 token = _token(candidate)
             identity, worlds = _discover(corporate.url, token)
@@ -350,7 +354,7 @@ def _connect(
                 # Both files are managed and locked; leave the prior valid pair on failure.
                 if old_token is not None:
                     write_private(token_path, old_token, expected_hash=token_hash)
-                elif _hash(private_read(token_path)) == token_hash:
+                elif _hash(private_read(token_path, managed=True)) == token_hash:
                     unlink_private(token_path, expected_hash=token_hash)
                 raise
             intent["phase"] = "complete"
@@ -372,6 +376,65 @@ def connect_setup(config: SetupConfig) -> dict:
 def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=print) -> SetupConfig:
     """Save a setup configuration; never initialize or start a daemon."""
     output_path = check_path(output_path)
+    recovery = setup_wizard.load(output_path)
+    if recovery is not None:
+        intent, config = recovery
+        output_fn(f"Resuming the approved setup configuration for {output_path}.")
+        if config.corporate is not None:
+
+            def resume_selection(identity, _worlds):
+                if any(
+                    identity[key] != intent["identity"][key] for key in ("authority_id", "user_id")
+                ):
+                    raise MemoryError("Corporate identity changed from the approved wizard intent")
+                return list(config.corporate.world_ids)
+
+            with setup_lock(config):
+                journal_path = config.path("connection.json")
+                if os.path.lexists(journal_path):
+                    connection = _connection_intent(
+                        config, private_read(journal_path, managed=True)
+                    )
+                    for candidate in (connection["before_binding"], connection["after_binding"]):
+                        if candidate is not None and (
+                            any(
+                                candidate[key] != intent["identity"][key]
+                                for key in ("authority_id", "user_id")
+                            )
+                            or candidate["world_ids"] != config.corporate.world_ids
+                        ):
+                            raise MemoryError(
+                                "Corporate binding differs from the approved wizard intent"
+                            )
+                else:
+                    # Missing journals and unbound files are refused before collecting keys.
+                    _recover_connection(config)
+                    _binding(config)
+                setup_wizard.publish(output_path, intent, config, {}, secret_fn)
+                recovered = _recover_connection(config)
+                binding, _, _ = _binding(config)
+                if binding is not None and (
+                    any(
+                        binding[key] != intent["identity"][key]
+                        for key in ("authority_id", "user_id")
+                    )
+                    or binding["world_ids"] != config.corporate.world_ids
+                ):
+                    raise MemoryError("Corporate binding differs from the approved wizard intent")
+                connected = (
+                    recovered is not None
+                    and _connection_intent(config, recovered)["phase"] == "complete"
+                    and binding is not None
+                )
+                if intent["phase"] == "complete" and not connected:
+                    raise MemoryError("Completed wizard corporate connection is missing")
+            if not connected:
+                _connect(config, choose_worlds=resume_selection)
+        else:
+            setup_wizard.publish(output_path, intent, config, {}, secret_fn)
+        setup_wizard.complete(output_path, intent)
+        output_fn(f"Configuration saved to {output_path}. No daemon was initialized or started.")
+        return config
     if os.path.lexists(output_path):
         raise MemoryError("Setup configuration already exists; choose a new output path")
     pending: dict[Path, bytes] = {}
@@ -442,7 +505,8 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
         selected = choice(f"{kind} provider", ("openai-compatible", "openai"), "openai-compatible")
         model = ask(f"{kind} model (explicit provider model ID)")
         base = ask(f"{kind} base URL", "" if selected == "openai" else None) or None
-        auth = choice(f"{kind} API key", ("none", "file", "new"), "none")
+        options = ("file", "new") if selected == "openai" else ("none", "file", "new")
+        auth = choice(f"{kind} API key", options, "file" if selected == "openai" else "none")
         key_file = None
         if auth == "file":
             key_file = path(f"{kind} private API key file")
@@ -457,28 +521,11 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
         elif auth == "new":
             consent = choice("Save a newly entered key in a private file", ("yes", "no"), "no")
             if consent != "yes":
-                raise MemoryError("API key storage was not selected; rerun and choose none or file")
+                raise MemoryError("API key storage was not selected; choose an existing key file")
             key_file = state_dir / (kind.lower() + ".key")
             if os.path.lexists(key_file):
                 raise MemoryError("API key path already exists; rerun and choose file")
-            try:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", GetPassWarning)
-                    secret = secret_fn(f"{kind} API key (hidden): ")
-            except GetPassWarning as error:
-                raise MemoryError(
-                    "Hidden key entry is unavailable; choose an existing private API key file"
-                ) from error
-            except (EOFError, KeyboardInterrupt) as error:
-                raise MemoryError("Setup cancelled; no daemon was started") from error
-            if (
-                not isinstance(secret, str)
-                or not secret
-                or len(secret) > 16384
-                or any(not c.isascii() or c.isspace() or not c.isprintable() for c in secret)
-            ):
-                raise MemoryError("API key must be a bounded single-line value")
-            pending[key_file] = (secret + "\n").encode()
+            pending[key_file] = setup_wizard.hidden_key(secret_fn, kind)
         return ProviderSettings(
             provider=selected, model=model, base_url=base, api_key_file=key_file
         )
@@ -525,6 +572,7 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
         pi_profiles=pi_profiles,
         mcp_profiles=mcp_profiles,
     )
+    setup_wizard.validate_output(output_path, config)
 
     def review(identity: dict | None = None, selected: list[str] | None = None) -> None:
         output_fn("Review setup configuration:")
@@ -547,19 +595,67 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
         output_fn(f"  Embedding dimensions: {config.embedding_dimensions}")
         output_fn(f"  Pi profiles: {pi_profiles}; MCP examples: {mcp_profiles}")
         output_fn(
-            "  Personal and work credentials remain separate; corporate mounts are reader-only."
+            "  Local personal agent: separate local credential and private persistent notes; "
+            "no corporate mounts."
         )
         output_fn("  Pi automatic retrieval, capture and publication are off.")
         if config.mode == "hybrid":
-            output_fn("  The research profile has no write target; personal notes stay local.")
+            output_fn(
+                "  Local work research: separate local work credential, selected reader-only "
+                "corporate mounts, and no default write target."
+            )
+            output_fn(
+                "  Direct corporate user: your ordinary corporate session at the corporate "
+                "endpoint, including authorized private work; no local scope IDs or mounts."
+            )
         else:
             output_fn("  The personal profile's private write target stays on the local authority.")
         if config.corporate is not None:
             output_fn(f"  Corporate API: {config.corporate.url}")
+            output_fn(f"  OAuth issuer: {config.corporate.issuer or 'external user-token file'}")
+            output_fn(f"  OAuth public client ID: {config.corporate.client_id or 'external'}")
+            output_fn(
+                "  Requested OAuth scopes: "
+                + (
+                    " ".join(config.corporate.scopes)
+                    if config.corporate.token_file is None
+                    else "none; using external user token"
+                )
+            )
             output_fn(f"  Corporate authority: {identity['authority_id']}")
             output_fn(f"  Corporate user: {identity['user_id']}")
+            output_fn(f"  Corporate credential ID: {identity['credential_id']}")
             output_fn("  Corporate mounted world IDs: " + (", ".join(selected or []) or "none"))
             output_fn("  Corporate private scopes require the separate direct-corporate profile.")
+        output_fn("  Planned private files (created during save or later apply):")
+        planned = [output_path, setup_wizard.intent_path(output_path), *pending]
+        names = [
+            "setup.lock",
+            "provision.json",
+            "state.json",
+            "personal.token",
+            "graph.token",
+            "compose.graph.yaml",
+            "mounts.json",
+        ]
+        if authority_mode == "new":
+            names.append("operator.token")
+        kinds = ["personal"]
+        if config.corporate is not None:
+            names.extend(["connection.json", "corporate.json", "corporate.token", "work.token"])
+            kinds.append("work")
+        if pi_profiles:
+            names.extend(f"pi-{kind}.json" for kind in kinds)
+            if config.corporate is not None:
+                names.append("pi-corporate.json")
+        if mcp_profiles:
+            names.extend(f"mcp-{kind}.json" for kind in kinds)
+        planned.extend(config.path(name) for name in names)
+        for filename in planned:
+            output_fn(f"    {filename}")
+        output_fn(
+            "  The temporary wizard intent is removed after a successful save and connection."
+        )
         if authority_mode == "adopt":
             output_fn("  Existing local data detected. Setup never initializes over existing data.")
             output_fn(
@@ -568,6 +664,18 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
             )
         if choice("Save this configuration", ("yes", "no"), "no") != "yes":
             raise MemoryError("Setup cancelled before saving configuration")
+
+    intent = None
+
+    def persist(identity=None):
+        nonlocal intent
+        pinned = (
+            {key: identity[key] for key in ("authority_id", "user_id", "credential_id")}
+            if identity is not None
+            else None
+        )
+        intent = setup_wizard.begin(output_path, config, pending, pinned)
+        setup_wizard.publish(output_path, intent, config, pending, secret_fn)
 
     def select(identity: dict, worlds: list[World]) -> list[str]:
         output_fn("Select corporate shared worlds to mount. None are selected automatically.")
@@ -594,17 +702,16 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
                     raise MemoryError("Choose displayed corporate world numbers or none") from error
                 selected = list(dict.fromkeys(worlds[index - 1].id for index in indices))
         review(identity, selected)
+        config.corporate.world_ids = selected
+        persist(identity)
         return selected
 
     if corporate is not None:
         _connect(config, choose_worlds=select)
     else:
         review()
-    for destination, data in pending.items():
-        ensure_private_dir(destination.parent)
-        write_private(destination, data)
-    ensure_private_dir(output_path.parent)
-    save_config(config, output_path)
+        persist()
+    setup_wizard.complete(output_path, intent)
     output_fn(f"Configuration saved to {output_path}. No daemon was initialized or started.")
     output_fn(
         "Generated Pi profiles keep automatic retrieval/capture/publication off; "
