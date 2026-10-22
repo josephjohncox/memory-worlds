@@ -50,7 +50,7 @@ jobs:
         env:
           PUBLIC_CONTENT_DENY_PATTERN: ${{ vars.PUBLIC_CONTENT_DENY_PATTERN }}
         run: mise run artifacts:build --require-clean --source-sha "$GITHUB_SHA"
-      - name: Upload private workflow artifacts
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: memory-worlds-${{ github.sha }}
@@ -114,7 +114,7 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("tags=" + ",".join(tags) + "\n")
           PY
-      - name: Require private repository and package visibility
+      - name: Verify tested source and private package visibility
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -125,8 +125,6 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
           repository_path = "repos/" + os.environ["GITHUB_REPOSITORY"]
-          if get(repository_path)["private"] is not True:
-              raise SystemExit("Private container publication requires a private repository")
           run = get(repository_path + "/actions/runs/" + os.environ["CI_RUN_ID"])
           if run.get("path") != ".github/workflows/ci.yaml" or run.get("head_sha") != os.environ["SOURCE_SHA"] or run.get("conclusion") != "success" or run.get("event") != "push":
               raise SystemExit("The required CI workflow did not pass at this exact commit")

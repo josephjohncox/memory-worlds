@@ -74,6 +74,7 @@ Private pulls require package access and `read:packages`; Kubernetes may need
 `imagePullSecrets`. Keep registry tokens out of Git and chart values. See
 [Helm installation](helm.md) and [publication controls](reference/artifacts.md#github-actions).
 
-The current workflow checks private repository/package visibility and does not
-publish to public package registries. Durable release assets and public
-publication are separate release decisions; the reference describes their gates.
+The source repository is public. The current workflow keeps container packages
+private and does not publish to public package registries. Durable release assets
+and package publication are separate release decisions; the reference describes
+their gates.

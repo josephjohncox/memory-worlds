@@ -53,11 +53,11 @@ to `ghcr.io/josephjohncox/memory-worlds`. It checks out the exact full commit te
 CI. Pull requests and manual distribution builds cannot publish images. Only the container
 job receives `packages: write`; the other jobs receive read access to source.
 
-Container publication requires a private repository. An existing package must have private
-visibility before publication, and visibility is checked again afterward. An absent
-package is created with GHCR's default private visibility. A visibility lookup error fails
-the job. If an administrator later changes repository or package visibility, the next
-publication stops until the configuration is reviewed.
+The source repository is public; container publication remains private. An existing
+package must have private visibility before publication, and visibility is checked
+again afterward. An absent package is created with GHCR's default private visibility.
+A visibility lookup error fails the job. Changing package visibility stops the next
+publication until the configuration is reviewed.
 
 Every image receives a `sha-<full-source-commit>` tag. A matching version-tag build also
 receives `<version>`. There is no automatically updated `latest` tag. A
@@ -71,11 +71,10 @@ access to the package. Configure Kubernetes `imagePullSecrets` when required. Do
 registry tokens in chart values, manifests or Git history.
 
 The automated pipeline does not publish to PyPI, npm or a public Helm registry.
-Actions artifacts expire. Durable private releases retain the signed source tag,
+Actions artifacts expire. Durable releases retain the signed source tag,
 six distributions, manifest, checksums, immutable image receipt and sanitized
-local qualification receipts as GitHub Release assets in the private repository.
-Create them only after the exact source commit passes CI, verify repository and
-container privacy, and verify every asset checksum after downloading it. A
-private release is available only to repository readers; it does not change
-repository or package visibility. Public publication requires a separate explicit
-user decision.
+local qualification receipts as GitHub Release assets. Create them only after the
+exact source commit passes CI, verify the intended asset visibility and container
+privacy, and verify every asset checksum after downloading it. Repository visibility
+governs access to workflow artifacts and release assets. Publishing packages or
+changing container visibility requires a separate explicit user decision.
