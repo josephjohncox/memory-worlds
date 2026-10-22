@@ -135,6 +135,24 @@ jobs:
           print("Native package contains compiled extension/client, documentation and Apache-2.0 license")
           PYTHON
 
+  opencode:
+    name: Native OpenCode
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install locked mise tools
+        uses: jdx/mise-action@fc42bcc7ddbf51124c30f95a877a0c5168a3bfde # v5.2.1
+        with:
+          version: "2026.10.17"
+          cache: false
+          install_args: "node"
+      - name: Type check and test native tools
+        run: mise run opencode:verify
+
   helm:
     name: Helm deployment contract
     runs-on: ubuntu-latest
