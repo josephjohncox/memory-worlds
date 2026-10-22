@@ -463,6 +463,9 @@ def parser() -> argparse.ArgumentParser:
     from .client_setup import add_clients_parser
 
     add_clients_parser(sub)
+    from .maintenance_cli import add_maintenance_parsers
+
+    add_maintenance_parsers(sub)
     return p
 
 
@@ -825,7 +828,11 @@ def run(args):
                 )
                 for world, sid in args.select
             ]
-        if args.command == "authority-backup":
+        if args.command in {"thread", "context-archive", "context-read", "maintenance"}:
+            from .maintenance_cli import run_maintenance_command
+
+            emit(run_maintenance_command(args, client))
+        elif args.command == "authority-backup":
             if args.path.exists() or args.path.is_symlink():
                 raise MemoryError("backup destination already exists")
             client.http.timeout = httpx.Timeout(1200)

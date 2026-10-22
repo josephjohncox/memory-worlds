@@ -13,9 +13,9 @@ from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 
-from .errors import Forbidden, NotFound, Unauthorized
+from .errors import Conflict, Forbidden, NotFound, Unauthorized
 from .errors import MemoryError as InvalidRequest
 from .models import (
     AgentContext,
@@ -231,6 +231,7 @@ class ScopedStore:
                 .fetchone()
             )
             if context is None or row["creator_credential_id"] == current.credential_id or anchor:
+                self._thread_scope_operation(db, row, operation)
                 return row
             parent_row = (
                 db.execute(
@@ -242,6 +243,36 @@ class ScopedStore:
             )
             current = self._credential_principal(db, parent_row)
             self._scope_authorized_delegate(db, current, world_id, row)
+
+    def _thread_scope_operation(self, db, scope, operation):
+        """Thread metadata never grants access; enforce writes after the ACL check."""
+        if scope["kind"] != ScopeKind.THREAD_PRIVATE.value:
+            return
+        from .thread_models import Thread
+
+        table = self._table(db, "memory_threads")
+        payload = db.execute(
+            select(table.c.payload).where(
+                table.c.id == scope["thread_id"],
+                table.c.world_id == scope["world_id"],
+                table.c.scope_id == scope["id"],
+            )
+        ).scalar_one_or_none()
+        if payload is None:
+            raise Conflict("Thread scope registration is incomplete")
+        thread = Thread.model_validate_json(payload)
+        if (
+            str(thread.id) != scope["thread_id"]
+            or str(thread.scope_id) != scope["id"]
+            or thread.world_id != scope["world_id"]
+        ):
+            raise Conflict("Thread scope registration is inconsistent")
+        if operation in {"write", "publish"} and (
+            thread.state != "open"
+            or thread.expires_at is not None
+            and thread.expires_at.timestamp() <= self.persistence.database_time(db)
+        ):
+            raise Conflict("Thread no longer accepts new writes")
 
     def _scope_authorized_delegate(self, db, principal, world_id, scope):
         self._authorized(db, principal, world_id, write=True)
@@ -290,6 +321,8 @@ class ScopedStore:
         )
 
     def create_scope(self, principal: Principal, world_id: str, request: CreateScope) -> Scope:
+        if request.kind == ScopeKind.THREAD_PRIVATE or request.thread_id is not None:
+            raise InvalidRequest("Create thread-private scopes through the thread registry")
         with self._control() as db, self._transaction(db):
             self._authorized(db, principal, world_id, write=True)
             if request.kind == ScopeKind.WORLD_SHARED:
@@ -347,6 +380,8 @@ class ScopedStore:
             db.execute(
                 text(
                     f"INSERT INTO {self._table(db, 'scopes')} "
+                    f"(id,world_id,kind,name,created_at,creator_credential_id,run_id,"
+                    f"agent_id,invocation_id,parent_invocation_id,alias) "
                     f"VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6,:p7,:p8,"
                     f":p9,:p10)"
                 ),
@@ -827,6 +862,8 @@ class ScopedStore:
                 db.execute(
                     text(
                         f"INSERT INTO {self._table(db, 'scopes')} "
+                        f"(id,world_id,kind,name,created_at,creator_credential_id,run_id,"
+                        f"agent_id,invocation_id,parent_invocation_id,alias) "
                         f"VALUES (:p0,:p1,:p2,:p3,:p4,:p5,:p6,:p7,:p8,"
                         f":p9,:p10)"
                     ),

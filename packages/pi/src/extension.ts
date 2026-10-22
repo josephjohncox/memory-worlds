@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { MemoryWorldsClient, readTokenFile, scopeKey, scopeSelection, type EpisodeInput, type IdentityKind, type SearchResult, type ScopeSelection, type World } from "./client.js";
+import { MemoryWorldsClient, isPrivateScope, readTokenFile, scopeKey, scopeSelection, type EpisodeInput, type IdentityKind, type SearchResult, type ScopeSelection, type World } from "./client.js";
 import { importDirectory, planDirectory, type DirectoryFormat, type DirectoryOptions } from "./imports.js";
 import { MemorySpool, type SpoolFlow } from "./spool.js";
 import { proposeMemories, reviewMemories, type MemoryProposal } from "./curation.js";
@@ -186,7 +186,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     const target = worlds.find(world => world.id === state.writeScope!.world_id);
     if (!target) throw new CommandError("Capture target is unavailable");
     const selected = await client.scope(state.writeScope, signal(ctx));
-    if (!["agent-persistent", "invocation-private"].includes(selected.kind)) throw new CommandError("Private capture requires agent-persistent or invocation-private scope; publish selected text explicitly into shared scopes");
+    if (!isPrivateScope(selected.kind)) throw new CommandError("Private capture requires agent-persistent, thread-private or invocation-private scope; publish selected text explicitly into shared scopes");
     state.captureTargetScope = state.writeScope;
     state.captureScopeKey = scopeExposure(target.authority_id, state.writeScope);
     state.captureSafeScopeKeys = [state.captureScopeKey];
@@ -237,7 +237,7 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       const { client, state } = ready();
       if (!state.writeScope) throw new CommandError("Select a private target with /memory target WORLD SCOPE first");
       const selected = await client.scope(state.writeScope, signal(ctx));
-      if (!["agent-persistent", "invocation-private"].includes(selected.kind)) throw new CommandError("Chat sharing requires an agent-persistent or invocation-private source scope");
+      if (!isPrivateScope(selected.kind)) throw new CommandError("Chat sharing requires an agent-persistent or invocation-private source scope");
       if (!state.boundContext?.write_scope || scopeKey(state.boundContext.write_scope) !== scopeKey(state.writeScope)) await rebindSelections(ctx);
       return structuredClone(state.writeScope);
     },

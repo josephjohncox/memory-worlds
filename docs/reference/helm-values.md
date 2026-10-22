@@ -11,6 +11,7 @@ Secrets. The chart never provisions an external database or cloud resources.
 | `replicaCount` | `1` | SQLite requires one owner; PostgreSQL supports one to 32 API replicas |
 | `image.repository`, `image.tag`, `image.digest` | `memory-worlds`, `local`, empty | API image and optional immutable digest |
 | `imagePullSecrets` | `[]` | Existing registry Secrets used by workloads |
+| `maintenance.existingSecret` | empty | Optional `maintenance.toml` and model-key files, staged as private owned files |
 | `runtime.existingSecret` | empty, required | Explicit provider/model settings and credentials |
 | `organization.existingConfigMap`, `configKey` | empty, `organization.toml` | Optional organization file for OIDC, shared spaces and group-role bindings |
 | `graph.backend` | `falkordb` | Graphiti backend; experimental `neptune` or maintenance `disabled` |
@@ -42,6 +43,65 @@ Secrets. The chart never provisions an external database or cloud resources.
 | `networkPolicy.metricsNamespaceSelector`, `metricsPodSelector` | label `memory-worlds-metrics=true` | Both must match the actual scraper |
 | `serviceAccount.annotations` | `{}` | Existing workload identity integration; no RBAC is granted |
 | `tests.enabled` | `true` | Read-only readiness/authentication Helm test |
+
+## Maintenance worker profiles
+
+Maintenance jobs have no default paid model configuration. To enable selected
+profiles, prepare the [maintenance TOML](../maintenance.md#configure-a-worker)
+with absolute key paths inside the staged directory:
+
+```toml
+[maintenance.profiles.lightweight]
+route = "luna"
+endpoint = "https://YOUR_MODEL_GATEWAY/v1"
+model = "YOUR_APPROVED_MODEL_ID"
+api_key_file = "/run/memory-worlds/maintenance/model.key"
+```
+
+Keep this file and its key outside the checkout with mode `0600`, then create an
+operator-owned Secret in the deployment namespace:
+
+```sh
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds create secret generic \
+  memory-worlds-maintenance \
+  --from-file=maintenance.toml=/private/operator/maintenance.toml \
+  --from-file=model.key=/private/operator/maintenance-model.key
+```
+
+Select only its name in Helm values:
+
+```yaml
+maintenance:
+  existingSecret: memory-worlds-maintenance
+```
+
+The same API image runs a bounded Python init container as UID/GID `10001`. It
+pins one Kubernetes Secret projection generation, copies its non-hidden files
+into a memory-backed volume, and publishes a complete directory before the API
+starts. The directory is owned with mode `0700`; regular files are owned with
+mode `0600`. The API mounts this copy read-only and receives
+`MEMORY_WORLDS_MAINTENANCE_CONFIG=/run/memory-worlds/maintenance/maintenance.toml`.
+The projected Secret is mounted only in the init container. This preserves the
+same strict private-file checks used by a host daemon.
+
+Use flat, non-hidden filenames. `maintenance.toml` is required; bounds are 128
+files, 256 KiB per file and 1 MiB total. Key paths in profiles must refer to their
+staged names under `/run/memory-worlds/maintenance/`. The chart accepts no inline
+profiles or credentials and does not select a provider or model. Keep the normal
+Graphiti runtime Secret configured separately. Allow the configured worker
+endpoint through the existing API egress policy.
+
+Secret updates do not change the API's staged files. After changing configuration
+or keys, explicitly restart the API workload, using `deployment/memory-worlds`
+for PostgreSQL or `statefulset/memory-worlds` for SQLite:
+
+```sh
+mise run kubectl -- --context YOUR_CONTEXT -n memory-worlds \
+  rollout restart statefulset/memory-worlds
+```
+
+Use the actual release resource name. A new pod creates a new private copy;
+queued jobs still enforce their frozen profile configuration digest.
 
 ## Shared identity, router, and ingress
 

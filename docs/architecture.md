@@ -10,7 +10,8 @@ and access to selected shared worlds.
 ## Worlds organize memory; scopes bound its audience
 
 World kinds are personal, private-work, team, company and ad-hoc. A world contains
-scopes for world-shared knowledge, run-shared context, persistent agent memory and
+scopes for world-shared knowledge, run-shared context, persistent agent memory,
+resumable thread-private context and
 invocation-private scratch. A private subagent scope can live inside a team world
 without exposing its contents to the team.
 
@@ -44,6 +45,13 @@ Capture receipts establish durable source storage. Extraction is queued by
 default and has separate processing state. Graphiti extracts entities and facts
 and retrieves them within isolated scope namespaces. Retrieval retains source
 provenance so a client can inspect the authorized evidence.
+
+Private thread archives preserve selected typed events as compressed source
+records. Explicit maintenance jobs derive same-scope summaries or enrichment
+assessments through an independently configured lightweight model. Summaries
+remain tentative and retain digest-qualified dependencies on their sources;
+retracting an input immediately hides its derivatives. See
+[thread context and maintenance workers](maintenance.md).
 
 Source-only capture and source search are explicit choices. A graph error is
 reported as a graph error. A failed or interrupted graph write can degrade a

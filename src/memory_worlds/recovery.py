@@ -19,7 +19,7 @@ from .errors import Conflict
 from .errors import MemoryError as InvalidRequest
 from .graph_snapshots import FalkorSnapshots
 from .models import Identifier, Model, Principal
-from .persistence import CONTROL_METADATA, OUTBOX_METADATA, SOURCE_METADATA
+from .persistence import CONTROL_METADATA, OUTBOX_METADATA, SOURCE_METADATA, register_current_schema
 from .portability import _json, _load_json
 from .recovery_archive import AuthorityManifest, read_backup, write_backup
 
@@ -37,6 +37,7 @@ class TableSnapshot(Model):
 
 
 def _schema_digest() -> str:
+    register_current_schema()
     fields = {
         kind: {
             table.name: [
@@ -293,10 +294,15 @@ def _restore_tables(store, descriptions: list[TableSnapshot], source: Path, nati
                 row = dict(original)
                 if description.table == "worker_leases":
                     row.update(owner=None, expires_at=0)
-                if description.table in {"projection_jobs", "deliveries"}:
+                if description.table in {"projection_jobs", "deliveries", "maintenance_jobs"}:
                     row.update(lease_owner=None, lease_fence=None, lease_expires_at=None)
                 if description.table == "deliveries" and row["state"] == "processing":
                     row.update(state="pending", next_attempt=0)
+                if description.table == "maintenance_jobs" and row["state"] == "running":
+                    # Reconcile this exact intent/result identity immediately. Retain
+                    # attempts, reservations, cancellation and unresolved dispatches;
+                    # recovery cannot prove that an external request was never billed.
+                    row.update(state="queued", next_attempt=0)
                 if not native_graph:
                     if description.table == "projection":
                         row.update(generation=None, state="disabled", configuration="{}")

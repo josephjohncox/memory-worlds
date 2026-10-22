@@ -11,11 +11,18 @@ notes private, then publish a selected conclusion to a broader audience.
 | `world-shared` | Published knowledge for a world | Authorized world participants |
 | `run-shared` | One task's brief, coordination and findings | Explicitly granted participants |
 | `agent-persistent` | A specialist's notes across invocations | Explicitly granted credentials |
+| `thread-private` | Recoverable context for a resumable conversation | Creating credential and explicitly granted readers |
 | `invocation-private` | One invocation's working notes | Its credential, plus any explicit readers |
 
 UUIDs distinguish scopes, agents, runs and invocations. Names and `@aliases` make
 them easier to find; neither names nor UUIDs grant access. Parents and siblings
 cannot read a child's private notes by default.
+
+Create a resumable thread with `thread create`, which atomically creates its
+private scope and grants. A generic `scope-create` cannot manufacture a thread
+binding. Thread expiry hides it from default thread discovery and stops new
+archives/jobs; explicitly selected source/graph reads still use live scope grants.
+See [thread archives and workers](maintenance.md).
 
 ## Create and delegate
 

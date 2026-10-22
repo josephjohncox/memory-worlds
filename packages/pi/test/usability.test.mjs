@@ -224,9 +224,9 @@ test("planner errors and invalid private destinations never disclose child outpu
   });
 });
 
-test("native directory import submits source-only records with the selected pinned credential", async () => {
+for (const privateKind of ["agent-persistent", "thread-private", "invocation-private"]) test(`native directory import submits source-only records to ${privateKind} with the selected pinned credential`, async () => {
   await plannerFixture(plan(), async (cliPath, folder) => {
-    const f = client(path => path === "/v1/me" ? identity : path.endsWith("/imports") ? { imported: 1, replayed: 0 } : scope);
+    const f = client(path => path === "/v1/me" ? identity : path.endsWith("/imports") ? { imported: 1, replayed: 0 } : { ...scope, kind: privateKind });
     const result = await importDirectory(f.api, selected, folder, { cliPath, sourceOnly: true });
     assert.equal(result.imported, 1);
     const writes = f.calls.filter(call => call.url.endsWith("/imports"));

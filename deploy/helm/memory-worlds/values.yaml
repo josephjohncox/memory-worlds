@@ -15,6 +15,10 @@ serviceAccount:
 runtime:
   # Operator-created Secret containing explicit extraction/embedding provider settings.
   existingSecret: ""
+maintenance:
+  # Optional Secret containing maintenance.toml and its model-key files.
+  # Profiles are disabled unless this explicitly configured file enables them.
+  existingSecret: ""
 organization:
   # Optional operator-owned identity, spaces, roles and group configuration.
   existingConfigMap: ""

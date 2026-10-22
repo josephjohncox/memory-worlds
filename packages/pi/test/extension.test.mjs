@@ -237,7 +237,7 @@ test("graph extraction and retrieval are the normal configuration with explicit 
   assert.equal(recovery.retrieval.mode, "source");
 });
 
-test("native chat sharing is user-enabled, future-only, and independent of private capture", async () => {
+for (const privateKind of ["agent-persistent", "thread-private", "invocation-private"]) test(`native chat sharing from ${privateKind} is user-enabled, future-only, and independent of private capture`, async () => {
   let classified = 0;
   const f = fixture({ sharing: { classifier: { provider: "fixture", model: "small" } } }, {
     classifySharing: async (_ctx, selected) => {
@@ -245,7 +245,7 @@ test("native chat sharing is user-enabled, future-only, and independent of priva
       return selected.map(entry => ({ entryId: entry.entryId, excerpt: entry.text, category: "decision", visibility: "shareable", confidence: 0.99 }));
     },
   });
-  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : "invocation-private", name: "Selected" });
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: selected.world_id === "shared" ? "world-shared" : privateKind, name: "Selected" });
   f.entries.push(message("before-rule", null, "Earlier private conversation"));
   await f.run("session_start", { reason: "startup" });
   await f.run("agent_end");
@@ -336,8 +336,9 @@ test("the extension registers native tools, command, UI and lifecycle hooks", as
   assert(!JSON.stringify(f.entries).includes("tokenFile"));
 });
 
-test("automatic capture is private, future-only, branch-preserving and idempotent", async () => {
+for (const privateKind of ["agent-persistent", "thread-private", "invocation-private"]) test(`automatic capture into ${privateKind} is private, future-only, branch-preserving and idempotent`, async () => {
   const f = fixture();
+  f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: privateKind, name: "Selected private target" });
   f.entries.push(message("old", null, "before consent"));
   await f.run("session_start", { reason: "startup" });
   await f.command("capture on");
@@ -351,7 +352,7 @@ test("automatic capture is private, future-only, branch-preserving and idempoten
   assert.equal(f.entries.filter(entry => entry.customType === RECEIPT_TYPE).length, 2);
   f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: "world-shared" });
   await f.command(`target shared ${rootScope}`);
-  assert(f.notices.some(notice => /agent-persistent or invocation-private/.test(notice.text)));
+  assert(f.notices.some(notice => /agent-persistent, thread-private or invocation-private/.test(notice.text)));
 });
 
 test("failed capture retries the exact durable source identity", async () => {
@@ -528,7 +529,7 @@ test("private invocation capture can live inside a team world without enabling s
   assert.equal(f.captures[0].worldId, "shared"); assert.equal(f.captures[0].scopeId, privateScope);
   f.client.scope = async selected => ({ ...selected, id: selected.scope_id, kind: "world-shared" });
   await f.command(`target shared ${rootScope}`);
-  assert(f.notices.some(notice => /requires agent-persistent or invocation-private/.test(notice.text)));
+  assert(f.notices.some(notice => /requires agent-persistent, thread-private or invocation-private/.test(notice.text)));
 });
 
 test("same-authority sibling-private retrieval stops automatic capture through branch changes and reload", async () => {
@@ -574,9 +575,10 @@ test("scoped selected publication retries exactly and does not enable automatic 
   assert.match(f.widgets.get("memory-worlds"), /capture off/);
 });
 
-test("native graph tool records private projected memory and exposes no publication tool", async () => {
+for (const privateKind of ["agent-persistent", "thread-private", "invocation-private"]) test(`native graph tool records ${privateKind} projected memory and exposes no publication tool`, async () => {
   const selected = { world_id: "private", scope_id: privateScope };
   const f = fixture({ writeScope: selected, graphAliases: { project: selected } });
+  f.client.scope = async value => ({ ...value, id: value.scope_id, kind: privateKind, name: "Selected private target" });
   await f.run("session_start", { reason: "startup" });
   f.entries.push({ type: "message", id: "call", parentId: f.entries.at(-1).id, timestamp, message: { role: "assistant", content: [{ type: "toolCall", id: "graph-call", name: "graph", arguments: {} }] } });
   const result = await f.tools.get("graph").execute("graph-call", { action: "add", content: "selected durable claim", source: "message" }, undefined, undefined, f.ctx);

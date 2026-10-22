@@ -65,7 +65,7 @@ when embedding a configured factory in your own integration.
 | `memory_capture_private` | Captures explicit text into the fixed `writeScope`, after checking its private scope kind |
 | `memory_status` | Reports the current identity and fixed scope selections |
 
-Private capture requires an `agent-persistent` or `invocation-private` scope. It
+Private capture requires an `agent-persistent`, `thread-private` or `invocation-private` scope. It
 records the OpenCode session, message and agent identifiers as attribution.
 Supply stable `text`, `sourceId` and `occurredAt` arguments. Before the first
 capture POST, the plugin durably saves the full request, including its original

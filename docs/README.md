@@ -27,6 +27,7 @@ installation path that matches your use, then add clients and shared access.
 | Graph providers, extraction state and rebuilds | [Graphiti operations](graphiti.md) |
 | Portable source snapshots and file-sync folders | [Portable archives](portable-archives.md) |
 | Retraction, erasure, graph cleanup and retention | [Lifecycle](lifecycle.md) |
+| Private thread archives, summaries and enrichment assessments | [Maintenance workers](maintenance.md) |
 
 ## Run a shared service
 
@@ -50,6 +51,6 @@ Design documents and implementation plans are retained under
 [specifications](superpowers/specs/) and [plans](superpowers/plans/). They record
 decisions and proposals; the task guides describe the current implementation.
 
-The [memory maintenance and context proposal](proposals/memory-maintenance.md)
-describes selectable workers, enrichment, safe compaction and retention. It is a
-design for review, not an implemented feature.
+The [maintenance guide](maintenance.md) describes implemented thread archives and
+explicit workers. The [broader proposal](proposals/memory-maintenance.md) records
+the remaining claim, native compaction, scheduling and RLM work.

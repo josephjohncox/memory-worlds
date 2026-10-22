@@ -31,6 +31,7 @@ MAX_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
 MAX_RECORD_BYTES = 2 * 1024 * 1024
 MAX_MANIFEST_BYTES = 64 * 1024
 MAX_EPISODES = 100_000
+MAX_DEPENDENCIES = 100_000
 _PROJECTION_FIELDS = {
     "backend",
     "graphiti_version",
@@ -51,7 +52,13 @@ class PortableStore(Protocol):
     def snapshot(self, principal: Principal, world_id: str, scope_id=None) -> dict: ...
 
     def restore(
-        self, principal: Principal, world_id: str, episodes: list[EpisodeInput], scope_id=None
+        self,
+        principal: Principal,
+        world_id: str,
+        episodes: list[EpisodeInput],
+        scope_id=None,
+        *,
+        dependencies=None,
     ) -> dict: ...
 
 
@@ -61,6 +68,12 @@ class AuditRecord(Model):
     episode_id: str = Field(min_length=1, max_length=500)
     actor_id: str = Field(min_length=1, max_length=500)
     occurred_at: str
+
+
+class DependencyRecord(Model):
+    output_episode_id: str = Field(min_length=1, max_length=100)
+    input_episode_id: str = Field(min_length=1, max_length=100)
+    input_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class Manifest(Model):
@@ -73,7 +86,12 @@ class Manifest(Model):
     episodes_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     audit_count: int = Field(ge=0, le=MAX_EPISODES, strict=True)
     audit_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    dependency_count: int = Field(ge=0, le=MAX_DEPENDENCIES, strict=True)
+    dependencies_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     recovery: str = Field(pattern=r"^source-only; graph re-extraction required$")
+    context_recovery: str = Field(
+        pattern=r"^source-evidence-only; thread, bundle and job receipts require authority backup$"
+    )
     projection_configuration: dict[str, str | int | None] = Field(default_factory=dict)
 
     @field_validator("projection_configuration", mode="before")
@@ -98,6 +116,48 @@ def _json(value: Any) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False
     ).encode("utf-8")
+
+
+def _dependencies(episodes: list[Episode], values) -> list[DependencyRecord]:
+    """Validate the complete same-scope derivation graph before export or restore."""
+    if not isinstance(values, list) or len(values) > MAX_DEPENDENCIES:
+        raise PortabilityError("Portable dependency graph exceeds its edge limit")
+    records = [DependencyRecord.model_validate(value) for value in values]
+    indexed = {episode.id: episode for episode in episodes}
+    parents = {}
+    seen = set()
+    for record in records:
+        output, source = record.output_episode_id, record.input_episode_id
+        if output not in indexed or source not in indexed:
+            raise PortabilityError("Portable dependencies reference missing source evidence")
+        if source == output or (output, source) in seen:
+            raise PortabilityError("Portable dependencies contain a self reference or duplicate")
+        if indexed[source].digest != record.input_digest:
+            raise PortabilityError("Portable dependency source digest mismatch")
+        seen.add((output, source))
+        parents.setdefault(output, set()).add(source)
+    for output, sources in parents.items():
+        if any(not parents.get(source, set()).issubset(sources) for source in sources):
+            raise PortabilityError("Portable dependencies are missing their transitive closure")
+    # A flattened cycle necessarily contains a forbidden self edge. Validate the
+    # graph independently so a future closure check cannot admit cyclic evidence.
+    degree = {identifier: len(parents.get(identifier, ())) for identifier in indexed}
+    children = {}
+    for output, sources in parents.items():
+        for source in sources:
+            children.setdefault(source, []).append(output)
+    ready = [identifier for identifier, count in degree.items() if count == 0]
+    visited = 0
+    while ready:
+        source = ready.pop()
+        visited += 1
+        for output in children.get(source, ()):
+            degree[output] -= 1
+            if degree[output] == 0:
+                ready.append(output)
+    if visited != len(indexed):
+        raise PortabilityError("Portable dependencies contain a cycle")
+    return sorted(records, key=lambda item: (item.output_episode_id, item.input_episode_id))
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict:
@@ -203,6 +263,7 @@ def export_world(
         episodes = [Episode.model_validate(item) for item in snapshot["episodes"]]
         audit = [AuditRecord.model_validate(item) for item in snapshot["audit"]]
         scope = Scope.model_validate(snapshot["scope"])
+        dependencies = _dependencies(episodes, snapshot["artifact_dependencies"])
     except (KeyError, TypeError, ValidationError) as exc:
         raise PortabilityError(f"Invalid store snapshot: {exc}") from exc
     if len(episodes) > MAX_EPISODES or len(audit) > MAX_EPISODES:
@@ -222,6 +283,7 @@ def export_world(
         raise PortabilityError("An episode exceeds the portable record size limit")
     body = b"".join(records)
     audit_body = b"".join(_json(item) + b"\n" for item in audit)
+    dependency_body = b"".join(_json(item) + b"\n" for item in dependencies)
     manifest = Manifest(
         format="memory-worlds",
         version=2,
@@ -232,7 +294,12 @@ def export_world(
         episodes_sha256=hashlib.sha256(body).hexdigest(),
         audit_count=len(audit),
         audit_sha256=hashlib.sha256(audit_body).hexdigest(),
+        dependency_count=len(dependencies),
+        dependencies_sha256=hashlib.sha256(dependency_body).hexdigest(),
         recovery="source-only; graph re-extraction required",
+        context_recovery=(
+            "source-evidence-only; thread, bundle and job receipts require authority backup"
+        ),
         projection_configuration={
             key: value
             for key, value in snapshot.get("projection_configuration", {}).items()
@@ -240,7 +307,10 @@ def export_world(
         },
     )
     manifest_bytes = _json(manifest)
-    if len(body) + len(audit_body) + len(manifest_bytes) > MAX_UNCOMPRESSED_BYTES:
+    if (
+        len(body) + len(audit_body) + len(dependency_body) + len(manifest_bytes)
+        > MAX_UNCOMPRESSED_BYTES
+    ):
         raise PortabilityError("Portable archive exceeds the uncompressed size limit")
     if len(manifest_bytes) > MAX_MANIFEST_BYTES:
         raise PortabilityError("Portable archive manifest exceeds the size limit")
@@ -264,6 +334,7 @@ def export_world(
                 archive.writestr("manifest.json", manifest_bytes)
                 archive.writestr("episodes.jsonl", body)
                 archive.writestr("audit.jsonl", audit_body)
+                archive.writestr("dependencies.jsonl", dependency_body)
             stream.flush()
             os.fsync(stream.fileno())
             if stream.tell() > MAX_ARCHIVE_BYTES:
@@ -283,7 +354,9 @@ def export_world(
         temporary.unlink(missing_ok=True)
 
 
-def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord]]:
+def _read_archive(
+    path: Path,
+) -> tuple[Manifest, list[Episode], list[AuditRecord], list[DependencyRecord]]:
     if path.suffix != ".mworld":
         raise PortabilityError("Only finalized .mworld archives can be restored")
     if path.stat().st_size > MAX_ARCHIVE_BYTES:
@@ -291,13 +364,14 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
     try:
         with zipfile.ZipFile(path) as archive:
             entries = archive.infolist()
-            if len(entries) != 3 or {item.filename for item in entries} != {
+            if len(entries) != 4 or {item.filename for item in entries} != {
                 "manifest.json",
                 "episodes.jsonl",
                 "audit.jsonl",
+                "dependencies.jsonl",
             }:
                 raise PortabilityError(
-                    "Archive must contain only manifest.json, episodes.jsonl, and audit.jsonl"
+                    "Archive must contain manifest, source, audit and dependency records"
                 )
             if sum(item.file_size for item in entries) > MAX_UNCOMPRESSED_BYTES:
                 raise PortabilityError("Portable archive exceeds the uncompressed size limit")
@@ -316,6 +390,7 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
             _timestamp(manifest.exported_at, "export timestamp")
             body = archive.read("episodes.jsonl")
             audit_body = archive.read("audit.jsonl")
+            dependency_body = archive.read("dependencies.jsonl")
     except (
         zipfile.BadZipFile,
         RuntimeError,
@@ -385,7 +460,20 @@ def _read_archive(path: Path) -> tuple[Manifest, list[Episode], list[AuditRecord
         _timestamp(record.occurred_at, f"audit timestamp {index}")
         audit_sequences.add(record.sequence)
         audit.append(record)
-    return manifest, episodes, audit
+    if hashlib.sha256(dependency_body).hexdigest() != manifest.dependencies_sha256:
+        raise PortabilityError("Dependency checksum mismatch")
+    dependency_lines = dependency_body.splitlines()
+    if len(dependency_lines) != manifest.dependency_count:
+        raise PortabilityError("Dependency count does not match manifest")
+    if any(len(line) > MAX_RECORD_BYTES for line in dependency_lines):
+        raise PortabilityError("A dependency exceeds the portable record size limit")
+    try:
+        dependencies = _dependencies(
+            episodes, [_load_json(line, "dependency") for line in dependency_lines]
+        )
+    except ValidationError:
+        raise PortabilityError("Invalid portable dependency record") from None
+    return manifest, episodes, audit, dependencies
 
 
 def restore_world(
@@ -397,7 +485,7 @@ def restore_world(
     scope_id: UUID | str | None = None,
 ) -> dict:
     """Verify the entire archive before one authorized, transactional restore."""
-    manifest, records, audit = _read_archive(Path(archive))
+    manifest, records, audit, dependencies = _read_archive(Path(archive))
     if manifest.scope.kind != ScopeKind.WORLD_SHARED and scope_id is None:
         raise PortabilityError("Scoped archives require an explicit private destination scope")
     target = store.snapshot(principal, world_id, scope_id=scope_id)
@@ -424,6 +512,7 @@ def restore_world(
             "audit": audit_by_episode.get(record.id, []),
         }
         origin["scope"] = manifest.scope.model_dump(mode="json")
+        origin["context_receipts_restored"] = False
         for key in ("agent_uuid", "invocation_id", "parent_invocation_id", "context_id"):
             value = getattr(record, key, None)
             if value is not None:
@@ -440,7 +529,11 @@ def restore_world(
         )
         episodes.append(_episode(fields))
     return store.restore(
-        principal, world_id, episodes, **({"scope_id": scope_id} if scope_id else {})
+        principal,
+        world_id,
+        episodes,
+        **({"scope_id": scope_id} if scope_id else {}),
+        dependencies=dependencies,
     )
 
 

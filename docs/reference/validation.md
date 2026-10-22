@@ -7,6 +7,44 @@ including setup commit `1cef120431b8e121859079b0ea5f3561ab5f0fcf`.
 Counts from different snapshots and overlapping selections must not be added.
 They are not a claim that every check ran against later documentation edits.
 
+## Private thread maintenance
+
+Qualified on 2026-10-22 using the locked mise toolchain on the PR #2 implementation
+branch. The public PR and artifact receipts identify its publication commit.
+
+| Check | Result |
+| --- | --- |
+| Complete Python 3.15.0 suite, isolated PostgreSQL 18.6 enabled | 1,128 passed; 12 backend-specific or separately enabled infrastructure cases skipped |
+| Native Pi | 165 tests and all three actual runtime/service/sharing smokes passed |
+| OpenCode | 27 tests passed |
+| Helm rendering | 10 profiles passed; 49 unsafe configurations rejected |
+| Helm staging | 11 tests passed, including the actual rendered Python copy process |
+| Ruff, formatting and dependency consistency | Passed |
+| Current documentation links and staged public-source audit | Passed |
+
+Tests exercise dedicated private thread grants, cumulative revisions and CAS,
+expiry admission, large Unicode/tool-event recovery, concurrent retries and lost
+append acknowledgements. Worker cases cover current authorization before dispatch
+and fenced commit, bounded inputs/output, profile restrictions, daily reservation
+accounting, heartbeat ownership, cancellation, interrupted execution and unknown
+provider charges. Two authority instances share thread archives and job ownership
+on both SQLite and PostgreSQL.
+
+Source removal immediately hides dependent archives and summaries on ordinary
+reads. Tests cover bounded 500-output cleanup, incomplete checkpoint retry,
+retention continuation, graph claims, portable dependency closure and fresh-process
+authority restoration. Real encrypted backup/restore recovers a committed artifact
+after a lost acknowledgement without another model call or source write.
+
+Independent reviews led to fixes for late write revocation, maintenance-barrier
+ordering, dependency loss through portable export, incomplete source cleanup,
+fresh-process schema registration and interrupted-job ownership. The Helm tests
+exercise private file ownership/modes, unsafe projected files, size bounds and
+consistent Secret generations during rotation. They do not establish a new live
+kind deployment result. Model protocols use local/in-process synthetic responses;
+summary quality and paid-provider behavior were not evaluated. The installed
+daemon and Pi package were not changed by this PR's qualification.
+
 ## Guided setup review fixes
 
 The final setup fixes passed the complete Python suite: **806 passed, 31 skipped**

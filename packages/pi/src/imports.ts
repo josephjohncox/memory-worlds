@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import type { EpisodeInput, ImportResult, MemoryWorldsClient, ScopeSelection } from "./client.js";
+import { isPrivateScope, type EpisodeInput, type ImportResult, type MemoryWorldsClient, type ScopeSelection } from "./client.js";
 
 export class DirectoryImportError extends Error { constructor(message: string) { super(message); this.name = "MemoryWorldsImportError"; } }
 
@@ -80,7 +80,7 @@ export async function importDirectory(client: MemoryWorldsClient, destination: S
   return client.withCredentialSession(async pinned => {
     const identity = await pinned.identity(options.signal), selected = await pinned.scope(destination, options.signal);
     const world = identity.worlds.find(item => item.id === destination.world_id);
-    if (!world || !["personal", "private-work"].includes(world.kind) || world.owner_id !== identity.user_id || !["agent-persistent", "invocation-private"].includes(selected.kind)) throw new DirectoryImportError("Directory import requires your own private world and private scope");
+    if (!world || !["personal", "private-work"].includes(world.kind) || world.owner_id !== identity.user_id || !isPrivateScope(selected.kind)) throw new DirectoryImportError("Directory import requires your own private world and private scope");
     const current = await client.identity(options.signal);
     if (current.authority_id !== identity.authority_id || current.credential_id !== identity.credential_id) throw new DirectoryImportError("Memory credential changed during directory import");
     return { report: plan.report, ...await pinned.importEpisodes(destination, plan.episodes, options.signal) };

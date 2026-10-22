@@ -44,6 +44,7 @@ credentials for ordinary agents. Provider/model settings are required at startup
 | Task | Guide |
 | --- | --- |
 | Values, storage claims, TLS ingress, router, egress | [Configuration reference](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/helm-values.md) |
+| Explicit summary and enrichment workers | [Maintenance profiles](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/helm-values.md#maintenance-worker-profiles) |
 | Shared SQL journals and replicas | [PostgreSQL and RDS](https://github.com/josephjohncox/memory-worlds/blob/main/docs/rds-postgresql.md) |
 | User identity and team groups | [OIDC and Okta](https://github.com/josephjohncox/memory-worlds/blob/main/docs/oidc-okta.md) |
 | Encrypted backups and fresh-target restore | [Authority recovery](https://github.com/josephjohncox/memory-worlds/blob/main/docs/recovery.md) |
@@ -56,6 +57,8 @@ make the single graph pod highly available.
 
 Uninstall retains StatefulSet claims and never deletes operator-owned Secrets
 or PVCs. Retention is not a backup and does not protect against node loss.
-Secret environment changes and single-file key/CA rotations require a rollout.
+Secret environment changes, staged maintenance profiles/keys and single-file
+key/CA rotations require a rollout. Set `maintenance.existingSecret` only when
+you have explicitly configured worker profiles; it is empty by default.
 
 Licensed under Apache-2.0; [LICENSE](LICENSE) is included in packaged charts.

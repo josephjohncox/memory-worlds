@@ -1,6 +1,12 @@
 # Proposal: memory maintenance and memory-backed context
 
-**Status: proposed design for review. These features are not implemented by this PR.**
+**Status: the first delivery is implemented on this PR branch; later stages remain proposed.**
+
+The [maintenance guide](../maintenance.md) documents the working thread-private
+scopes, typed compressed archives, selectable summary/enrichment-assessment
+workers, durable jobs, dependency-aware erasure, and Python/CLI/MCP interfaces.
+The sections below describe the complete direction, including work that follows
+this first delivery.
 
 Memory Worlds should preserve useful working material outside an agent's active
 token window, recover detail on demand, and maintain the resulting knowledge with
@@ -42,7 +48,7 @@ Local versus corporate is a placement choice. Agent, thread, run and shared scop
 determine audience and lifetime. Saving context locally does not authorize moving
 private invocation data into a broader agent or company scope.
 
-The proposed default is a real **thread-private scope** for resumable private
+The implemented default is a real **thread-private scope** for resumable private
 thread context. This adds an authorization boundary to the existing four scope
 kinds. A thread UUID or a metadata filter alone must not claim that isolation.
 An alternative is a thread collection within agent-persistent memory, with shared
@@ -72,9 +78,11 @@ asynchronously before the context window is full.
 4. Scheduled expiration, pruning and automated lifecycle execution.
 5. Bounded RLM execution with an isolated environment and shared descendant budgets.
 
-Each stage needs its own implementation and qualification. This design PR does
-not introduce a generic workflow framework, change the running installation,
-enable autonomous erasure, or claim a measured compression/quality improvement.
+Stage one has current-contract implementation and qualification. Claim revisions,
+native Pi compaction, scheduling and RLM require following deliveries. This PR
+does not change the running installation or enable autonomous erasure. Archive
+receipts report actual stored/uncompressed bytes; no model-summary quality
+improvement has been measured.
 
 The [detailed design](../superpowers/specs/2026-10-21-memory-maintenance-context-design.md)
 defines the records, job and compaction protocols, retention behavior, deployment
@@ -82,13 +90,12 @@ model, alternatives and acceptance tests.
 
 ## Review decisions
 
-- Confirm thread-private access across invocations versus a collection inside
-  agent-persistent memory. The recommendation is a real thread-private boundary.
-- Confirm private context archiving as a distinct policy from reusable-knowledge
-  capture, with explicit captured event classes and omissions.
-- Confirm that source erasure requires an explicit authorized lifecycle action or
-  configured retention policy; lightweight-model judgments can propose pruning
-  but cannot authorize erasure.
+- Use thread-private access across invocations, separate from agent-persistent
+  memory. Continuation approved implementing this recommended boundary.
+- Treat context archiving separately from reusable-knowledge capture, with typed
+  events and explicit omissions. The caller selects the declared captured input.
+- Require an authorized lifecycle action or retention policy for source erasure.
+  Lightweight-model judgments can propose pruning but cannot authorize erasure.
 
 RLM terminology follows the [original paper](https://arxiv.org/abs/2512.24601)
 and [official implementation](https://github.com/alexzhang13/rlm).

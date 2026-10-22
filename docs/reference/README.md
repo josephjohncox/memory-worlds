@@ -17,6 +17,7 @@ and procedures for a boundary you already know you need to configure or inspect.
 | [Directory import](chat-import.md) | Format fidelity, timestamps, chunking and limits | [Import guide](../chat-import.md) |
 | [Routing](routing.md) | Mount JSON, identity, credential grants and delivery semantics | [Shared spaces](../sharing.md) |
 | [Lifecycle](lifecycle.md) | Python/HTTP operations, receipts, purge and retention policy | [Retraction and erasure](../lifecycle.md) |
+| [Maintenance workers](../maintenance.md) | Thread archives, explicit job APIs, profiles and model bounds | [Thread context and summaries](../maintenance.md) |
 | [Pi Graphiti audit](pi-graphiti-audit.md) | Upstream surface and feature comparison | [Feature coverage](../pi-graphiti-features.md) |
 
 ## Shared deployment and operations

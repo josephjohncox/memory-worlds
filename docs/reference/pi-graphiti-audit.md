@@ -68,7 +68,7 @@ contracts are described separately.
 
 | Capability in upstream 0.6.0 | Memory Worlds 0.3.0 | Verification |
 | --- | --- | --- |
-| `graph add` | Same action and content/name/source inputs; writes only to the configured agent-persistent or invocation-private target, and explicitly requests Graphiti extraction | [Tool and alias tests](../../packages/pi/test/scoping.test.mjs), [actual-service Pi smoke](../../packages/pi/test/real-service-smoke.mjs) |
+| `graph add` | Same action and content/name/source inputs; writes only to the configured agent-persistent, thread-private or invocation-private target, and explicitly requests Graphiti extraction | [Tool and alias tests](../../packages/pi/test/scoping.test.mjs), [actual-service Pi smoke](../../packages/pi/test/real-service-smoke.mjs) |
 | `graph search` | Scoped entity and relationship fact retrieval with IDs, source evidence, and projection provenance | [Graph tool tests](../../packages/pi/test/scoping.test.mjs), [real graph tests](../../tests/test_graph.py) |
 | `graph episodes` | Recent authorized source episodes, including evidence awaiting extraction | [Scope client tests](../../tests/test_scope_clients.py), [actual-service Pi smoke](../../packages/pi/test/real-service-smoke.mjs) |
 | Project/global search | Explicit alias bindings; `both` reads their authorized union. Search defaults to `both`; add/episodes default to `project`, unless the user selected an override | [Alias tests](../../packages/pi/test/scoping.test.mjs) |
@@ -80,7 +80,7 @@ contracts are described separately.
 | Offline local spool | Opt-in `spoolDirectory`; private immutable envelopes pinned to service, authority, credential, target, source, and exposure guard. Defaults: 10,000 envelopes and 64 MiB aggregate capacity; no automatic age-based deletion | [Queue tests](../../packages/pi/test/spool.test.mjs) |
 | Document ingestion | `/graph ingest PATH` accepts one user-selected UTF-8 text file up to 200,000 bytes as one episode, with a stable retry identity. Paragraph/sentence chunking is not implemented | [Native command implementation](../../packages/pi/src/extension.ts) |
 | Extracted chat directories | Native preview/import commands reuse the credential-free Python planner, preserve ChatGPT/Claude message provenance and split oversized document snapshots losslessly into private batches | [Planner bridge](../../packages/pi/src/imports.ts), [actual service smoke](../../packages/pi/test/real-service-smoke.mjs) |
-| Export and restore | Scope-aware `.mworld` source/audit archives and explicit imports; the CLI rejects restoring a private archive into a broader scope kind | [Scoped projection/portability tests](../../tests/test_scope_graph.py), [adversarial review](../../tests/test_scope_adversarial_review.py) |
+| Export and restore | Scope-aware `.mworld` source/audit/dependency archives and explicit imports; the CLI rejects restoring a private archive into a broader scope kind | [Scoped projection/portability tests](../../tests/test_scope_graph.py), [adversarial review](../../tests/test_scope_adversarial_review.py) |
 | Docker setup and teardown | Compose, kind, and Helm are service operator workflows; `/graph` does not provide `setup`, `uninstall`, or `teardown` | [Deployment guide](../deployments.md), [Helm guide](../helm.md) |
 | Retraction and erasure | Scoped manager operations block recall and retain tombstones; operator-only drained namespace purge and bounded retention keep durable receipts | [Lifecycle](../lifecycle.md) |
 
@@ -112,6 +112,7 @@ audiences, with the following native scope kinds:
 | `world-shared` | Participants explicitly granted access to shared memory in that world |
 | `run-shared` | Participants delegated into a particular run UUID |
 | `agent-persistent` | A stable agent UUID and any explicitly granted readers |
+| `thread-private` | One durable thread UUID and its explicitly granted readers |
 | `invocation-private` | A particular invocation/subagent UUID and any explicitly granted readers |
 
 UUIDs distinguish agents, runs, and invocations; possession of a UUID is not a

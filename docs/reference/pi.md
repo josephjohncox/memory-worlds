@@ -96,6 +96,7 @@ Each world contains independently authorized scopes:
 | `world-shared` | Published knowledge for authorized world participants |
 | `run-shared` | Coordination and shared findings for one task or run |
 | `agent-persistent` | Durable notes associated with a stable agent identity |
+| `thread-private` | Durable context and working notes for one explicitly selected thread |
 | `invocation-private` | Working notes belonging to one agent invocation |
 
 Runs, scopes, stable agent identities and invocations have separate UUIDs. A Pi fork
@@ -131,7 +132,7 @@ already bound UUID, while `create` creates a named identity. The typed client
 provides `identities`, `resolveIdentity`, `createIdentity`, and `updateIdentity`.
 
 Read scopes and the private capture target are independent. Capture requires an
-`agent-persistent` or `invocation-private` target. World membership never implicitly
+`agent-persistent`, `thread-private` or `invocation-private` target. World membership never implicitly
 grants access to another invocation's private notes. Shared writes use explicit
 selected publications or a user-enabled per-chat sharing rule.
 
@@ -140,6 +141,14 @@ write target can read every source scope exposed in the session. Run-shared cont
 can therefore feed narrower invocation-private working notes. A failed, unknown or
 foreign-authority relationship disables automatic capture. Exposure survives forks,
 branches, compaction and reload; changing selections cannot erase it.
+
+Thread-private scopes use the same live grants and exposure checks. Use the
+[maintenance CLI or MCP tools](../maintenance.md) to create a thread, archive
+context or submit summary and enrichment work. Pi scope discovery does not yet
+consult thread registry state or hide expired threads. An explicitly configured
+read scope remains readable after expiry; the service rejects writes to expired
+or closed threads. Pi does not automatically archive messages, compact context,
+remove context after acknowledgement or choose a replacement thread.
 
 ## Commands and tools
 
@@ -240,7 +249,7 @@ The executable is trusted local configuration and is never selected by a model.
 /memory import /private/documents --format documents --fallback-timestamp 2026-10-20T12:00:00Z
 ```
 
-The target must be an `agent-persistent` or `invocation-private` scope in your own
+The target must be an `agent-persistent`, `thread-private` or `invocation-private` scope in your own
 personal or private-work world. Imports leave chat reads, capture mode, and graph
 bindings unchanged. No model tool can select a directory or initiate this command.
 Graphiti extraction is queued by default; `--source-only` explicitly skips it.

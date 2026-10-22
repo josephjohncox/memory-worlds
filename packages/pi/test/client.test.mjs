@@ -161,3 +161,17 @@ test("world discovery requires an actual scope UUID", async () => {
   const client = new MemoryWorldsClient("http://localhost", async () => "secret", async () => reply([{ ...world, scope_id: "invalid" }]));
   await assert.rejects(client.worlds(), /Invalid scope/);
 });
+
+test("thread-private scopes retain their thread identity in discovery and direct selection", async () => {
+  const threadId = "00000000-0000-4000-8000-000000000003";
+  const thread = { id: selection.scope_id, ...selection, kind: "thread-private", name: "Research", thread_id: threadId, created_at: "2026-10-22T00:00:00Z", projection_state: "disabled" };
+  const client = new MemoryWorldsClient("http://127.0.0.1:8787", async () => "secret", async url => {
+    if (url.endsWith("/v1/worlds")) return reply([world]);
+    if (url.endsWith("/v1/mounts")) return reply([]);
+    return reply(url.endsWith("/scopes") ? [thread] : thread);
+  });
+  const found = await client.discover();
+  assert.equal(found.scopes.private[0].kind, "thread-private");
+  assert.equal(found.scopes.private[0].thread_id, threadId);
+  assert.equal((await client.scope(selection)).thread_id, threadId);
+});

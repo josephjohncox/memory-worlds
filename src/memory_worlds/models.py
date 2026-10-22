@@ -157,6 +157,7 @@ class ScopeKind(StrEnum):
     RUN_SHARED = "run-shared"
     AGENT_PERSISTENT = "agent-persistent"
     INVOCATION_PRIVATE = "invocation-private"
+    THREAD_PRIVATE = "thread-private"
 
 
 class ScopeOperation(StrEnum):
@@ -190,6 +191,7 @@ class Scope(Model):
     agent_id: UUID | None = None
     invocation_id: UUID | None = None
     parent_invocation_id: UUID | None = None
+    thread_id: UUID | None = None
     generation: str | None = None
     projection_state: Literal["disabled", "ready", "degraded"] = "disabled"
 
@@ -201,6 +203,7 @@ class CreateScope(Model):
     run_id: UUID | None = None
     agent_id: UUID | None = None
     invocation_id: UUID | None = None
+    thread_id: UUID | None = None
 
 
 class ScopeGrant(ScopeSelection):

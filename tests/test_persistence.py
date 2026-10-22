@@ -591,3 +591,82 @@ def test_nested_fenced_source_mutation_cannot_bypass_maintenance(authority):
         assert e.store.get_episode(e.owner, e.world.id, source.id).projection_state == "pending"
     finally:
         e.store.persistence.release_lease(lease)
+
+
+async def test_thread_archives_and_jobs_are_shared_and_fenced_across_authority_instances(authority):
+    from memory_worlds.context_archive import ContextArchive
+    from memory_worlds.context_models import ContextBundleInput
+    from memory_worlds.maintenance_jobs import MaintenanceJobs
+    from memory_worlds.maintenance_models import MaintenanceRequest
+    from memory_worlds.maintenance_provider import WorkerProfile, WorkerProfiles
+    from memory_worlds.thread_models import CreateThread
+    from memory_worlds.threads import ThreadService
+
+    e = authority
+    first, peer = ContextArchive(e.store), ContextArchive(e.peer)
+    thread = first.threads.create(
+        e.owner,
+        CreateThread(operation_id=uuid4(), world_id=e.world.id, name="Shared durable queue"),
+    )
+    request = ContextBundleInput(
+        operation_id=uuid4(),
+        expected_revision=0,
+        entries=[
+            {"id": "context", "type": "message", "payload": {"text": "A finding needs evidence"}}
+        ],
+    )
+    receipt = first.archive(e.owner, thread.id, request)
+    assert peer.archive(e.owner, thread.id, request) == receipt
+    assert peer.bundle(e.owner, thread.id, receipt.bundle_id).entries == request.entries
+    assert ThreadService(e.peer).get(e.owner, thread.id).revision == 1
+    key = e.tmp_path / "model.key"
+    key.write_text("synthetic-model-key")
+    key.chmod(0o600)
+    profiles = WorkerProfiles(
+        profiles={
+            "lightweight": WorkerProfile(
+                endpoint="https://example.invalid/v1", model="luna", api_key_file=key
+            )
+        }
+    )
+
+    class Provider:
+        calls = 0
+
+        async def propose(self, profile, *, kind, text, bundle_ids):
+            self.calls += 1
+            await asyncio.sleep(0.01)
+            return {
+                "kind": "summary",
+                "content": "Tentative derived finding",
+                "source_bundle_ids": [str(value) for value in bundle_ids],
+            }
+
+    provider = Provider()
+
+    def worker(store, archive):
+        return MaintenanceJobs(
+            store,
+            input_loader=archive.load_inputs,
+            output_writer=archive.write_artifact,
+            result_reader=archive.artifact,
+            authorize_job=archive.authorize_job,
+            profiles=profiles,
+            provider=provider,
+        )
+
+    jobs, other = worker(e.store, first), worker(e.peer, peer)
+    submitted = await jobs.submit(
+        e.owner,
+        MaintenanceRequest(
+            operation_id=uuid4(), thread_id=thread.id, bundle_ids=[receipt.bundle_id]
+        ),
+    )
+    await asyncio.gather(jobs.run_once(submitted.id), other.run_once(submitted.id))
+    finished = await other.status(e.owner, submitted.id)
+    assert finished.state == "succeeded" and provider.calls == 1
+    assert (
+        peer.artifact(e.owner, finished.result_artifact_id).metadata["claim_status"] == "tentative"
+    )
+    await jobs.close()
+    await other.close()

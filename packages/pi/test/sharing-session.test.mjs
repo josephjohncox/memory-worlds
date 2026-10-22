@@ -387,3 +387,20 @@ test("unreadable or incomplete source input withholds the full window without or
     assert.deepEqual(f.classifications[0].map(item => item.entryId), ["clean-next-user", "clean-next-assistant"], kind);
   }
 });
+
+
+test("thread-private sharing sources work while exposure to another thread remains private", async () => {
+  const f = fixture();
+  f.scopes.set(sourceId, { ...f.scopes.get(sourceId), kind: "thread-private" });
+  await f.auto();
+  f.add("shareable", "The retry interval is five seconds.");
+  await f.flush();
+  assert.equal(f.sent.length, 1);
+  f.scopes.set(otherId, { ...f.scopes.get(otherId), kind: "thread-private" });
+  f.state.exposedScopes.push(`authority/personal/${otherId}`);
+  f.add("other-thread", "The retry deadline is twenty seconds.");
+  await f.flush();
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.classifications.length, 1);
+  assert.equal(f.sharing.summary().mode, "private");
+});

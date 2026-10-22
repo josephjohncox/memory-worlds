@@ -15,12 +15,23 @@ grant access.
 | `world-shared` | Published knowledge for a world | Authorized world participants |
 | `run-shared` | Task brief and selected coordination results | Explicitly granted participants |
 | `agent-persistent` | Specialist memory across invocations | Explicitly granted agent credentials |
+| `thread-private` | Resumable private conversation context | Creating credential and explicit scope grants |
 | `invocation-private` | Working notes for one invocation | That invocation's credential |
 
 The service issues scope, run, and invocation UUIDs. A stable agent UUID can be
 reused across invocations; its name or UUID never confers access to a persistent
 scope. Parent invocation IDs describe orchestration, not inherited permission.
 Siblings and parents cannot read a child's scratch by default.
+
+`thread create --input FILE.json` creates a thread UUID and a distinct
+`thread-private` scope. Its creator receives explicit grants; another credential
+for the same user receives none automatically. Use `thread list` and `thread
+show THREAD_UUID` to discover authorized threads. Generic scope creation rejects
+thread bindings. Thread aliases are owner-visible names; access still requires
+the exact scope grant. See [maintenance](../maintenance.md) for archive and job
+contracts. Expiry stops default thread discovery and new archives/jobs, while
+explicitly selected source/graph reads remain authorized until grants or sources
+are removed.
 
 A context records selected read scopes, one optional write scope, agent UUID,
 and invocation UUID. Binding a context checks access and records defaults and
@@ -187,11 +198,13 @@ retains scope identities, delegations and source records when its durable store
 is retained.
 
 `export WORLD_ID FILE.mworld --scope SCOPE_UUID` produces a version 2 archive
-with that scope's source, audit, and audience metadata. This is the single
+with that scope's source, audit, dependency and audience metadata. This is the single
 supported archive format. Private archives require explicit private restore targets;
 they cannot silently become world-shared. Restore rebinds the destination scope,
 retains original provenance, and restores neither credentials nor live context
-bindings. Rebuild graphs separately.
+bindings. Derived records keep their dependency closure after episode IDs are
+rebound. Whole-authority backup also preserves thread, bundle and maintenance
+receipts; portable restore recovers their source evidence. Rebuild graphs separately.
 
 Credential expiry stops access without deleting source. The current service
 does not automatically prune expired invocation journals. Use explicit

@@ -139,10 +139,19 @@ def test_archive_roundtrip_rebinds_importer_without_credentials_or_grants(author
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
     assert not list(destination.parent.glob("*.pending"))
     with zipfile.ZipFile(destination) as archive:
-        assert set(archive.namelist()) == {"manifest.json", "episodes.jsonl", "audit.jsonl"}
+        assert set(archive.namelist()) == {
+            "manifest.json",
+            "episodes.jsonl",
+            "audit.jsonl",
+            "dependencies.jsonl",
+        }
         manifest = json.loads(archive.read("manifest.json"))
         assert manifest["episode_count"] == 1
         assert manifest["audit_count"] == 1
+        assert manifest["dependency_count"] == 0
+        assert manifest["context_recovery"] == (
+            "source-evidence-only; thread, bundle and job receipts require authority backup"
+        )
         assert "credentials" not in manifest and "grants" not in manifest
         assert manifest["projection_configuration"] == {
             "backend": "falkordb",
@@ -532,3 +541,193 @@ def test_import_to_shared_world_is_explicit_admin_restore(authority, tmp_path):
     assert all(
         item.actor_id == principal.user_id for item in store.list_episodes(principal, world.id)
     )
+
+
+def _derived_thread(store, principal, world):
+    from uuid import uuid4
+
+    from memory_worlds.context_archive import ContextArchive
+    from memory_worlds.context_models import ContextSourceRef
+    from memory_worlds.thread_models import CreateThread
+    from memory_worlds.threads import ThreadService
+
+    thread = ThreadService(store).create(
+        principal, CreateThread(operation_id=uuid4(), world_id=world.id, name="Derived knowledge")
+    )
+    source = store.capture(
+        principal, world.id, _input("source", scope_id=thread.scope_id, project=False)
+    ).episode
+    archive = ContextArchive(store)
+
+    def ref(episode):
+        return ContextSourceRef(
+            world_id=world.id,
+            scope_id=thread.scope_id,
+            episode_id=episode.id,
+            digest=episode.digest,
+        )
+
+    middle = archive._capture(
+        principal,
+        thread,
+        _input(
+            "middle",
+            "Tentative summary",
+            scope_id=thread.scope_id,
+            project=False,
+            metadata={"claim_status": "tentative"},
+        ),
+        [ref(source)],
+    ).episode
+    last = archive._capture(
+        principal,
+        thread,
+        _input(
+            "last",
+            "Condensed tentative summary",
+            scope_id=thread.scope_id,
+            project=False,
+            metadata={"claim_status": "tentative"},
+        ),
+        [ref(source), ref(middle)],
+    ).episode
+    return thread, source, middle, last
+
+
+def _target_thread(store, principal, world):
+    from uuid import uuid4
+
+    from memory_worlds.thread_models import CreateThread
+    from memory_worlds.threads import ThreadService
+
+    return ThreadService(store).create(
+        principal, CreateThread(operation_id=uuid4(), world_id=world.id, name="Imported knowledge")
+    )
+
+
+def test_portable_dependencies_remap_ids_and_remain_invalidated_by_source_erasure(
+    authority, tmp_path
+):
+    from uuid import uuid4
+
+    from memory_worlds.lifecycle import EpisodeLifecycle, LifecycleRequest
+
+    store, principal, world = authority
+    thread, source, middle, last = _derived_thread(store, principal, world)
+    destination = export_world(
+        store, principal, world.id, tmp_path / "derived.mworld", scope_id=thread.scope_id
+    )
+    target, importer, target_world = _target(tmp_path)
+    target_thread = _target_thread(target, importer, target_world)
+    assert restore_world(
+        target, importer, target_world.id, destination, scope_id=target_thread.scope_id
+    ) == {"imported": 3, "replayed": 0}
+    assert restore_world(
+        target, importer, target_world.id, destination, scope_id=target_thread.scope_id
+    ) == {"imported": 0, "replayed": 3}
+    rows = {
+        item.source_id: item
+        for item in target.list_episodes(importer, target_world.id, scope_id=target_thread.scope_id)
+    }
+    assert {item.id for item in rows.values()}.isdisjoint({source.id, middle.id, last.id})
+    assert rows["last"].metadata["claim_status"] == "tentative"
+    assert rows["last"].metadata["memory_worlds_origin"]["context_receipts_restored"] is False
+    edges = target.snapshot(importer, target_world.id, scope_id=target_thread.scope_id)[
+        "artifact_dependencies"
+    ]
+    assert {
+        (edge["output_episode_id"], edge["input_episode_id"], edge["input_digest"])
+        for edge in edges
+    } == {
+        (rows["middle"].id, rows["source"].id, rows["source"].digest),
+        (rows["last"].id, rows["source"].id, rows["source"].digest),
+        (rows["last"].id, rows["middle"].id, rows["middle"].digest),
+    }
+    receipt = EpisodeLifecycle(target).apply(
+        importer,
+        target_world.id,
+        target_thread.scope_id,
+        LifecycleRequest(operation_id=uuid4(), action="erase", episode_ids=[rows["source"].id]),
+    )
+    assert receipt["erasure_complete"]
+    assert target.list_episodes(importer, target_world.id, scope_id=target_thread.scope_id) == []
+    with pytest.raises(Conflict):
+        restore_world(
+            target, importer, target_world.id, destination, scope_id=target_thread.scope_id
+        )
+
+
+@pytest.mark.parametrize(
+    "damage", ["missing-input", "digest", "duplicate", "cycle", "missing-closure", "checksum"]
+)
+def test_invalid_portable_dependency_graph_rejected_before_any_restore(authority, tmp_path, damage):
+    store, principal, world = authority
+    thread, source, middle, last = _derived_thread(store, principal, world)
+    destination = export_world(
+        store,
+        principal,
+        world.id,
+        tmp_path / "damaged-dependencies.mworld",
+        scope_id=thread.scope_id,
+    )
+
+    def mutate(entries):
+        manifest = json.loads(entries["manifest.json"])
+        edges = [json.loads(line) for line in entries["dependencies.jsonl"].splitlines()]
+        if damage == "missing-input":
+            episodes = [json.loads(line) for line in entries["episodes.jsonl"].splitlines()]
+            entries["episodes.jsonl"] = b"".join(
+                (json.dumps(item) + "\n").encode() for item in episodes if item["id"] != source.id
+            )
+            audit = [json.loads(line) for line in entries["audit.jsonl"].splitlines()]
+            entries["audit.jsonl"] = b"".join(
+                (json.dumps(item) + "\n").encode()
+                for item in audit
+                if item["episode_id"] != source.id
+            )
+            manifest.update(
+                episode_count=len(episodes) - 1,
+                episodes_sha256=hashlib.sha256(entries["episodes.jsonl"]).hexdigest(),
+                audit_count=len(audit) - 1,
+                audit_sha256=hashlib.sha256(entries["audit.jsonl"]).hexdigest(),
+            )
+        elif damage == "digest":
+            edges[0]["input_digest"] = "f" * 64
+        elif damage == "duplicate":
+            edges.append(edges[0])
+        elif damage == "cycle":
+            edges.append(
+                {
+                    "output_episode_id": source.id,
+                    "input_episode_id": middle.id,
+                    "input_digest": middle.digest,
+                }
+            )
+        elif damage == "missing-closure":
+            edges = [
+                item
+                for item in edges
+                if (item["output_episode_id"], item["input_episode_id"]) != (last.id, source.id)
+            ]
+        elif damage == "checksum":
+            entries["dependencies.jsonl"] += b" "
+            return
+        entries["dependencies.jsonl"] = b"".join(
+            (json.dumps(item) + "\n").encode() for item in edges
+        )
+        manifest.update(
+            dependency_count=len(edges),
+            dependencies_sha256=hashlib.sha256(entries["dependencies.jsonl"]).hexdigest(),
+        )
+        entries["manifest.json"] = json.dumps(manifest).encode()
+
+    _rewrite_archive(destination, mutate)
+    target, importer, target_world = _target(tmp_path)
+    target_thread = _target_thread(target, importer, target_world)
+    with pytest.raises(PortabilityError):
+        restore_world(
+            target, importer, target_world.id, destination, scope_id=target_thread.scope_id
+        )
+    snapshot = target.snapshot(importer, target_world.id, scope_id=target_thread.scope_id)
+    assert snapshot["episodes"] == [] and snapshot["audit"] == []
+    assert snapshot["artifact_dependencies"] == []

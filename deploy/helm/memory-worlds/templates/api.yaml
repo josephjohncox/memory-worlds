@@ -59,6 +59,27 @@ spec:
         fsGroup: 10001
         fsGroupChangePolicy: OnRootMismatch
         seccompProfile: {type: RuntimeDefault}
+      {{- if .Values.maintenance.existingSecret }}
+      initContainers:
+        - name: maintenance-config
+          image: {{ include "memory-worlds.image" .Values.image | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: [python, -c]
+          args:
+            - |{{ include "memory-worlds.maintenanceStage" . | nindent 14 }}
+            - /var/run/secrets/memory-worlds-maintenance
+            - /run/memory-worlds
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 64Mi}
+          volumeMounts:
+            - {name: maintenance-source, mountPath: /var/run/secrets/memory-worlds-maintenance, readOnly: true}
+            - {name: maintenance-runtime, mountPath: /run/memory-worlds}
+      {{- end }}
       containers:
         - name: api
           image: {{ include "memory-worlds.image" .Values.image | quote }}
@@ -78,6 +99,10 @@ spec:
               value: "false"
             - name: MEMORY_WORLDS_GRAPH_BACKEND
               value: {{ .Values.graph.backend | quote }}
+            {{- if .Values.maintenance.existingSecret }}
+            - name: MEMORY_WORLDS_MAINTENANCE_CONFIG
+              value: /run/memory-worlds/maintenance/maintenance.toml
+            {{- end }}
             {{- if .Values.organization.existingConfigMap }}
             - name: MEMORY_WORLDS_ORGANIZATION_FILE
               value: /etc/memory-worlds/organization/organization.toml
@@ -140,6 +165,9 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.maintenance.existingSecret }}
+            - {name: maintenance-runtime, mountPath: /run/memory-worlds, readOnly: true}
+            {{- end }}
             {{- if .Values.organization.existingConfigMap }}
             - {name: organization, mountPath: /etc/memory-worlds/organization, readOnly: true}
             {{- end }}
@@ -157,6 +185,14 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 128Mi}
+        {{- if .Values.maintenance.existingSecret }}
+        - name: maintenance-source
+          secret:
+            secretName: {{ .Values.maintenance.existingSecret | quote }}
+            defaultMode: 288
+        - name: maintenance-runtime
+          emptyDir: {medium: Memory, sizeLimit: 4Mi}
+        {{- end }}
         {{- if .Values.organization.existingConfigMap }}
         - name: organization
           configMap:

@@ -109,6 +109,14 @@ async def test_sdk2_discovers_only_scoped_memory_tools(backend):
         listed = await client.list_tools()
         assert {tool.name for tool in listed.tools} == {
             "memory_discover",
+            "memory_threads",
+            "memory_thread",
+            "memory_context_bundle",
+            "memory_maintenance_submit",
+            "memory_maintenance_status",
+            "memory_maintenance_wait",
+            "memory_maintenance_cancel",
+            "memory_maintenance_artifact",
             "memory_worlds",
             "memory_search",
             "memory_capture",

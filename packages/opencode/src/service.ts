@@ -26,9 +26,9 @@ function scope(value: unknown, expected: ScopeSelection): Record<string, unknown
   const item = object(value);
   const actual = selection({ world_id: item.world_id, scope_id: item.id });
   if (scopeKey(actual) !== scopeKey(expected)) throw new Error();
-  if (!["world-shared", "run-shared", "agent-persistent", "invocation-private"].includes(text(item.kind))) throw new Error();
+  if (!["world-shared", "run-shared", "agent-persistent", "thread-private", "invocation-private"].includes(text(item.kind))) throw new Error();
   text(item.name);
-  return pick(item, ["id", "world_id", "kind", "name", "alias", "agent_id", "run_id", "invocation_id", "projection_state"]);
+  return pick(item, ["id", "world_id", "kind", "name", "alias", "agent_id", "run_id", "thread_id", "invocation_id", "projection_state"]);
 }
 
 export class ServiceSession {
@@ -118,7 +118,7 @@ export class ServiceSession {
     if (!selected) throw new MemoryWorldsError("Configure a private writeScope before capture");
     const path = `/v1/worlds/${encodeURIComponent(selected.world_id)}/scopes/${selected.scope_id}`;
     const target = scope(await this.request(path), selected);
-    if (!["agent-persistent", "invocation-private"].includes(text(target.kind))) throw new MemoryWorldsError("Private capture requires an agent-persistent or invocation-private scope");
+    if (!["agent-persistent", "thread-private", "invocation-private"].includes(text(target.kind))) throw new MemoryWorldsError("Private capture requires an agent-persistent, thread-private or invocation-private scope");
     const request = await prepare({ ...payload, scope_id: selected.scope_id }, selected);
     const receipt = object(await this.request(`${path}/episodes`, request));
     const episode = object(receipt.episode);

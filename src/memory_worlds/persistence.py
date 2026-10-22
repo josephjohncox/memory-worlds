@@ -142,6 +142,7 @@ Table(
     Column("invocation_id", Text),
     Column("parent_invocation_id", Text),
     Column("alias", Text),
+    Column("thread_id", Text, unique=True),
 )
 
 Table(
@@ -341,12 +342,25 @@ _BARRIER_LOCK = threading.Lock()
 _GUARDS: ContextVar[dict[str, str]] = ContextVar("memory_worlds_guards", default={})
 
 
+def register_current_schema():
+    """Register every current table before opening or validating authority data."""
+    from .maintenance_job_schema import register as register_jobs
+    from .maintenance_schema import register as register_artifacts
+    from .thread_schema import register as register_threads
+
+    with _BARRIER_LOCK:
+        register_threads(CONTROL_METADATA)
+        register_jobs(CONTROL_METADATA)
+        register_artifacts(CONTROL_METADATA)
+
+
 class Persistence:
     """One current authority, with an explicitly selected durable backend."""
 
     def __init__(
         self, data_dir: Path, database_url: str | None = None, authority_id: str | None = None
     ):
+        register_current_schema()
         self.data_dir = Path(data_dir).expanduser().absolute()
         self.is_postgres = database_url is not None
         self.kind = "postgresql" if self.is_postgres else "sqlite"

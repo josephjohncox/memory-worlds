@@ -1,6 +1,14 @@
 # Memory maintenance and memory-backed context
 
-**Status: proposed. This PR contains a design, not an implementation.**
+**Status: first delivery implemented on the PR branch; later stages remain proposed.**
+
+The [maintenance guide](../../maintenance.md) describes the implemented private
+threads, typed archives, explicit jobs, summary/enrichment-assessment artifacts,
+dependency read fences and bounded lifecycle cleanup. This document retains the
+full design direction. Durable claim revisions, native Pi context replacement,
+scheduled maintenance and an isolated RLM executor remain following work.
+Current expiry applies to thread discovery and write admission; explicit
+source/graph selection remains available under live grants.
 
 [Proposal overview](../../proposals/memory-maintenance.md) ·
 [Current architecture](../../architecture.md) · [Current lifecycle](../../lifecycle.md)

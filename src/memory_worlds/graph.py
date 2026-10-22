@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import threading
 from collections.abc import Mapping
@@ -363,6 +364,18 @@ class GraphitiAdapter:
             f"source type {episode.source_type}; original role {episode.role or 'unspecified'}; "
             "source evidence only; acceptance of claims is not established"
         )
+        if episode.metadata.get("claim_status") == "tentative":
+            source_description += (
+                "; tentative model proposal; preserve uncertainty and disagreement; qualifications "
+                + json.dumps(
+                    {
+                        key: episode.metadata[key]
+                        for key in ("unresolved_questions", "contradictions", "flags")
+                        if key in episode.metadata
+                    },
+                    ensure_ascii=False,
+                )
+            )
         previous = await client.retrieve_episodes(
             reference_time=episode.occurred_at,
             last_n=3,
@@ -822,6 +835,24 @@ class ProjectionWorker:
                                 ): episode.id
                                 for episode in projected_sources
                             }
+                            tentative_sources = {
+                                episode.id: {
+                                    "episode_id": episode.id,
+                                    "claim_status": "tentative",
+                                    **{
+                                        key: episode.metadata[key]
+                                        for key in (
+                                            "unresolved_questions",
+                                            "contradictions",
+                                            "flags",
+                                        )
+                                        if key in episode.metadata
+                                    },
+                                }
+                                for episode in projected_sources
+                                if episode.metadata.get("claim_status") == "tentative"
+                            }
+                            authorized_facts = []
                             for fact in facts:
                                 fact.update(
                                     world_id=current.id,
@@ -830,12 +861,31 @@ class ProjectionWorker:
                                     generation=current.generation,
                                 )
                                 graph_ids = fact.pop("graph_episode_ids", [])
+                                # An edge without its live source closure cannot
+                                # be returned merely because its graph copy exists.
+                                if graph_ids and any(gid not in source_ids for gid in graph_ids):
+                                    continue
                                 fact["source_episode_ids"] = [
                                     source_ids[graph_id]
                                     for graph_id in graph_ids
                                     if graph_id in source_ids
                                 ]
-                            results.extend(facts)
+                                qualifications = [
+                                    tentative_sources[eid]
+                                    for eid in fact["source_episode_ids"]
+                                    if eid in tentative_sources
+                                ]
+                                if qualifications:
+                                    fact["claim_status"] = "tentative"
+                                    fact["source_qualifications"] = qualifications
+                                elif fact.get("record_type") == "entity" and tentative_sources:
+                                    # Entity summaries have no per-source episode
+                                    # mapping; conservatively retain uncertainty.
+                                    fact["claim_status"] = "tentative"
+                                else:
+                                    fact.setdefault("claim_status", "derived-unreviewed")
+                                authorized_facts.append(fact)
+                            results.extend(authorized_facts)
                             assert_live()
                     finally:
                         self.store.persistence.release_lease(lease)

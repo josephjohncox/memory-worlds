@@ -51,3 +51,7 @@ run = 'uv build --no-sources --python "${MEMORY_WORLDS_PYTHON:?}"'
 description = "Run Memory Worlds with locked dependencies; pass its CLI arguments directly"
 raw_args = true
 run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- memory-worlds'
+
+["api:schema"]
+description = "Export the current OpenAPI contract with isolated temporary state"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python scripts/export-openapi.py'

@@ -6,21 +6,27 @@ running installation, and qualify the current contracts without compatibility co
 
 ## First working delivery
 
-- [ ] Thread-private scopes, idempotent thread creation, explicit grants,
+- [x] Thread-private scopes, idempotent thread creation, explicit grants,
   revisions, expiry selection and concurrent append checks.
-- [ ] Bounded typed context bundles, lossless compression, exact digest/coverage
+- [x] Bounded typed context bundles, lossless compression, exact digest/coverage
   receipts and source-journal durability before any context replacement.
-- [ ] Source-side derived-artifact dependencies, immediate read fences on input
+- [x] Source-side derived-artifact dependencies, immediate read fences on input
   retraction/erasure and payload cleanup before erasure completion.
-- [ ] Selectable lightweight/Luna profiles and bounded structured provider calls.
-- [ ] Durable sync/async jobs, fencing, exact accepted-result recovery, current
+- [x] Selectable lightweight/Luna profiles and bounded structured provider calls.
+- [x] Durable sync/async jobs, fencing, exact accepted-result recovery, current
   authorization, cancellation and budget accounting.
-- [ ] Authenticated HTTP, Python client, CLI and appropriate MCP tools.
-- [ ] Current-contract tests, independent reviews, docs, public artifact audit,
-  commit/push and PR update with actual qualified scope.
+- [x] Authenticated HTTP, Python client, CLI and appropriate MCP tools.
+- [x] Current-contract tests, independent reviews, docs and public source audit.
+
+After committing, build the six distributions from the clean commit, push the
+branch and update PR #2 with the actual checks, artifact binding and limits.
+The PR records post-commit qualification; the running installation stays on main.
 
 ## Following deliveries
 
+- [ ] Credential-independent, explicitly granted OIDC thread continuity and
+  audited job-authority renewal; qualify refresh, late login, revocation,
+  delegation and scope-flow behavior without widening agent audiences.
 - [ ] Durable claim revisions and enrichment resolution beyond an assessment artifact.
 - [ ] Native Pi archive-before-compaction handoff and restart reconciliation.
 - [ ] Scheduled expiry/pruning and lifecycle automation under the existing graph

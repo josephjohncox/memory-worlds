@@ -14,7 +14,7 @@ from typing import Literal
 from uuid import UUID, uuid5
 
 from pydantic import AwareDatetime, Field, field_validator, model_validator
-from sqlalchemy import Column, Table, Text, exists, or_, select
+from sqlalchemy import Column, Table, Text, exists, func, or_, select
 
 from .errors import Conflict, Forbidden, NotFound
 from .errors import MemoryError as InvalidRequest
@@ -75,11 +75,35 @@ def visible_clause(store, db, episodes_table=None):
     """SQL expression used by every ordinary source/projection read."""
     episodes = episodes_table if episodes_table is not None else store._table(db, "episodes")
     tombstones = store._table(db, "lifecycle_tombstones")
-    return ~exists(
+    source_live = ~exists(
         select(tombstones.c.source_id)
         .where(tombstones.c.source_id == episodes.c.source_id)
         .correlate(episodes)
     )
+    dependencies = store._table(db, "artifact_dependencies")
+    inputs = store._table(db, "episodes").alias("dependency_input")
+    removed = tombstones.alias("dependency_tombstone")
+    invalid_input = exists(
+        select(dependencies.c.output_episode_id)
+        .select_from(
+            dependencies.outerjoin(
+                inputs, inputs.c.id == dependencies.c.input_episode_id
+            ).outerjoin(removed, removed.c.episode_id == dependencies.c.input_episode_id)
+        )
+        .where(
+            dependencies.c.output_episode_id == episodes.c.id,
+            or_(
+                inputs.c.id.is_(None),
+                inputs.c.digest != dependencies.c.input_digest,
+                removed.c.episode_id.is_not(None),
+            ),
+        )
+        .correlate(episodes)
+    )
+    # Dependency registration contains every ancestor and leaf, so an
+    # intermediate retraction fences descendants without recursive SQL or a
+    # completed cleanup sweep. The immutable source remains authoritative.
+    return source_live & ~invalid_input
 
 
 def assert_source_live(store, db, source_id: str) -> None:
@@ -230,10 +254,43 @@ class EpisodeLifecycle:
             "pending_generations": pending,
             "graph_state": "pending" if pending else "purged",
         }
+        dependent_pending = (
+            self._dependent_count(db, receipt["episode_ids"]) if receipt["action"] == "erase" else 0
+        )
+        result["pending_dependent_records"] = dependent_pending
+        result["dependent_cleanup_state"] = (
+            "not-required"
+            if receipt["action"] == "retract"
+            else "pending"
+            if dependent_pending
+            else "complete"
+        )
         result["erasure_complete"] = (
-            receipt["action"] == "erase" and receipt["source_checkpointed"] and not pending
+            receipt["action"] == "erase"
+            and receipt["source_checkpointed"]
+            and not pending
+            and not dependent_pending
         )
         return result
+
+    def _dependent_query(self, db, episode_ids=None):
+        episodes = self.store._table(db, "episodes")
+        dependencies = self.store._table(db, "artifact_dependencies")
+        query = select(episodes.c.id).join(
+            dependencies, dependencies.c.output_episode_id == episodes.c.id
+        )
+        if episode_ids is not None:
+            query = query.where(dependencies.c.input_episode_id.in_(episode_ids))
+        else:
+            removed = self.store._table(db, "lifecycle_tombstones")
+            query = query.join(
+                removed, removed.c.episode_id == dependencies.c.input_episode_id
+            ).where(removed.c.state == "erased")
+        return query.distinct()
+
+    def _dependent_count(self, db, episode_ids=None):
+        query = self._dependent_query(db, episode_ids).subquery()
+        return db.execute(select(func.count()).select_from(query)).scalar_one()
 
     def preview(self, principal, world_id, scope_id, request: LifecycleRequest) -> dict:
         with self.store._control() as control:
@@ -242,6 +299,7 @@ class EpisodeLifecycle:
             with self.store._world_db(world_id, scope["id"]) as db:
                 rows, _ = self._targets(db, request)
                 generations = self._generations(db, world_id, scope["id"], inventory)
+                dependent_count = self._dependent_count(db, request.episode_ids)
         return {
             "operation_id": str(request.operation_id),
             "action": request.action,
@@ -250,6 +308,7 @@ class EpisodeLifecycle:
             "scope_id": scope["id"],
             "episode_ids": sorted(request.episode_ids),
             "retained_source_records": len(rows),
+            "dependent_source_records": dependent_count,
             "generations_to_purge": generations,
             "writes": False,
         }
@@ -258,6 +317,7 @@ class EpisodeLifecycle:
         with self.store.persistence.maintenance_guard():
             result = self._apply_source(principal, world_id, scope_id, request)
             if request.action == "erase":
+                self._cleanup_dependents(principal, world_id, result["scope_id"], request)
                 # The deletion transaction must be closed before native SQLite
                 # WAL truncation. A failed/busy checkpoint leaves the durable
                 # operation incomplete and retryable, even with no graph data.
@@ -278,6 +338,79 @@ class EpisodeLifecycle:
                         )
                         result = self._view(db, receipt)
             return result
+
+    def _cleanup_dependents(self, principal, world_id, scope_id, request):
+        """Delete one bounded batch; exact operation retries resume the rest.
+
+        Input tombstones already fence every ordinary read. Retaining ID/digest
+        dependency edges preserves descendant fences and does not retain bodies.
+        """
+        with self.store._control() as control:
+            self._authorize(control, principal, world_id, scope_id)
+            with self.store._world_db(world_id, scope_id) as db, self.store._transaction(db):
+                ids = list(
+                    db.execute(
+                        self._dependent_query(db, request.episode_ids)
+                        .order_by(self.store._table(db, "episodes").c.id)
+                        .limit(500)
+                    ).scalars()
+                )
+                if not ids:
+                    return
+                episodes = self.store._table(db, "episodes")
+                tombstones = self.store._table(db, "lifecycle_tombstones")
+                jobs = self.store._table(db, "projection_jobs")
+                artifacts = self.store._table(db, "context_artifacts")
+                audit = self.store._table(db, "audit")
+                now = _now()
+                for row in db.execute(select(episodes).where(episodes.c.id.in_(ids))).mappings():
+                    values = {
+                        "source_id": row["source_id"],
+                        "episode_id": row["id"],
+                        "state": "erased",
+                        "owner_id": row["actor_id"],
+                        "changed_at": now,
+                        "operation_id": str(request.operation_id),
+                    }
+                    existing = db.execute(
+                        select(tombstones.c.source_id).where(tombstones.c.episode_id == row["id"])
+                    ).first()
+                    if existing:
+                        db.execute(
+                            tombstones.update()
+                            .where(tombstones.c.episode_id == row["id"])
+                            .values(**values)
+                        )
+                    else:
+                        db.execute(tombstones.insert().values(**values))
+                    db.execute(
+                        audit.insert().values(
+                            event="erase-dependent",
+                            episode_id=row["id"],
+                            actor_id=principal.user_id,
+                            occurred_at=now,
+                        )
+                    )
+                db.execute(jobs.delete().where(jobs.c.episode_id.in_(ids)))
+                db.execute(artifacts.delete().where(artifacts.c.episode_id.in_(ids)))
+                db.execute(episodes.delete().where(episodes.c.id.in_(ids)))
+                operations = self.store._table(db, "lifecycle_operations")
+                receipt = json.loads(
+                    db.execute(
+                        select(operations.c.receipt).where(
+                            operations.c.id == str(request.operation_id)
+                        )
+                    ).scalar_one()
+                )
+                # A prior batch may already have checkpointed. Reset atomically
+                # with each new deletion so a crash cannot claim WAL cleanup.
+                receipt["source_checkpointed"] = False
+                receipt["dependent_erased_records"] += len(ids)
+                db.execute(
+                    operations.update()
+                    .where(operations.c.id == str(request.operation_id))
+                    .values(receipt=_json(receipt))
+                )
 
     def _apply_source(self, principal, world_id, scope_id, request: LifecycleRequest) -> dict:
         # Freeze all registered writers before taking the namespace inventory.
@@ -338,6 +471,10 @@ class EpisodeLifecycle:
                             db.execute(tombstones.insert().values(**values))
                         db.execute(jobs.delete().where(jobs.c.episode_id == episode_id))
                         if request.action == "erase":
+                            artifacts = self.store._table(db, "context_artifacts")
+                            db.execute(
+                                artifacts.delete().where(artifacts.c.episode_id == episode_id)
+                            )
                             db.execute(episodes.delete().where(episodes.c.id == episode_id))
                         db.execute(
                             audit.insert().values(
@@ -363,6 +500,7 @@ class EpisodeLifecycle:
                         "generations": generations,
                         "source_state": "erased" if request.action == "erase" else "retracted",
                         "source_checkpointed": False,
+                        "dependent_erased_records": 0,
                         "created_at": now,
                         "boundaries": {
                             "published_copies": "separate-authority",
@@ -463,6 +601,8 @@ class EpisodeLifecycle:
                 with self.store._world_db(world_id, sid) as db:
                     table = self.store._table(db, "projection")
                     db.execute(table.update().values(generation=None, state="disabled"))
+            with self.store._world_db(world_id, sid) as db:
+                dependent_pending = self._dependent_count(db)
             return {
                 "authority_id": self.store.authority_id,
                 "world_id": world_id,
@@ -470,6 +610,8 @@ class EpisodeLifecycle:
                 "purged_generations": completed,
                 "failed_generations": failed,
                 "graph_state": "pending" if failed else "purged",
+                "pending_dependent_records": dependent_pending,
+                "dependent_cleanup_state": "pending" if dependent_pending else "complete",
             }
 
 
@@ -712,6 +854,8 @@ class RetentionEngine:
                 plan = json.loads(row["plan"])
         grouped = {}
         outcomes = []
+        source_operations = []
+        cleanup_pending = False
         for target in plan["targets"]:
             if target["kind"] == "episode":
                 grouped.setdefault((target["world_id"], target["scope_id"]), []).append(
@@ -720,7 +864,7 @@ class RetentionEngine:
         for (world_id, sid), episode_ids in grouped.items():
             for offset in range(0, len(episode_ids), 100):
                 child = uuid5(request.operation_id, f"source:{world_id}:{sid}:{offset}")
-                self.lifecycle.apply(
+                result = self.lifecycle.apply(
                     principal,
                     world_id,
                     sid,
@@ -729,6 +873,17 @@ class RetentionEngine:
                         action="erase",
                         episode_ids=episode_ids[offset : offset + 100],
                     ),
+                )
+                pending = result["pending_dependent_records"] > 0
+                cleanup_pending |= pending
+                source_operations.append(
+                    {
+                        "operation_id": str(child),
+                        "world_id": world_id,
+                        "scope_id": sid,
+                        "pending_dependent_records": result["pending_dependent_records"],
+                        "state": "pending" if pending else "source-erased",
+                    }
                 )
         for target in plan["targets"]:
             # Every effect revalidates current administrator authority. A durable
@@ -786,8 +941,15 @@ class RetentionEngine:
                         )
                 else:
                     outcomes.append({**target, "state": "source-erased"})
-        receipt = self._view(plan, request.operation_id, "applied")
+        receipt = self._view(
+            plan, request.operation_id, "pending" if cleanup_pending else "applied"
+        )
         receipt["outcomes"] = outcomes
+        receipt["source_operations"] = source_operations
+        if cleanup_pending:
+            # Keep the frozen plan resumable rather than caching a terminal
+            # receipt while hidden dependent bodies still await bounded cleanup.
+            return receipt
         with self.store._control() as db:
             self.store._admin(db, principal)
             table = self.store._table(db, "retention_operations")

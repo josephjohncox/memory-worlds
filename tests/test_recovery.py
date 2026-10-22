@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from memory_worlds.errors import Conflict, Forbidden, Unauthorized
+from memory_worlds.errors import Conflict, Forbidden, NotFound, Unauthorized
 from memory_worlds.identity_names import CreateIdentity, IdentityRegistry
 from memory_worlds.models import CreateToken, DelegateCredential, EpisodeInput, Role
 from memory_worlds.recovery import backup_authority, restore_authority
@@ -125,3 +125,89 @@ def test_failed_restore_does_not_install_partial_sqlite_authority(tmp_path, monk
         restore_authority(archive, key, tmp_path / "restored")
     assert not (tmp_path / "restored").exists()
     assert not list(tmp_path.glob(".authority-restore-*"))
+
+
+def test_fresh_process_recovers_current_thread_schema_and_dependency_invalidation(tmp_path):
+    import json
+    import subprocess
+    import sys
+    from uuid import uuid4
+
+    from memory_worlds.context_archive import ContextArchive
+    from memory_worlds.context_models import ContextBundleInput, ContextSourceRef
+    from memory_worlds.lifecycle import EpisodeLifecycle, LifecycleRequest
+    from memory_worlds.thread_models import CreateThread
+    from memory_worlds.threads import ThreadService
+
+    store = MemoryStore(tmp_path / "source")
+    world, token = store.bootstrap("alice")
+    principal = store.authenticate(token)
+    thread = ThreadService(store).create(
+        principal, CreateThread(operation_id=uuid4(), world_id=world.id, name="Recoverable thread")
+    )
+    source = store.capture(
+        principal, world.id, note("source", scope_id=thread.scope_id, project=False)
+    ).episode
+    context = ContextArchive(store)
+    bundle = context.archive(
+        principal,
+        thread.id,
+        ContextBundleInput(
+            operation_id=uuid4(),
+            expected_revision=0,
+            entries=[
+                {
+                    "id": "message",
+                    "type": "message",
+                    "role": "user",
+                    "payload": {"text": "Recoverable thread context"},
+                }
+            ],
+            source_refs=[
+                ContextSourceRef(
+                    world_id=world.id,
+                    scope_id=thread.scope_id,
+                    episode_id=source.id,
+                    digest=source.digest,
+                )
+            ],
+        ),
+    )
+    key, archive = tmp_path / "backup.key", tmp_path / "authority.mwauthority"
+    generate_key(key)
+    backup_authority(store, principal, archive, key)
+    recovered = tmp_path / "fresh-process-recovered"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "from pathlib import Path; "
+            "from memory_worlds.recovery import restore_authority; "
+            "import json,sys; "
+            "print(json.dumps(restore_authority(Path(sys.argv[1]),"
+            "Path(sys.argv[2]),Path(sys.argv[3]))))",
+            str(archive),
+            str(key),
+            str(recovered),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout)["authority_id"] == store.authority_id
+    restored = MemoryStore(recovered)
+    restored_context = ContextArchive(restored)
+    assert restored_context.bundle(principal, thread.id, bundle.bundle_id).entries[0].payload == {
+        "text": "Recoverable thread context"
+    }
+    assert ThreadService(restored).get(principal, thread.id).revision == bundle.revision
+    EpisodeLifecycle(restored).apply(
+        principal,
+        world.id,
+        thread.scope_id,
+        LifecycleRequest(operation_id=uuid4(), action="erase", episode_ids=[source.id]),
+    )
+    with pytest.raises(NotFound):
+        restored_context.bundle(principal, thread.id, bundle.bundle_id)

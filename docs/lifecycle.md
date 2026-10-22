@@ -32,9 +32,15 @@ unique episode IDs; retries with the same UUID must use the same action and targ
 | Receipt | `GET /v1/worlds/{world}/scopes/{scope}/lifecycle/{operation_id}` |
 
 The receipt separates source cleanup from graph cleanup. Check `source_state`,
-`source_checkpointed`, `graph_state`, `pending_generations` and `erasure_complete`.
+`dependent_cleanup_state`, `pending_dependent_records`, `source_checkpointed`,
+`graph_state`, `pending_generations` and `erasure_complete`.
 A source commit alone does not establish that external graph data was removed.
 See the [Python examples and receipt contract](reference/lifecycle.md).
+
+Input removal also hides dependent archives and summaries immediately. Erasure
+cleans up at most 500 dependent payloads per apply; repeat the exact operation
+until its pending count is zero. Retention stays pending while a child source
+operation has unfinished dependent cleanup. Models cannot authorize deletion.
 
 ## Finish graph cleanup
 

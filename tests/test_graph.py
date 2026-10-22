@@ -359,6 +359,63 @@ async def test_search_joins_provenance_and_validates_all_worlds_before_query(loc
     assert adapter.searches == []
 
 
+async def test_graph_preserves_tentative_source_qualifications_and_rejects_missing_sources(local):
+    store, world, principal = local
+    tentative = store.capture(
+        principal,
+        world.id,
+        EpisodeInput(
+            source_id="worker-proposal",
+            content="The operating limit may be 40",
+            occurred_at=datetime(2026, 10, 22, tzinfo=UTC),
+            role="assistant",
+            metadata={
+                "claim_status": "tentative",
+                "unresolved_questions": ["Verify the limit"],
+                "contradictions": ["A prior source reports 30"],
+            },
+        ),
+    ).episode
+    evidence = capture(store, world, principal, "ordinary-evidence")
+
+    class QualifiedAdapter(RecordingAdapter):
+        async def search(self, current, generation, query, limit, **options):
+            return [
+                {
+                    "record_type": "fact",
+                    "fact": "tentative limit",
+                    "graph_episode_ids": [graph_episode_id(current, generation, tentative.id)],
+                },
+                {
+                    "record_type": "fact",
+                    "fact": "ordinary evidence",
+                    "graph_episode_ids": [graph_episode_id(current, generation, evidence.id)],
+                },
+                {
+                    "record_type": "fact",
+                    "fact": "orphaned output",
+                    "graph_episode_ids": [graph_episode_id(current, generation, "missing-source")],
+                },
+                {
+                    "record_type": "entity",
+                    "name": "limit",
+                    "summary": "Possible limit",
+                    "graph_episode_ids": [],
+                },
+            ]
+
+    worker = ProjectionWorker(store, QualifiedAdapter())
+    await worker.run_once()
+    results = await worker.search([world], "limit", include_entities=True)
+    assert len(results) == 3
+    assert results[0]["claim_status"] == "tentative"
+    assert results[0]["source_qualifications"][0]["unresolved_questions"] == ["Verify the limit"]
+    assert results[0]["source_qualifications"][0]["contradictions"] == ["A prior source reports 30"]
+    assert results[1]["claim_status"] == "derived-unreviewed"
+    assert results[2]["claim_status"] == "tentative"
+    assert results[2]["source_episode_ids"] == []
+
+
 async def test_actual_graphiti_clients_use_explicit_models_and_namespace(local, monkeypatch):
     pytest.importorskip("graphiti_core")
     import importlib

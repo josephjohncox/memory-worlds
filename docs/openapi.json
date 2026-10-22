@@ -87,6 +87,63 @@
         "title": "AgentContext",
         "type": "object"
       },
+      "ArtifactReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "format": "uuid",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "job_id": {
+            "format": "uuid",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceRef"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "artifact_id",
+          "thread_id",
+          "job_id",
+          "kind",
+          "content",
+          "metadata",
+          "source_refs"
+        ],
+        "title": "ArtifactReceipt",
+        "type": "object"
+      },
       "BackupRequest": {
         "additionalProperties": false,
         "properties": {
@@ -150,6 +207,327 @@
           }
         },
         "title": "BindContext",
+        "type": "object"
+      },
+      "ContextBundle": {
+        "additionalProperties": false,
+        "properties": {
+          "archive_state": {
+            "const": "ready",
+            "default": "ready",
+            "title": "Archive State",
+            "type": "string"
+          },
+          "bundle_id": {
+            "format": "uuid",
+            "title": "Bundle Id",
+            "type": "string"
+          },
+          "coverage": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Coverage",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "title": "Entries",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "omissions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextOmission"
+            },
+            "title": "Omissions",
+            "type": "array"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceRef"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "stored_bytes": {
+            "default": 0,
+            "title": "Stored Bytes",
+            "type": "integer"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "uncompressed_bytes": {
+            "default": 0,
+            "title": "Uncompressed Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "bundle_id",
+          "thread_id",
+          "revision",
+          "digest",
+          "coverage",
+          "source_refs",
+          "entries",
+          "omissions"
+        ],
+        "title": "ContextBundle",
+        "type": "object"
+      },
+      "ContextBundleInput": {
+        "additionalProperties": false,
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/ContextEvent"
+            },
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Entries",
+            "type": "array"
+          },
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "omissions": {
+            "items": {
+              "$ref": "#/components/schemas/ContextOmission"
+            },
+            "maxItems": 200,
+            "title": "Omissions",
+            "type": "array"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceRef"
+            },
+            "maxItems": 100,
+            "title": "Source Refs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation_id",
+          "expected_revision",
+          "entries"
+        ],
+        "title": "ContextBundleInput",
+        "type": "object"
+      },
+      "ContextBundleReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "archive_state": {
+            "const": "ready",
+            "default": "ready",
+            "title": "Archive State",
+            "type": "string"
+          },
+          "bundle_id": {
+            "format": "uuid",
+            "title": "Bundle Id",
+            "type": "string"
+          },
+          "coverage": {
+            "enum": [
+              "complete",
+              "partial"
+            ],
+            "title": "Coverage",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "source_refs": {
+            "items": {
+              "$ref": "#/components/schemas/ContextSourceRef"
+            },
+            "title": "Source Refs",
+            "type": "array"
+          },
+          "stored_bytes": {
+            "default": 0,
+            "title": "Stored Bytes",
+            "type": "integer"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "uncompressed_bytes": {
+            "default": 0,
+            "title": "Uncompressed Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "bundle_id",
+          "thread_id",
+          "revision",
+          "digest",
+          "coverage",
+          "source_refs"
+        ],
+        "title": "ContextBundleReceipt",
+        "type": "object"
+      },
+      "ContextEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "type": {
+            "enum": [
+              "message",
+              "tool-call",
+              "tool-result",
+              "custom"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "payload"
+        ],
+        "title": "ContextEvent",
+        "type": "object"
+      },
+      "ContextOmission": {
+        "additionalProperties": false,
+        "properties": {
+          "entry_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Entry Id",
+            "type": "string"
+          },
+          "reason": {
+            "enum": [
+              "excluded",
+              "unsupported",
+              "unavailable",
+              "redacted"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "entry_id",
+          "reason"
+        ],
+        "title": "ContextOmission",
+        "type": "object"
+      },
+      "ContextSourceRef": {
+        "additionalProperties": false,
+        "properties": {
+          "digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "episode_id": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Episode Id",
+            "type": "string"
+          },
+          "scope_id": {
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
+          },
+          "world_id": {
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "World Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "world_id",
+          "scope_id",
+          "episode_id",
+          "digest"
+        ],
+        "title": "ContextSourceRef",
         "type": "object"
       },
       "CreateIdentity": {
@@ -287,6 +665,18 @@
               }
             ],
             "title": "Run Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
           }
         },
         "required": [
@@ -294,6 +684,94 @@
           "name"
         ],
         "title": "CreateScope",
+        "type": "object"
+      },
+      "CreateThread": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "world_id": {
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "World Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "world_id",
+          "name"
+        ],
+        "title": "CreateThread",
         "type": "object"
       },
       "CreateToken": {
@@ -974,6 +1452,178 @@
         "title": "LifecycleRequest",
         "type": "object"
       },
+      "MaintenanceReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "summarize",
+              "assess-enrichment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "profile": {
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "title": "Profile",
+            "type": "string"
+          },
+          "replayed": {
+            "default": false,
+            "title": "Replayed",
+            "type": "boolean"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "result_artifact_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Artifact Id"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled",
+              "blocked",
+              "stale"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "unresolved_effects": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Effects",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage_uncertain": {
+            "default": false,
+            "title": "Usage Uncertain",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "operation_id",
+          "thread_id",
+          "kind",
+          "profile",
+          "state",
+          "attempts",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MaintenanceReceipt",
+        "type": "object"
+      },
+      "MaintenanceRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Bundle Ids",
+            "type": "array"
+          },
+          "kind": {
+            "default": "summarize",
+            "enum": [
+              "summarize",
+              "assess-enrichment"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "operation_id": {
+            "format": "uuid",
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "profile": {
+            "default": "lightweight",
+            "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+            "title": "Profile",
+            "type": "string"
+          },
+          "thread_id": {
+            "format": "uuid",
+            "title": "Thread Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "thread_id",
+          "bundle_ids"
+        ],
+        "title": "MaintenanceRequest",
+        "type": "object"
+      },
       "MembershipUpdate": {
         "additionalProperties": false,
         "properties": {
@@ -1514,6 +2164,18 @@
             ],
             "title": "Run Id"
           },
+          "thread_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
           "world_id": {
             "pattern": "^[a-zA-Z0-9_-]{1,100}$",
             "title": "World Id",
@@ -1587,7 +2249,8 @@
           "world-shared",
           "run-shared",
           "agent-persistent",
-          "invocation-private"
+          "invocation-private",
+          "thread-private"
         ],
         "title": "ScopeKind",
         "type": "string"
@@ -1756,6 +2419,130 @@
           "query"
         ],
         "title": "SearchRequest",
+        "type": "object"
+      },
+      "Thread": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "alias": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alias"
+          },
+          "authority_id": {
+            "title": "Authority Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "creator_credential_id": {
+            "title": "Creator Credential Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "head_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Head Digest",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner_id": {
+            "title": "Owner Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "scope_id": {
+            "format": "uuid",
+            "title": "Scope Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "closed",
+              "expired",
+              "retracted"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "world_id": {
+            "pattern": "^[a-zA-Z0-9_-]{1,100}$",
+            "title": "World Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "authority_id",
+          "world_id",
+          "scope_id",
+          "owner_id",
+          "creator_credential_id",
+          "name",
+          "revision",
+          "head_digest",
+          "created_at",
+          "state"
+        ],
+        "title": "Thread",
         "type": "object"
       },
       "UpdateAlias": {
@@ -2630,6 +3417,266 @@
         "summary": "Rename Identity"
       }
     },
+    "/v1/maintenance/artifacts/{artifact_id}": {
+      "get": {
+        "operationId": "maintenance_artifact_v1_maintenance_artifacts__artifact_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArtifactReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Maintenance Artifact"
+      }
+    },
+    "/v1/maintenance/jobs": {
+      "get": {
+        "operationId": "list_maintenance_v1_maintenance_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MaintenanceReceipt"
+                  },
+                  "title": "Response List Maintenance V1 Maintenance Jobs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Maintenance"
+      },
+      "post": {
+        "operationId": "submit_maintenance_v1_maintenance_jobs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaintenanceRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit Maintenance"
+      }
+    },
+    "/v1/maintenance/jobs/{job_id}": {
+      "get": {
+        "operationId": "maintenance_status_v1_maintenance_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Maintenance Status"
+      }
+    },
+    "/v1/maintenance/jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_maintenance_v1_maintenance_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel Maintenance"
+      }
+    },
+    "/v1/maintenance/jobs/{job_id}/wait": {
+      "post": {
+        "operationId": "wait_maintenance_v1_maintenance_jobs__job_id__wait_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeout_seconds",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 60,
+              "minimum": 0,
+              "title": "Timeout Seconds",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaintenanceReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Wait Maintenance"
+      }
+    },
     "/v1/me": {
       "get": {
         "operationId": "me_v1_me_get",
@@ -3038,6 +4085,267 @@
           }
         ],
         "summary": "Search"
+      }
+    },
+    "/v1/threads": {
+      "get": {
+        "operationId": "list_threads_v1_threads_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "world_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "World Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_expired",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Expired",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Thread"
+                  },
+                  "title": "Response List Threads V1 Threads Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Threads"
+      },
+      "post": {
+        "operationId": "create_thread_v1_threads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateThread"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Thread"
+      }
+    },
+    "/v1/threads/{thread_id}": {
+      "get": {
+        "operationId": "get_thread_v1_threads__thread_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Thread"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Thread"
+      }
+    },
+    "/v1/threads/{thread_id}/bundles": {
+      "post": {
+        "operationId": "archive_context_v1_threads__thread_id__bundles_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContextBundleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextBundleReceipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Archive Context"
+      }
+    },
+    "/v1/threads/{thread_id}/bundles/{bundle_id}": {
+      "get": {
+        "operationId": "get_context_bundle_v1_threads__thread_id__bundles__bundle_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Thread Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bundle_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Bundle Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ContextBundle"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Context Bundle"
       }
     },
     "/v1/users": {

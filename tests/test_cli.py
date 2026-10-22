@@ -407,6 +407,14 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
             "memory_context",
             "memory_bind_context",
             "memory_episodes",
+            "memory_threads",
+            "memory_thread",
+            "memory_context_bundle",
+            "memory_maintenance_submit",
+            "memory_maintenance_status",
+            "memory_maintenance_wait",
+            "memory_maintenance_cancel",
+            "memory_maintenance_artifact",
         }
         discovered = await client.call_tool("memory_discover", {})
         assert not discovered.is_error
