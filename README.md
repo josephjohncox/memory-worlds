@@ -74,6 +74,7 @@ sharing rule for selected information, with exclusions. See [agent scopes](docs/
 | --- | --- |
 | Add native Pi tools, hooks and persistent agent contexts | [Pi extension](packages/pi/README.md) |
 | Connect Python, CLI or MCP clients | [Agent clients](docs/agents.md) |
+| Add scoped memory to LangGraph workflows and controlled Pi tracing | [LangGraph integration](docs/langgraph.md) |
 | Discover accessible worlds, scopes and mounts with an ordinary token | [Discovery](docs/discovery.md) |
 | Connect agents on another machine | [SSH access](docs/remote-access.md) |
 | Import extracted ChatGPT/Claude chats or exported documents | [Directory import](docs/chat-import.md) |

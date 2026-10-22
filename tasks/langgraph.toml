@@ -1,0 +1,8 @@
+["langgraph:test"]
+description = "Test scoped LangGraph lifecycle, checkpoints, retries, and controlled tracing"
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- pytest -q tests/test_langgraph*.py'
+
+["langgraph:example"]
+description = "Run the durable recall, private capture, and approved publication workflow"
+raw_args = true
+run = 'uv run --frozen --all-extras --python "${MEMORY_WORLDS_PYTHON:?}" -- python examples/langgraph/scoped_workflow.py'

@@ -99,8 +99,68 @@ references. `/memory source QUERY` searches durable records explicitly.
   graph actions, curation, coverage and limitations.
 
 Rich Pi integrations can import `memory-worlds-pi/client`, `/orchestrator`,
-`/imports`, `/graph`, `/curation`, `/sharing` and `/spool`. The orchestrator issues
+`/imports`, `/graph`, `/curation`, `/sharing`, `/spool` and `/langsmith`. The orchestrator issues
 delegated child credentials and starts fresh Pi sessions with an explicit brief
 and selected evidence. Parents and siblings receive no automatic access to a
 child's invocation-private notes. See the
 [SDK example](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/pi.md#native-subagents-and-review).
+
+## Workflows and tracing
+
+LangGraph manages workflow state and checkpoints. Memory Worlds supplies the
+authorized knowledge that workers retain or publish. See the
+[LangGraph guide](https://github.com/josephjohncox/memory-worlds/blob/main/docs/langgraph.md)
+for Python runtime context, durable capture retries and the runnable example.
+
+The optional `/langsmith` integration uses the official
+`@langchain/langsmith-pi-extension` **0.2.1** with its supported LangSmith SDK
+**0.10.13**. These are optional peers; install them in the host application when
+using this export. The repository lockfile includes both for qualification.
+The factory is explicit and sends identifiers only by default:
+
+```ts
+import { createLangSmithPiTracing } from "memory-worlds-pi/langsmith";
+import { createIsolatedPiSession, runPiSubagent } from "memory-worlds-pi/orchestrator";
+
+const tracing = await createLangSmithPiTracing({
+  endpoint: "https://api.smith.langchain.com",
+  apiKey: process.env.LANGSMITH_API_KEY!,
+  correlation: { world_id: privateWorldId, run_id: runId },
+  // parentTrace: a bounded `langsmith-trace` header from the Python workflow,
+});
+const result = await runPiSubagent(parentClient, request, runtime =>
+  createIsolatedPiSession(runtime, { modelRuntime, model, tracing }),
+);
+```
+
+Without `tracing`, isolated workers load no tracing extension. With this factory,
+the official extension runs behind a client that strips prompts, model payloads,
+tool arguments, tool results, events, error text and upstream metadata. Only the
+explicit correlation IDs, span structure and timings leave the process. Baggage,
+replica destinations and ambient LangSmith projects are excluded. To trace an
+approved excerpt, explicitly select `mode: "selected-content"` and a bounded
+`selectedContent: { finding: "approved excerpt" }`; the remaining session content
+is still stripped. This policy applies to this factory. Loading the upstream
+extension separately can send full conversation and tool bodies.
+
+Trusted workflow tools must record exposure before returning findings to Pi:
+
+```ts
+const memory = registerMemoryWorlds(pi);
+// Inside the trusted workflow tool's execute callback, before returning text:
+const result = await runWorkflow();
+await memory.recordWorkflowExposure(ctx, result.exposure);
+return { content: [{ type: "text", text: result.text }], details: {} };
+```
+
+The exposure envelope is `{ authority_id, read_scopes, complete }`. Use provenance
+from the trusted adapter, never a model-authored claim that information is safe.
+The controller records it in the session ledger and checks the live authority.
+Unknown, incomplete, foreign or malformed exposure disables automatic capture and
+sharing until a clean session. Recording exposure grants no access or publication
+permission. Arbitrary tool results are not automatically imported into this ledger.
+
+`mise run pi:test` qualifies both extensions in Pi **1.3.0**, using a synthetic
+model and a loopback LangSmith collector. It verifies memory-tool execution,
+durable exposure markers, nested trace IDs and absence of private content from
+traces. It does not call a model provider or upload traces to LangSmith.

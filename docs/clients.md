@@ -7,6 +7,11 @@ API. Each connects with an ordinary user or agent credential; no client needs
 the operator token. Native integrations add harness-specific tools and behavior
 on top of the same authorized service.
 
+For workflow execution, use the [LangGraph adapter](langgraph.md). It keeps clients
+in runtime context, preserves capture intents across retries and carries scope
+exposure through trusted worker handoffs. Pi can explicitly compose the official
+LangSmith tracing extension with the same memory service.
+
 | Harness | Integration | Behavior |
 | --- | --- | --- |
 | [Pi](../packages/pi/README.md) | Native extension | Tools, slash commands, evidence rendering, scoped subagents and optional session capture/sharing |

@@ -208,6 +208,32 @@ test("actual native Pi child factory loads no ambient files, extensions, skills 
   } finally { await child?.dispose(); await rm(folder, { recursive: true, force: true }); }
 });
 
+test("optional tracing flush failures preserve actual isolated Pi findings and delegated cleanup", async () => {
+  const [{ ModelRuntime }, { fauxProvider, fauxAssistantMessage }, { mkdtemp, rm }, { join }, { tmpdir }] = await Promise.all([
+    import("@earendil-works/pi-coding-agent"), import("@earendil-works/pi-ai"), import("node:fs/promises"), import("node:path"), import("node:os"),
+  ]);
+  const folder = await mkdtemp(join(tmpdir(), "mw-isolated-trace-failure-")); let child, flushes = 0;
+  try {
+    const modelRuntime = await ModelRuntime.create({ authPath: join(folder, "auth.json"), modelsPath: null, modelsStorePath: join(folder, "catalog.json"), allowModelNetwork: false, refreshOnCreate: false });
+    const provider = fauxProvider({ provider: "isolated-trace-failure-fixture", models: [{ id: "synthetic-model", input: ["text"] }] });
+    provider.setResponses([() => fauxAssistantMessage("Selected finding with reference"), () => fauxAssistantMessage("Selected finding with reference")]);
+    modelRuntime.registerNativeProvider(provider.provider);
+    const model = modelRuntime.getModel("isolated-trace-failure-fixture", "synthetic-model"); assert(model);
+    const tracing = { extensionFactory: async () => {}, flush: async () => { flushes++; throw new Error("synthetic-private-tracing-diagnostic"); } };
+    const options = { modelRuntime, model, memoryTools: false, tracing };
+    child = await createIsolatedPiSession({ context, privateScope, client: {}, prompt: "Explicit task" }, options);
+    await child.prompt("Return the selected finding.");
+    assert.equal(child.getLastAssistantText(), "Selected finding with reference");
+    await child.dispose(); child = undefined;
+    assert.equal(flushes, 1);
+    const { parent, revoked } = parentFixture();
+    const result = await runPiSubagent(parent, { task: "Inspect bearing", privateWorldId: "personal", grants: [] }, runtime => createIsolatedPiSession(runtime, options));
+    assert.equal(result.result, "Selected finding with reference");
+    assert.equal(flushes, 2); assert.deepEqual(revoked, ["child"]);
+    assert(!JSON.stringify(result).includes("synthetic-private-tracing-diagnostic"));
+  } finally { await child?.dispose(); await rm(folder, { recursive: true, force: true }); }
+});
+
 test("an actual isolated Pi model discovers through only its delegated client without parent credentials or discovery writes", async () => {
   const [{ ModelRuntime }, { fauxProvider, fauxAssistantMessage, fauxToolCall, getCurrentTools }, { mkdtemp, rm }, { join }, { tmpdir }] = await Promise.all([
     import("@earendil-works/pi-coding-agent"), import("@earendil-works/pi-ai"), import("node:fs/promises"), import("node:path"), import("node:os"),
