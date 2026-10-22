@@ -21,6 +21,15 @@ export interface ExtensionDependencies {
   review?: (selected: readonly MemoryProposal[], signal: AbortSignal) => Promise<unknown>;
   classifySharing?: (ctx: ExtensionContext, selected: readonly SharingCandidate[], settings: SharingSettings, signal: AbortSignal) => Promise<SharingDecision[]>;
 }
+export interface WorkflowExposure {
+  authority_id: string;
+  read_scopes: ScopeSelection[];
+  complete: boolean;
+}
+export interface MemoryWorldsController {
+  /** A trusted worker wrapper calls this before returning selected findings to Pi. */
+  recordWorkflowExposure(ctx: ExtensionContext, exposure: WorkflowExposure): Promise<void>;
+}
 const HELP = "/memory status | discover [WORLD] | worlds | read WORLD [SCOPE]|none | target WORLD SCOPE|off | scopes WORLD | world-alias WORLD NAME|none | scope-alias WORLD SCOPE NAME|none | alias project|global WORLD SCOPE | agent UUID|@alias | run UUID|@alias|off | identities agent|run|invocation | identity KIND create ALIAS NAME | identity KIND name REF NAME | identity KIND alias REF ALIAS|none | import DIRECTORY [--preview] [--format FORMAT] [--source-timezone ZONE] [--fallback-timestamp ISO] [--all-branches] [--source-only] | share WORLD SCOPE TEXT | sharing private|review WORLD SCOPE|auto WORLD SCOPE|pending|approve ID|dismiss ID|retry | capture on|off|TEXT | search QUERY | source QUERY | mounts | mount MOUNT,...|none | publish MOUNT WORLD TEXT | deliveries";
 const CAPTURE_INTENT_TYPE = "memory-worlds:capture-intent:v1";
 const PUBLICATION_INTENT_TYPE = "memory-worlds:publication-intent:v1";
@@ -87,7 +96,7 @@ async function parentExposure(path: string | undefined): Promise<{ authorities: 
   return { authorities: [...authorities], scopes: [...scopes] };
 }
 
-export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDependencies = {}): void {
+export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDependencies = {}): MemoryWorldsController {
   let config: MemoryConfig | undefined;
   let client: MemoryWorldsClient | undefined;
   let spool: MemorySpool | undefined;
@@ -746,6 +755,23 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     parameters: Type.Object({}),
     execute: async (_id, _params, _abort, _update, ctx) => ({ content: [{ type: "text", text: JSON.stringify(await status(ctx)) }], details: {} }),
   });
+  return {
+    recordWorkflowExposure: async (ctx, exposure) => {
+      const current = ready().state;
+      try {
+        if (!exposure || Object.keys(exposure).some(key => !["authority_id", "read_scopes", "complete"].includes(key)) || exposure.complete !== true || typeof exposure.authority_id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(exposure.authority_id) || !Array.isArray(exposure.read_scopes) || exposure.read_scopes.length > 50) throw new Error("Unknown workflow exposure");
+        const identity = await ready().client.identity(signal(ctx));
+        const scopes = exposure.read_scopes.map(scopeSelection);
+        if (identity.authority_id !== exposure.authority_id) throw new Error("Foreign workflow exposure");
+        await markExposure(ctx, [exposure.authority_id], scopes.map(scope => `${exposure.authority_id}/${scopeKey(scope)}`));
+      } catch {
+        exposureUnknown = true; current.captureEnabled = false;
+        pi.appendEntry(EXPOSURE_TYPE, { exposedAuthorities: current.exposedAuthorities, exposedScopes: current.exposedScopes, exposureUnknown: true });
+        save(); paint(ctx);
+        ctx.ui.notify("Workflow exposure is unknown; automatic capture and sharing require a clean session.", "warning");
+      }
+    },
+  };
 }
 
 export default function memoryWorlds(pi: ExtensionAPI): void { registerMemoryWorlds(pi); }

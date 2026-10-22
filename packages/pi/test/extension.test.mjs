@@ -47,8 +47,8 @@ function fixture(configOverrides = {}, dependencies = {}) {
     publish: async input => { publications.push(input); return { id: "delivery", state: "pending" }; },
   };
   const config = parseConfig({ writeScope: { world_id: "private", scope_id: privateScope }, readScopes: [{ world_id: "private", scope_id: privateScope }], ...configOverrides }, {});
-  registerMemoryWorlds(pi, { config: async () => config, client: () => client, ...dependencies });
-  return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
+  const controller = registerMemoryWorlds(pi, { config: async () => config, client: () => client, ...dependencies });
+  return { pi, controller, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
 }
 
 function usabilityClient(f) {
@@ -701,4 +701,46 @@ test("malformed current session scope bindings fail closed", () => {
   const malformed = { ...fallback, captureEnabled: true, readScopes: [{ world_id: "private", scope_id: "invalid" }] };
   const entry = { type: "custom", customType: STATE_TYPE, data: malformed };
   assert.throws(() => restoreState([entry], [entry], fallback), /Invalid scope/);
+});
+
+test("trusted workflow findings record exposure before return and stop unsafe automatic capture", async () => {
+  const f = fixture({ automaticCapture: true });
+  await f.run("session_start", { reason: "startup" });
+  assert.equal(f.entries.filter(entry => entry.customType === STATE_TYPE).at(-1).data.captureEnabled, true);
+  await f.controller.recordWorkflowExposure(f.ctx, { authority_id: "a", read_scopes: [{ world_id: "private", scope_id: siblingScope }], complete: true });
+  const marker = f.entries.filter(entry => entry.customType === EXPOSURE_TYPE).at(-1).data;
+  assert(marker.exposedScopes.includes(`a/private/${siblingScope}`));
+  assert.match(f.widgets.get("memory-worlds"), /capture off/);
+  assert.equal(f.captures.length, 0);
+});
+
+test("unknown workflow exposure survives subsequent complete results and session reload", async () => {
+  const f = fixture({ automaticCapture: true });
+  await f.run("session_start", { reason: "startup" });
+  await f.controller.recordWorkflowExposure(f.ctx, { authority_id: "a", read_scopes: [], complete: false });
+  await f.controller.recordWorkflowExposure(f.ctx, { authority_id: "a", read_scopes: [], complete: true });
+  await f.run("session_start", { reason: "resume" });
+  await f.command("capture on");
+  assert.match(f.widgets.get("memory-worlds"), /exposure unknown/);
+  assert.match(f.widgets.get("memory-worlds"), /capture off/);
+  assert(f.notices.some(item => /clean session/i.test(item.text)));
+});
+
+test("foreign, malformed and unavailable worker exposure fail closed without leaking diagnostics", async () => {
+  for (const exposure of [
+    { authority_id: "foreign", read_scopes: [], complete: true },
+    { authority_id: "a", read_scopes: [{ world_id: "private", scope_id: "not-a-uuid" }], complete: true },
+    { authority_id: "a", read_scopes: Array.from({ length: 51 }, () => ({ world_id: "private", scope_id: privateScope })), complete: true },
+  ]) {
+    const f = fixture({ automaticCapture: true });
+    await f.run("session_start", { reason: "startup" });
+    await f.controller.recordWorkflowExposure(f.ctx, exposure);
+    assert.equal(f.entries.filter(entry => entry.customType === EXPOSURE_TYPE).at(-1).data.exposureUnknown, true);
+    assert.match(f.widgets.get("memory-worlds"), /capture off/);
+  }
+  const f = fixture(); await f.run("session_start", { reason: "startup" });
+  f.client.identity = async () => { throw new Error("synthetic-private-credential-diagnostic"); };
+  await f.controller.recordWorkflowExposure(f.ctx, { authority_id: "a", read_scopes: [], complete: true });
+  assert(!JSON.stringify(f.entries).includes("synthetic-private-credential-diagnostic"));
+  assert(!JSON.stringify(f.notices).includes("synthetic-private-credential-diagnostic"));
 });

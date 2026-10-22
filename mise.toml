@@ -1,7 +1,7 @@
 min_version = "2026.10.17"
 
 [task_config]
-includes = ["tasks/python.toml", "tasks/pi.toml", "tasks/opencode.toml", "tasks/deploy.toml", "tasks/artifacts.toml", "tasks/qualification.toml", "tasks/operations.toml", "tasks/setup.toml"]
+includes = ["tasks/python.toml", "tasks/pi.toml", "tasks/opencode.toml", "tasks/langgraph.toml", "tasks/deploy.toml", "tasks/artifacts.toml", "tasks/qualification.toml", "tasks/operations.toml", "tasks/setup.toml"]
 
 [tool_config]
 locked = true

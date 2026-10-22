@@ -41,7 +41,7 @@ FORBIDDEN_PARTS = {
 FORBIDDEN_NAMES = (
     "ChatGPT-*.json",
     "conversations*.json",
-    "*.sqlite3*",
+    "*.sqlite*",
     "*.mworld",
     "*.mwa",
     "*.mwauthority",
@@ -62,6 +62,7 @@ SOURCE_ROOTS = {
     "docs",
     "deploy",
     "scripts",
+    "examples",
     "packages",
     "plugins",
     ".github",

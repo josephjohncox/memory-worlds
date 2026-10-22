@@ -25,6 +25,11 @@ dependencies = [
 [project.optional-dependencies]
 neptune = ["graphiti-core[neptune]==0.31.2"]
 mcp = ["mcp>=2.3,<3"]
+langgraph = [
+  "langgraph==1.2.16",
+  "langgraph-checkpoint-sqlite==3.1.2",
+  "langsmith==0.14.12",
+]
 
 [dependency-groups]
 dev = ["pytest>=9.1.1,<10", "pytest-asyncio>=1.4,<2", "ruff>=0.17.1,<1", "PyYAML>=6.0.3,<7"]
@@ -38,7 +43,7 @@ packages = ["src/memory_worlds"]
 [tool.hatch.build.targets.sdist]
 include = [
   "/AGENTS.md",
-  "/src", "/tests", "/docs", "/deploy", "/scripts", "/packages/pi/src", "/packages/pi/test",
+  "/src", "/tests", "/docs", "/deploy", "/scripts", "/examples", "/packages/pi/src", "/packages/pi/test",
   "/packages/pi/package.json", "/packages/pi/package-lock.json", "/packages/pi/tsconfig.json",
   "/packages/pi/README.md", "/packages/pi/LICENSE", "/pyproject.toml", "/README.md", "/LICENSE", "/uv.lock",
   "/packages/opencode/src", "/packages/opencode/test", "/packages/opencode/package.json",

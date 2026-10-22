@@ -12,6 +12,7 @@ installation path that matches your use, then add clients and shared access.
 - [Pi extension](../packages/pi/README.md): installation, configuration and first use.
 - [Coding-agent integrations](clients.md): Pi, Codex, Claude Code and OpenCode connections from one applied setup.
 - [Agent clients](agents.md): Python, CLI and MCP access.
+- [LangGraph workflows](langgraph.md): runtime memory, durable retries, worker provenance and controlled LangSmith tracing.
 - [Discovery](discovery.md): find authorized worlds, scopes, aliases and mounts.
 
 ## Work with memory
