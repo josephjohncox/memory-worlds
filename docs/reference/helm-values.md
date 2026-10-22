@@ -11,7 +11,8 @@ Secrets. The chart never provisions an external database or cloud resources.
 | `replicaCount` | `1` | SQLite requires one owner; PostgreSQL supports one to 32 API replicas |
 | `image.repository`, `image.tag`, `image.digest` | `memory-worlds`, `local`, empty | API image and optional immutable digest |
 | `imagePullSecrets` | `[]` | Existing registry Secrets used by workloads |
-| `runtime.existingSecret` | empty, required | Explicit provider/model and optional OIDC settings |
+| `runtime.existingSecret` | empty, required | Explicit provider/model settings and credentials |
+| `organization.existingConfigMap`, `configKey` | empty, `organization.toml` | Optional organization file for OIDC, shared spaces and group-role bindings |
 | `graph.backend` | `falkordb` | Graphiti backend; experimental `neptune` or maintenance `disabled` |
 | `storage.backend` | `sqlite` | SQLite StatefulSet or stateless PostgreSQL Deployment |
 | `storage.postgres.existingSecret`, `urlKey` | empty, `database-url` | Existing Secret with the PostgreSQL URL |
@@ -44,10 +45,24 @@ Secrets. The chart never provisions an external database or cloud resources.
 
 ## Shared identity, router, and ingress
 
-OIDC settings use `runtime.existingSecret`, including issuer, audience, JWKS URL,
-and optional group-to-world mappings. World authorization remains independent
-of OIDC authentication. See [OIDC setup](../oidc-okta.md) for user identity and [sharing](../sharing.md)
-for publication contracts.
+Use one [organization TOML](organization.md) for OIDC identity, shared spaces,
+role profiles and group bindings. Reference an existing ConfigMap:
+
+```yaml
+organization:
+  existingConfigMap: memory-worlds-organization
+  configKey: organization.toml
+```
+
+The chart mounts that key read-only at
+`/etc/memory-worlds/organization/organization.toml` and sets
+`MEMORY_WORLDS_ORGANIZATION_FILE`. The file contains no tokens or client secrets.
+Keep model credentials in `runtime.existingSecret`. Changing ConfigMap contents
+requires an explicit API rollout. Follow [company/team setup](../corporate-access.md)
+for validation and deployment and [Okta setup](../oidc-okta.md) for the provider.
+
+Group policy grants access; [publication](../sharing.md) and
+[per-chat sharing consent](../chat-sharing.md) remain separate.
 
 For the router, enable `router.enabled` and reference existing Secrets through
 `router.mountsExistingSecret` and `router.tokensExistingSecret`. The first must
@@ -222,8 +237,9 @@ operator-owned claims instead of claim templates. Claims must support the
 workload's ownership and filesystem semantics. Never share one data claim between
 releases or put SQLite WAL on NFS/RWX storage.
 
-Secret contents are not hashed into pod annotations. Environment Secret changes
-and single-file `subPath` key/CA rotations require a rollout. Coordinate database
+External ConfigMap and Secret contents are not hashed into pod annotations.
+Organization policy updates, environment Secret changes and single-file
+`subPath` key/CA rotations require a rollout. Coordinate database
 password changes between the API and graph workloads.
 
 ## Validation

@@ -1,0 +1,29 @@
+{
+  "name": "memory-worlds",
+  "version": "0.3.0",
+  "description": "Scoped memory discovery, recall and explicit capture through Memory Worlds",
+  "author": {"name": "Memory Worlds contributors"},
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/josephjohncox/memory-worlds/blob/main/docs/clients.md",
+  "repository": "https://github.com/josephjohncox/memory-worlds",
+  "userConfig": {
+    "runtime_python": {
+      "type": "file",
+      "title": "Memory Worlds Python interpreter",
+      "description": "Absolute Python path in the installed Memory Worlds environment, including its MCP extra.",
+      "required": true
+    },
+    "url": {
+      "type": "string",
+      "title": "Memory Worlds API",
+      "description": "Local loopback, SSH tunnel or HTTPS service URL.",
+      "default": "http://127.0.0.1:8787"
+    },
+    "token_file": {
+      "type": "file",
+      "title": "Agent credential file",
+      "description": "Absolute path to an owned private routine agent token file. Do not use an operator credential.",
+      "required": true
+    }
+  }
+}

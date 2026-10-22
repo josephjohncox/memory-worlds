@@ -75,6 +75,10 @@ class ProviderSettings(BaseModel):
         return self
 
 
+class EmbeddingSettings(ProviderSettings):
+    batch_size: int = Field(default=1, ge=1, le=2048, strict=True)
+
+
 class CorporateSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str
@@ -131,7 +135,7 @@ class SetupConfig(BaseModel):
     port: int = Field(default=8787, ge=1024, le=65535, strict=True)
     graph_port: int = Field(default=16379, ge=1024, le=65535, strict=True)
     extraction: ProviderSettings
-    embedding: ProviderSettings
+    embedding: EmbeddingSettings
     embedding_dimensions: int = Field(default=1536, ge=1, le=65536, strict=True)
     pi_profiles: bool = Field(default=True, strict=True)
     mcp_profiles: bool = Field(default=False, strict=True)

@@ -231,6 +231,7 @@ def oidc_discovery(identity):
         ),
     )
     issued_at = time.time() - 30
+    auth.reconcile()
     bearer = mint(groups=["data", "employees"], iat=issued_at)
     alice = auth.authenticate(bearer)
     bob = auth.authenticate(mint("bob", groups=["data", "employees"]))

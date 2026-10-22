@@ -4,8 +4,8 @@ Persistent memory for agents, with private work and shared knowledge in separate
 scopes. Run one local service for your agents, connect remote agents through SSH,
 or connect your local service to team and company worlds.
 
-Agents use authenticated HTTP, a Python client, the CLI, optional MCP, or the
-native Pi extension. SQLite stores local source journals; PostgreSQL supports
+Agents use authenticated HTTP, a Python client, the CLI, MCP, or native Pi and
+OpenCode integrations. SQLite stores local source journals; PostgreSQL supports
 shared deployments. Graphiti extracts and retrieves knowledge through FalkorDB.
 Source receipts record durable storage, with graph extraction tracked separately.
 
@@ -29,7 +29,7 @@ mise run setup -- apply
 mise run setup -- run
 ```
 
-The API binds to loopback. Agents use their own generated credentials; the local
+The API binds to loopback. Agents use generated routine credentials; the local
 operator credential stays with you. Ctrl-C stops the API and retains the graph.
 Model processing uses the providers you configure.
 
@@ -79,7 +79,9 @@ sharing rule for selected information, with exclusions. See [agent scopes](docs/
 | Import extracted ChatGPT/Claude chats or exported documents | [Directory import](docs/chat-import.md) |
 | Export memory or sync a completed backup to cloud storage | [Portable archives](docs/portable-archives.md) and [authority recovery](docs/recovery.md) |
 | Deploy a shared service with Helm, kind or PostgreSQL/RDS | [Deployments](docs/deployments.md) |
-| Configure Okta and team group mappings | [OIDC and Okta](docs/oidc-okta.md) |
+| Configure company spaces, roles and groups | [Organization access](docs/corporate-access.md) |
+| Connect Pi, Codex, Claude Code or OpenCode | [Coding-agent integrations](docs/clients.md) |
+| Configure the Okta identity provider | [OIDC and Okta](docs/oidc-okta.md) |
 
 The [documentation home](docs/README.md) links the architecture, configuration
 references, operating procedures and contributor guides. The HTTP API is available
@@ -95,7 +97,7 @@ mise run check
 ```
 
 See [development](docs/development.md) for the locked toolchain and test tasks,
-[builds and artifacts](docs/releases.md) for Python/Pi/Helm packages and container
+[builds and artifacts](docs/releases.md) for service, client and Helm packages and container
 images, and [validation](docs/validation.md) for recorded checks and their limits.
 
 Licensed under [Apache-2.0](LICENSE).

@@ -189,7 +189,17 @@ def check_operations(objects: list[dict]) -> None:
 
 def validate(helm: str) -> dict:
     run(helm, "lint", "--strict", str(CHART), "--set", "runtime.existingSecret=synthetic-runtime")
-    profiles = ["", "source", "graph", "work", "neptune", "existing-pvc", "postgres", "operations"]
+    profiles = [
+        "",
+        "source",
+        "graph",
+        "work",
+        "neptune",
+        "existing-pvc",
+        "postgres",
+        "operations",
+        "organization",
+    ]
     for profile in profiles:
         objects = render(helm, profile=profile)
         check_objects(objects, "alpha")
@@ -253,6 +263,32 @@ def validate(helm: str) -> dict:
             ingress = next(item for item in objects if item["kind"] == "Ingress")
             assert ingress["spec"]["tls"][0]["hosts"] == ["memory.example.org"]
             assert env["MEMORY_WORLDS_MOUNTS_FILE"] == "/config/mounts.json"
+        if profile == "organization":
+            assert env["MEMORY_WORLDS_ORGANIZATION_FILE"] == (
+                "/etc/memory-worlds/organization/organization.toml"
+            )
+            assert env["MEMORY_WORLDS_MOUNTS_FILE"] == "/config/mounts.json"
+            organization = next(
+                volume for volume in pod["volumes"] if volume["name"] == "organization"
+            )
+            assert organization["configMap"] == {
+                "name": "synthetic-organization",
+                "defaultMode": 0o444,
+                "items": [{"key": "corporate.toml", "path": "organization.toml"}],
+            }
+            mount = next(
+                mount
+                for mount in pod["containers"][0]["volumeMounts"]
+                if mount["name"] == "organization"
+            )
+            assert mount == {
+                "name": "organization",
+                "mountPath": "/etc/memory-worlds/organization",
+                "readOnly": True,
+            }
+        else:
+            assert "MEMORY_WORLDS_ORGANIZATION_FILE" not in env
+            assert not any(volume["name"] == "organization" for volume in pod["volumes"])
     first, second = render(helm, release="alpha"), render(helm, release="beta")
     check_objects(second, "beta")
     first_names = {item["metadata"]["name"] for item in first}
@@ -293,6 +329,13 @@ def validate(helm: str) -> dict:
             "falkordb.persistence.existingClaim=synthetic-shared-pvc",
         ],
         ["unknownSetting=true"],
+        ["organization.existingConfigMap=Bad_Name"],
+        ["organization.existingConfigMap=bad..name"],
+        ["organization.existingConfigMap=-bad"],
+        ["organization.configKey="],
+        ["organization.configKey=../organization.toml"],
+        ["organization.configKey=.."],
+        ["organization.inlineConfig=unsupported"],
         ["storage.backend=postgres"],
         ["storage.backend=unknown"],
         ["backup.enabled=true"],

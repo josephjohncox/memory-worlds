@@ -60,7 +60,7 @@ relational journals; it does not replace FalkorDB. See
 
 OIDC identifies users by verified issuer and subject. A user gets a stable
 private-work identity; team/company access comes from explicit membership or
-configured group mappings. Local agent tokens retain their explicit grants
+configured [organization groups and role profiles](corporate-access.md). Local agent tokens retain their explicit grants
 rather than inheriting all of their user's memberships.
 
 Router mounts allow selected remote shared worlds. They pin the remote authority,
@@ -72,7 +72,8 @@ delivery are separate states.
 Chat sharing can automate excerpt selection only within an explicitly enabled
 per-chat rule. The configured destination, exclusions and authorization remain
 outside the classifier's control. See [routing](sharing.md),
-[OIDC](oidc-okta.md) and [chat sharing](chat-sharing.md).
+[organization policy](corporate-access.md), [OIDC](oidc-okta.md) and
+[chat sharing](chat-sharing.md).
 
 ## Recovery preserves different things
 

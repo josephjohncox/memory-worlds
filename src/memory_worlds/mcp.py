@@ -1,7 +1,9 @@
 """Optional stdio MCP facade. The HTTP daemon remains the only storage owner."""
 
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
+
+from pydantic import Field
 
 from . import __version__
 from .client import Client
@@ -13,6 +15,7 @@ from .models import (
     Publication,
     Receipt,
     Scope,
+    ScopeFlow,
     ScopeSelection,
     SearchRequest,
     World,
@@ -89,6 +92,24 @@ def create_mcp(url: str, token: str):
                     run_id=run_id,
                 )
             )
+
+    @mcp.tool()
+    def memory_scope_flow(
+        read_scopes: Annotated[list[ScopeSelection], Field(max_length=50)],
+        write_scope: ScopeSelection,
+    ) -> bool:
+        """Check live audience containment for selected reads and one write target.
+
+        This grants no access, records no session exposure and does not authorize
+        publication. A user must separately authorize selected shared information.
+        """
+        try:
+            with Client(url, token) as client:
+                return client.can_flow(ScopeFlow(read_scopes=read_scopes, write_scope=write_scope))
+        except Exception:
+            raise RuntimeError(
+                "Memory scope flow check failed; verify credential and scope selections"
+            ) from None
 
     @mcp.tool()
     def memory_episodes(

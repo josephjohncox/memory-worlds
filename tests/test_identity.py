@@ -239,6 +239,7 @@ def test_mapped_memberships_cannot_elevate_or_expand_local_agent_grants(identity
             },
         ),
     )
+    mapped.reconcile()
     alice = mapped.authenticate(token(groups=["team"]))
     reader = store.authenticate(
         store.issue_token(
@@ -262,6 +263,7 @@ def test_mapping_restart_removes_stale_grants_before_any_identity_reauthenticate
     manual = store.create_world(admin, CreateWorld(name="Manual", kind=WorldKind.AD_HOC))
     config = replace(auth.config, group_mappings={"team": {team.id: Role.WRITER}})
     mapped = OIDCAuthenticator(store, config)
+    mapped.reconcile()
     bearer = token(groups=["team"])
     alice = mapped.authenticate(bearer)
     store.set_membership(admin, manual.id, alice.user_id, Role.READER)
@@ -292,6 +294,57 @@ def test_mapping_restart_removes_stale_grants_before_any_identity_reauthenticate
     assert store.get_world(alice, manual.id).id == manual.id
 
 
+@pytest.mark.parametrize("replacement_role", [None, Role.READER])
+def test_stale_mapping_replica_cannot_restore_removed_access_or_create_sessions(
+    identity, replacement_role
+):
+    store, operator, verifier, mint, _, _ = identity
+    team = store.create_world(operator, CreateWorld(name="Team", kind=WorldKind.TEAM))
+    manual = store.create_world(operator, CreateWorld(name="Incident", kind=WorldKind.AD_HOC))
+    old = OIDCAuthenticator(
+        store, replace(verifier.config, group_mappings={"staff": {team.id: Role.WRITER}})
+    )
+    old.reconcile()
+    bearer = mint(groups=["staff"])
+    alice = old.authenticate(bearer)
+    store.set_membership(operator, manual.id, alice.user_id, Role.READER)
+    child = store.delegate_credential(
+        alice,
+        DelegateCredential(
+            grants=[{"world_id": team.id, "scope_id": team.scope_id, "operations": ["read"]}]
+        ),
+    )
+    child_principal = store.authenticate(child["token"])
+    local = store.authenticate(
+        store.issue_token(
+            operator,
+            CreateToken(
+                user_id=alice.user_id, agent_id="explicit-local", grants={team.id: Role.WRITER}
+            ),
+        )
+    )
+    current_map = {} if replacement_role is None else {"staff": {team.id: replacement_role}}
+    current = OIDCAuthenticator(store, replace(old.config, group_mappings=current_map))
+    current.reconcile()
+    for principal in (alice, child_principal):
+        with pytest.raises(Forbidden):
+            store.get_world(principal, team.id)
+    for token in (bearer, mint("unseen", groups=["staff"])):
+        with pytest.raises(Unavailable, match="no longer active"):
+            old.authenticate(token)
+    assert len(store.list_users(operator)) == 1
+    assert store.get_world(alice, manual.id).id == manual.id
+    assert store.get_world(local, team.id).id == team.id
+    current.authenticate(bearer)
+    if replacement_role is None:
+        with pytest.raises(Forbidden):
+            store.get_world(alice, team.id)
+    else:
+        assert store.get_world(alice, team.id).id == team.id
+        with pytest.raises(Forbidden):
+            store.capture(alice, team.id, episode(), shared=True)
+
+
 @pytest.mark.parametrize("active", [None, "https://another-issuer.test"])
 def test_inactive_issuer_sessions_are_revoked_without_revoking_local_credentials(identity, active):
     store, admin, auth, token, _, _ = identity
@@ -303,8 +356,11 @@ def test_inactive_issuer_sessions_are_revoked_without_revoking_local_credentials
     store.reconcile_oidc_issuer(active)
     with pytest.raises(Unauthorized):
         store.validate_principal(alice)
-    with pytest.raises(Unauthorized):
+    with pytest.raises(Unavailable, match="no longer active"):
         auth.authenticate(bearer)
+    with pytest.raises(Unavailable, match="no longer active"):
+        auth.authenticate(token("unseen", jti="inactive-issuer-new-session"))
+    assert len(store.list_users(admin)) == 1
     assert store.validate_principal(local) == local
 
 
@@ -349,6 +405,7 @@ def test_issuer_subject_pair_not_email_controls_identity(identity):
     first = auth.authenticate(token(email="shared@example.test"))
     other_config = replace(auth.config, issuer=auth.config.issuer + "/other")
     other = OIDCAuthenticator(store, other_config)
+    other.reconcile()
     claims = jwt.decode(token(), options={"verify_signature": False})
     claims.update(iss=other_config.issuer, email="shared@example.test")
     bearer = jwt.encode(claims, signing, algorithm="RS256", headers={"kid": "initial"})
@@ -410,6 +467,7 @@ def test_operator_mapped_groups_only_and_removals_apply_to_old_sessions(identity
         ),
     )
     previous = token(groups=["engineering", "employees", "admin"])
+    mapped.reconcile()
     alice = mapped.authenticate(previous)
     assert set(w.id for w in store.list_worlds(alice)) >= {team.id, company.id}
     store.capture(alice, team.id, episode(), shared=True)
@@ -433,22 +491,32 @@ def test_operator_mapped_groups_only_and_removals_apply_to_old_sessions(identity
             },
         ),
     )
-    with pytest.raises(Forbidden):
-        invalid.authenticate(token(groups=["bad"]))
+    with pytest.raises(ValueError, match="existing shared world IDs"):
+        invalid.reconcile()
 
 
-def test_configuration_is_explicit_and_unsafe_algorithms_urls_rejected(monkeypatch):
+def write_identity_policy(tmp_path, **changes):
+    values = {
+        "issuer": "https://identity.test",
+        "audience": "api",
+        "jwks_url": "https://identity.test/jwks",
+    } | changes
+    path = tmp_path / "organization.toml"
+    path.write_text(
+        "[identity]\n" + "\n".join(f"{key} = {json.dumps(value)}" for key, value in values.items())
+    )
+    return path
+
+
+def test_configuration_is_explicit_and_unsafe_algorithms_urls_rejected(monkeypatch, tmp_path):
     for key in tuple(__import__("os").environ):
         if key.startswith("MEMORY_WORLDS_OIDC_"):
             monkeypatch.delenv(key)
+    monkeypatch.delenv("MEMORY_WORLDS_ORGANIZATION_FILE", raising=False)
     assert AuthConfig.from_env() is None
-    monkeypatch.setenv("MEMORY_WORLDS_OIDC_ISSUER", "https://identity.test")
-    with pytest.raises(ValueError):
-        AuthConfig.from_env()
-    monkeypatch.setenv("MEMORY_WORLDS_OIDC_AUDIENCE", "api")
-    monkeypatch.setenv("MEMORY_WORLDS_OIDC_JWKS_URL", "https://identity.test/jwks")
-    monkeypatch.setenv("MEMORY_WORLDS_OIDC_GROUP_MAPPINGS", '{"team": {"world": "reader"}}')
-    assert AuthConfig.from_env().group_mappings == {"team": {"world": Role.READER}}
+    monkeypatch.setenv("MEMORY_WORLDS_ORGANIZATION_FILE", str(write_identity_policy(tmp_path)))
+    config = AuthConfig.from_env()
+    assert config.organization is not None and config.group_mappings == {}
     for changes in (
         {"algorithms": ("HS256",)},
         {"issuer": "http://remote.test"},
@@ -457,7 +525,25 @@ def test_configuration_is_explicit_and_unsafe_algorithms_urls_rejected(monkeypat
         {"issuer": "https://id.test\n"},
     ):
         with pytest.raises(ValueError):
-            replace(AuthConfig.from_env(), **changes)
+            replace(config, **changes)
+
+
+@pytest.mark.parametrize("name", ["ISSUER", "GROUP_MAPPINGS", "UNKNOWN_SETTING"])
+def test_identity_rejects_environment_knobs_instead_of_silently_disabling_them(
+    monkeypatch, tmp_path, name
+):
+    monkeypatch.setenv("MEMORY_WORLDS_OIDC_" + name, "configured")
+    with pytest.raises(ValueError, match="ORGANIZATION_FILE"):
+        AuthConfig.from_env()
+    monkeypatch.setenv("MEMORY_WORLDS_ORGANIZATION_FILE", str(write_identity_policy(tmp_path)))
+    with pytest.raises(ValueError, match="ORGANIZATION_FILE"):
+        AuthConfig.from_env()
+
+
+def test_empty_organization_file_selection_is_an_error(monkeypatch):
+    monkeypatch.setenv("MEMORY_WORLDS_ORGANIZATION_FILE", " ")
+    with pytest.raises(ValueError, match="select a configuration file"):
+        AuthConfig.from_env()
 
 
 def test_group_watermark_rejects_unseen_older_and_equal_time_conflicting_tokens(identity):
@@ -473,6 +559,7 @@ def test_group_watermark_rejects_unseen_older_and_equal_time_conflicting_tokens(
         ),
     )
     issued_at = time.time() - 30
+    mapped.reconcile()
     old_unseen = token(groups=["members"], iat=issued_at, jti="unseen-old")
     alice = mapped.authenticate(token(groups=["members"], iat=issued_at))
     assert store.get_world(alice, team.id).id == team.id
@@ -493,11 +580,12 @@ def test_group_watermark_rejects_unseen_older_and_equal_time_conflicting_tokens(
         restarted.authenticate(old_unseen)
 
 
-def test_mapped_groups_require_iat_and_operator_map_changes_apply_on_authentication(identity):
+def test_mapped_groups_require_iat_and_operator_map_changes_require_activation(identity):
     store, admin, auth, token, _, signing = identity
     team = store.create_world(admin, CreateWorld(name="Team", kind=WorldKind.TEAM))
     config = replace(auth.config, group_mappings={"members": {team.id: Role.READER}})
     mapped = OIDCAuthenticator(store, config)
+    mapped.reconcile()
     no_iat = jwt.decode(token(groups=["members"]), options={"verify_signature": False})
     del no_iat["iat"]
     with pytest.raises(Unauthorized):
@@ -509,6 +597,9 @@ def test_mapped_groups_require_iat_and_operator_map_changes_apply_on_authenticat
     store.set_membership(admin, team.id, alice.user_id, Role.READER)
     changed_config = replace(config, group_mappings={"different-group": {team.id: Role.WRITER}})
     changed = OIDCAuthenticator(store, changed_config)
+    with pytest.raises(Unavailable, match="no longer active"):
+        changed.authenticate(bearer)
+    changed.reconcile()
     changed.authenticate(bearer)
     memberships = store.list_memberships(admin, team.id)
     assert memberships == [
@@ -535,6 +626,7 @@ def test_application_and_scope_policy_uses_verified_claims_without_granting_worl
             required_scopes=("memory-worlds",),
         ),
     )
+    configured.reconcile()
     accepted = configured.authenticate(token(cid="native-client", scp=["openid", "memory-worlds"]))
     assert [world.kind for world in store.list_worlds(accepted)] == [WorldKind.PRIVATE_WORK]
     for claims in (
@@ -556,6 +648,7 @@ def test_application_and_scope_policy_uses_verified_claims_without_granting_worl
             scopes_claim="scope",
         ),
     )
+    custom.reconcile()
     assert (
         custom.authenticate(token(azp="native-client", scope="openid memory-worlds")).user_id
         == accepted.user_id
@@ -564,18 +657,25 @@ def test_application_and_scope_policy_uses_verified_claims_without_granting_worl
         custom.authenticate(token(cid="native-client", scp=["memory-worlds"]))
 
 
-def test_oidc_policy_configuration_and_private_map_targets_fail_closed(identity, monkeypatch):
+def test_oidc_policy_configuration_and_private_map_targets_fail_closed(
+    identity, monkeypatch, tmp_path
+):
     store, admin, auth, _, _, _ = identity
-    for suffix, value in {
-        "ISSUER": auth.config.issuer,
-        "AUDIENCE": auth.config.audience,
-        "JWKS_URL": auth.config.jwks_url,
-        "CLIENT_IDS": "native-client,another-client",
-        "CLIENT_ID_CLAIM": "azp",
-        "REQUIRED_SCOPES": "memory-worlds audit",
-        "SCOPES_CLAIM": "scope",
-    }.items():
-        monkeypatch.setenv("MEMORY_WORLDS_OIDC_" + suffix, value)
+    monkeypatch.setenv(
+        "MEMORY_WORLDS_ORGANIZATION_FILE",
+        str(
+            write_identity_policy(
+                tmp_path,
+                issuer=auth.config.issuer,
+                audience=auth.config.audience,
+                jwks_url=auth.config.jwks_url,
+                client_ids=["native-client", "another-client"],
+                client_id_claim="azp",
+                required_scopes=["memory-worlds", "audit"],
+                scopes_claim="scope",
+            )
+        ),
+    )
     config = AuthConfig.from_env()
     assert config.client_ids == ("native-client", "another-client")
     assert config.required_scopes == ("memory-worlds", "audit")
@@ -599,7 +699,7 @@ def test_oidc_policy_configuration_and_private_map_targets_fail_closed(identity,
 
 
 def test_verifier_policy_change_revokes_sessions_and_private_delegation(identity):
-    store, _, auth, token, _, _ = identity
+    store, operator, auth, token, _, _ = identity
     bearer = token(cid="native-client", scp=["memory-worlds"])
     parent = auth.authenticate(bearer)
     world = store.list_worlds(parent)[0]
@@ -615,6 +715,12 @@ def test_verifier_policy_change_revokes_sessions_and_private_delegation(identity
             store.validate_principal(principal)
     with pytest.raises(Unauthorized):
         changed.authenticate(bearer)
+    # A still-running replica with the previous verifier cannot mint a fresh
+    # session under the policy the operator just replaced.
+    for stale in (token(jti="old-verifier-new-session"), token("unseen", cid="untrusted-client")):
+        with pytest.raises(Unavailable, match="no longer active"):
+            auth.authenticate(stale)
+    assert len(store.list_users(operator)) == 1
     fresh = changed.authenticate(token(cid="native-client", scp=["memory-worlds"], jti="fresh"))
     assert fresh.user_id == parent.user_id
 
@@ -646,6 +752,7 @@ def test_shared_group_membership_never_grants_private_scope_access(identity):
     mapped = OIDCAuthenticator(
         store, replace(auth.config, group_mappings={"data": {team.id: Role.WRITER}})
     )
+    mapped.reconcile()
     alice = mapped.authenticate(token(groups=["data"]))
     bob = mapped.authenticate(token("bob", groups=["data"]))
     scratch = store.create_scope(

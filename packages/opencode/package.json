@@ -1,0 +1,22 @@
+{
+  "name": "memory-worlds-opencode",
+  "version": "0.3.0",
+  "license": "Apache-2.0",
+  "description": "Native OpenCode tools for scoped Memory Worlds discovery, recall and private capture",
+  "type": "module",
+  "engines": { "node": ">=22.19.0" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
+    "./factory": { "types": "./dist/factory.d.ts", "import": "./dist/factory.js" }
+  },
+  "scripts": {
+    "build": "node --input-type=module -e \"import {rmSync} from 'node:fs'; rmSync('dist', {recursive: true, force: true});\" && tsc -p tsconfig.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build && node --test test/*.test.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": { "@opencode-ai/plugin": "1.19.3" },
+  "devDependencies": { "@types/node": "26.6.5", "typescript": "7.0.2" },
+  "keywords": ["opencode-plugin", "memory", "agents", "knowledge-graph"]
+}

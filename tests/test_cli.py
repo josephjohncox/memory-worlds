@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+from argparse import Namespace
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +16,74 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 AT = "2026-10-20T00:00:00+00:00"
+
+
+def test_cli_token_file_is_private_bounded_and_takes_precedence_over_environment(
+    tmp_path, monkeypatch
+):
+    from memory_worlds.cli import read_token
+
+    path = tmp_path / "agent.token"
+    path.write_bytes(b"synthetic-file-token\r\n")
+    path.chmod(0o600)
+    monkeypatch.setenv("MEMORY_WORLDS_TOKEN", "synthetic-environment-token")
+    assert read_token(Namespace(token_file=path)) == "synthetic-file-token"
+    assert read_token(Namespace(token_file=None)) == "synthetic-environment-token"
+    path.write_bytes(b"x" * 16_384 + b"\r\n")
+    assert len(read_token(Namespace(token_file=path))) == 16_384
+
+
+@pytest.mark.parametrize("kind", ["oversize", "non-ascii", "multiline", "permissions", "symlink"])
+def test_cli_token_files_reject_unsafe_inputs_without_exposing_their_contents(tmp_path, kind):
+    from memory_worlds.cli import read_token
+    from memory_worlds.errors import MemoryError
+
+    path = tmp_path / "agent.token"
+    path.write_bytes(b"synthetic-private-token")
+    path.chmod(0o600)
+    if kind == "oversize":
+        path.write_bytes(b"synthetic-private-token" + b"x" * 16_386)
+    elif kind == "non-ascii":
+        path.write_bytes(b"synthetic-private-token\xff")
+    elif kind == "multiline":
+        path.write_bytes(b"synthetic-private-token\nanother-line")
+    elif kind == "permissions":
+        path.chmod(0o644)
+    else:
+        linked = tmp_path / "linked.token"
+        linked.symlink_to(path)
+        path = linked
+    with pytest.raises(MemoryError) as error:
+        read_token(Namespace(token_file=path))
+    assert "synthetic-private-token" not in str(error.value)
+    assert str(path) not in str(error.value)
+
+
+@pytest.mark.parametrize("value", ["x" * 16_385, "synthetic\nprivate", "synthetic\tprivate", "é"])
+def test_cli_environment_tokens_are_bounded_ascii_without_diagnostic_leaks(monkeypatch, value):
+    from memory_worlds.cli import read_token
+    from memory_worlds.errors import MemoryError
+
+    monkeypatch.setenv("MEMORY_WORLDS_TOKEN", value)
+    with pytest.raises(MemoryError, match="ASCII bearer token") as error:
+        read_token(Namespace(token_file=None))
+    assert value not in str(error.value)
+
+
+def test_cli_fifo_token_fails_before_mcp_launch_instead_of_blocking(tmp_path):
+    fifo = tmp_path / "credential-fifo"
+    os.mkfifo(fifo, mode=0o600)
+    result = subprocess.run(
+        [sys.executable, "-I", "-m", "memory_worlds.cli", "--token-file", str(fifo), "mcp"],
+        env=_environment(),
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "owned private regular file" in result.stderr
+    assert str(fifo) not in result.stderr
 
 
 def _environment():
@@ -334,6 +403,7 @@ async def test_real_stdio_mcp_client_captures_into_same_http_authority(running_a
             "memory_deliveries",
             "memory_scopes",
             "memory_scope_status",
+            "memory_scope_flow",
             "memory_context",
             "memory_bind_context",
             "memory_episodes",

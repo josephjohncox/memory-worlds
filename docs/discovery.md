@@ -26,7 +26,8 @@ mise run cli -- --url https://memory.example.org \
 If you already have an API access token, put it in a private token file and run
 the discovery command. Browser ID tokens and tokens for another API are not
 accepted. Login refuses to overwrite an existing token file. Operator setup is
-covered in the [OIDC/Okta guide](oidc-okta.md).
+covered in the [company/team access guide](corporate-access.md) and
+[Okta provider setup](oidc-okta.md).
 
 The result contains:
 
@@ -34,7 +35,7 @@ The result contains:
 - `scopes`: readable scopes keyed by canonical world ID.
 - `mounts`: configured remote routes authorized for this credential.
 
-Inspect one world with `discover --world @data-team --json`. If an alias is
+Inspect one world with `discover --world @data --json`. If an alias is
 ambiguous, select its canonical ID. `me` also shows the current user, credential
 and authority identity. Discovery uses the configured service URL; it does not
 scan the network or enumerate a remote authority through a mount's token.
@@ -51,7 +52,7 @@ token file. Keep the token value out of project files and prompts:
 }
 ```
 
-Run `/memory discover` or `/memory discover @data-team`. The model can call
+Run `/memory discover` or `/memory discover @data`. The model can call
 `memory_discover` with optional `world` and `include_scopes` arguments. Readable
 scopes are included by default; `include_scopes: false` omits them even when a
 world is selected.

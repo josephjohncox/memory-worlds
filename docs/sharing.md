@@ -17,8 +17,9 @@ a stable private-work identity. Team and company access comes from explicit
 membership or configured IdP groups. Agent credentials keep their explicit grants;
 a user's broader membership does not widen an agent token.
 
-Operators configure the issuer, audience, group mappings and shared-world
-memberships through [OIDC and Okta](oidc-okta.md). The
+Operators declare company/team/ad-hoc spaces, reusable role profiles and external
+groups in one [organization TOML](corporate-access.md). [Okta setup](oidc-okta.md)
+covers the provider. The
 [routing reference](reference/routing.md#shared-service-identity) records the
 membership and session rules.
 
@@ -33,6 +34,10 @@ A reader grant permits recall. A publisher grant also permits explicit
 publication when the mount enables it. Use a grant for the exact local work
 credential when other agents should not inherit access. The remote service
 independently enforces its credential's grants.
+
+Mount roles govern the connection. Organization `reader`/`writer`/`manager`
+roles govern destination-world access. Per-chat `private`/`review`/`auto` modes
+govern user consent to automated excerpt publication. None enables another.
 
 See the [complete mount example](reference/routing.md#mount-a-remote-shared-authority)
 and [manual hybrid configuration](reference/hybrid.md). Mounts accept shared

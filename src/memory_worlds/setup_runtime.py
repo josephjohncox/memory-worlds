@@ -143,6 +143,7 @@ def runtime_environment(config: SetupConfig) -> dict[str, str]:
         MEMORY_WORLDS_GRAPH_BACKEND="falkordb",
         MEMORY_WORLDS_FALKORDB_HOST="127.0.0.1",
         MEMORY_WORLDS_EMBEDDING_DIMENSIONS=str(config.embedding_dimensions),
+        MEMORY_WORLDS_EMBEDDING_BATCH_SIZE=str(config.embedding.batch_size),
     )
     for prefix, provider in (("LLM", config.extraction), ("EMBEDDING", config.embedding)):
         environment[f"MEMORY_WORLDS_{prefix}_PROVIDER"] = provider.provider

@@ -1,5 +1,5 @@
 ["artifacts:build"]
-description = "Build and audit all four distributions with source and tool receipts"
+description = "Build and audit all six distributions with source and tool receipts"
 tools.helm = "4.3.1"
 raw_args = true
 run = "python scripts/build-artifacts.py --mise {{ mise_bin | quote }}"

@@ -10,6 +10,13 @@ Graph projection is {{ .Values.graph.backend }}.
 {{- if .Values.falkordb.enabled }}
 Create Secret {{ .Values.falkordb.auth.existingSecret }} with key {{ .Values.falkordb.auth.passwordKey }} before the graph pod can start.
 {{- end }}
+{{- if .Values.organization.existingConfigMap }}
+
+Organization configuration uses ConfigMap {{ .Values.organization.existingConfigMap }}, key {{ .Values.organization.configKey }}.
+The file mounts read-only at /etc/memory-worlds/organization/organization.toml.
+Restart the API workload after changing this ConfigMap to reconcile access policy:
+  kubectl --context YOUR_CONTEXT -n {{ .Release.Namespace }} rollout restart {{ if eq .Values.storage.backend "postgres" }}deployment{{ else }}statefulset{{ end }}/{{ include "memory-worlds.fullname" . }}
+{{- end }}
 
 Initialize an empty authority once, keeping the one-time credential outside logs:
   umask 077

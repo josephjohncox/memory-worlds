@@ -76,9 +76,10 @@ selectors. A policy-enforcing CNI is required; default kindnet does not enforce
 these rules. Run the [network qualification](qualification.md) for the target
 CNI and network configuration.
 
-For shared identity, follow [OIDC and Okta](oidc-okta.md). A verified user receives
-a private-work context; group mappings or explicit memberships grant shared-world
-access. Neither authentication nor a group claim grants administration.
+Declare shared spaces and group-role bindings using [organization configuration](corporate-access.md),
+then follow [Okta setup](oidc-okta.md) for provider settings. A verified user
+receives a private-work context; configured groups or manual memberships grant
+shared-world access. Neither authentication nor a group claim grants administration.
 
 ## Backups and recovery
 

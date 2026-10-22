@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "memory-worlds": {
+      "command": "${user_config.runtime_python}",
+      "args": [
+        "-I", "-m", "memory_worlds.cli",
+        "--url", "${user_config.url}",
+        "--token-file", "${user_config.token_file}", "mcp"
+      ]
+    }
+  }
+}

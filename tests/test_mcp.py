@@ -75,6 +75,8 @@ def backend(monkeypatch):
                     "worlds": [world.model_dump(mode="json")],
                 },
             )
+        if request.url.path == "/v1/scopes/flow":
+            return httpx.Response(200, json={"allowed": deny.get("flow_allowed", True)})
         row = Episode(
             **{**body, "scope_id": world.scope_id},
             id="episode-one",
@@ -118,6 +120,7 @@ async def test_sdk2_discovers_only_scoped_memory_tools(backend):
             "memory_scope_status",
             "memory_context",
             "memory_bind_context",
+            "memory_scope_flow",
             "memory_episodes",
         }
         assert "fixture-secret" not in listed.model_dump_json()
@@ -144,6 +147,72 @@ async def test_sdk2_discovery_uses_only_caller_bearer_and_readonly_endpoints(bac
     assert all(
         request.headers["authorization"] == "Bearer user-access-token" for request in backend[0]
     )
+
+
+@pytest.mark.parametrize("allowed", [True, False])
+async def test_sdk2_scope_flow_uses_typed_selections_and_only_the_callers_credential(
+    backend, allowed
+):
+    backend[1]["flow_allowed"] = allowed
+    selected = {
+        "world_id": "private",
+        "scope_id": world_shared_scope_id("fixture-authority", "private"),
+    }
+    async with MCPClient(facade.create_mcp("http://memory.invalid", "scoped-user-token")) as client:
+        listed = await client.list_tools()
+        schema = next(
+            tool for tool in listed.tools if tool.name == "memory_scope_flow"
+        ).input_schema
+        assert schema["properties"]["read_scopes"]["maxItems"] == 50
+        assert set(schema["required"]) == {"read_scopes", "write_scope"}
+        assert schema["$defs"]["ScopeSelection"]["properties"]["scope_id"]["format"] == "uuid"
+        result = await client.call_tool(
+            "memory_scope_flow", {"read_scopes": [selected], "write_scope": selected}
+        )
+        assert not result.is_error
+        assert result.structured_content["result"] is allowed
+    assert len(backend[0]) == 1
+    request = backend[0][0]
+    assert request.method == "POST" and request.url.path == "/v1/scopes/flow"
+    assert request.headers["authorization"] == "Bearer scoped-user-token"
+    assert json.loads(request.content) == {"read_scopes": [selected], "write_scope": selected}
+
+
+async def test_sdk2_scope_flow_rejects_invalid_ids_without_contacting_the_authority(backend):
+    async with MCPClient(facade.create_mcp("http://memory.invalid", "scoped-user-token")) as client:
+        result = await client.call_tool(
+            "memory_scope_flow",
+            {
+                "read_scopes": [{"world_id": "private", "scope_id": "@scratch"}],
+                "write_scope": {"world_id": "private", "scope_id": "@shared"},
+            },
+        )
+        assert result.is_error
+    assert backend[0] == []
+
+
+async def test_sdk2_scope_flow_revocation_errors_do_not_expose_credentials_or_backend_details(
+    backend, caplog
+):
+    backend[1]["enabled"] = True
+    selected = {
+        "world_id": "private",
+        "scope_id": world_shared_scope_id("fixture-authority", "private"),
+    }
+    async with MCPClient(facade.create_mcp("http://memory.invalid", "scoped-user-token")) as client:
+        result = await client.call_tool(
+            "memory_scope_flow",
+            {
+                "read_scopes": [selected],
+                "write_scope": selected,
+            },
+        )
+        assert result.is_error
+        assert "scoped-user-token" not in result.model_dump_json()
+        assert "private-backend-detail" not in result.model_dump_json()
+    assert "scoped-user-token" not in caplog.text
+    assert "private-backend-detail" not in caplog.text
+    assert [request.url.path for request in backend[0]] == ["/v1/scopes/flow"]
 
 
 async def test_sdk2_discovery_propagates_revocation_without_catalog_fallback(backend):

@@ -10,6 +10,7 @@ installation path that matches your use, then add clients and shared access.
 - [Manual local setup](manual-setup.md): initialize the daemon and issue agent credentials yourself.
 - [Local and corporate memory](hybrid.md): keep personal memory local and read selected shared worlds.
 - [Pi extension](../packages/pi/README.md): installation, configuration and first use.
+- [Coding-agent integrations](clients.md): Pi, Codex, Claude Code and OpenCode connections from one applied setup.
 - [Agent clients](agents.md): Python, CLI and MCP access.
 - [Discovery](discovery.md): find authorized worlds, scopes, aliases and mounts.
 
@@ -30,8 +31,9 @@ installation path that matches your use, then add clients and shared access.
 ## Run a shared service
 
 Choose a [deployment topology](deployments.md), then follow the [Helm guide](helm.md)
-or the [PostgreSQL/RDS guide](rds-postgresql.md). Shared login is covered by
-[OIDC and Okta](oidc-okta.md). The [storage guide](storage.md) explains what lives
+or the [PostgreSQL/RDS guide](rds-postgresql.md). Declare spaces, role profiles and
+group bindings in [company/team access configuration](corporate-access.md), then
+configure [Okta](oidc-okta.md) or your OIDC provider. The [storage guide](storage.md) explains what lives
 in each backend; [authority recovery](recovery.md) covers encrypted backups,
 restore and completed-artifact transport.
 

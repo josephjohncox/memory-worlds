@@ -1,0 +1,28 @@
+["opencode:deps"]
+description = "Install locked native OpenCode dependencies without install scripts"
+run = "npm ci --ignore-scripts --prefix packages/opencode >&2"
+
+["opencode:build"]
+description = "Build the native OpenCode plugin"
+depends = ["opencode:deps"]
+run = "npm run build --prefix packages/opencode"
+
+["opencode:check"]
+description = "Type-check the native plugin against the supported OpenCode SDK"
+depends = ["opencode:deps"]
+run = "npm run check --prefix packages/opencode"
+
+["opencode:test"]
+description = "Test explicit OpenCode discovery, fixed scopes and private capture"
+depends = ["opencode:deps"]
+run = "npm test --prefix packages/opencode"
+
+["opencode:verify"]
+description = "Type-check and test native OpenCode with one locked install"
+depends = ["opencode:check", "opencode:test"]
+
+["opencode:pack"]
+description = "Build and package the native OpenCode plugin; npm pack arguments are forwarded"
+depends = ["opencode:deps"]
+raw_args = true
+run = "npm pack ./packages/opencode"

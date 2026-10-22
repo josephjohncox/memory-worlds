@@ -340,14 +340,19 @@ def test_actual_cli_device_flow_with_signed_oidc_and_loopback_daemon(tmp_path):
     environment = {
         key: value for key, value in os.environ.items() if not key.startswith("MEMORY_WORLDS_")
     }
+    organization = tmp_path / "organization.toml"
+    organization.write_text(
+        "[identity]\n"
+        f'issuer = "{issuer}"\n'
+        'audience = "api://memory-worlds"\n'
+        f'jwks_url = "{issuer}/keys"\n'
+        'client_ids = ["native-client"]\n'
+        'required_scopes = ["memory-worlds"]\n'
+    )
     environment.update(
         {
             "MEMORY_WORLDS_GRAPH_BACKEND": "disabled",
-            "MEMORY_WORLDS_OIDC_ISSUER": issuer,
-            "MEMORY_WORLDS_OIDC_AUDIENCE": "api://memory-worlds",
-            "MEMORY_WORLDS_OIDC_JWKS_URL": issuer + "/keys",
-            "MEMORY_WORLDS_OIDC_CLIENT_IDS": "native-client",
-            "MEMORY_WORLDS_OIDC_REQUIRED_SCOPES": "memory-worlds",
+            "MEMORY_WORLDS_ORGANIZATION_FILE": str(organization),
         }
     )
     command = [sys.executable, "-m", "memory_worlds.cli", "--data-dir", str(data_dir), "--url", url]

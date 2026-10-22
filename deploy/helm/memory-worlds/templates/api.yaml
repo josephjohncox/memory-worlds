@@ -78,6 +78,10 @@ spec:
               value: "false"
             - name: MEMORY_WORLDS_GRAPH_BACKEND
               value: {{ .Values.graph.backend | quote }}
+            {{- if .Values.organization.existingConfigMap }}
+            - name: MEMORY_WORLDS_ORGANIZATION_FILE
+              value: /etc/memory-worlds/organization/organization.toml
+            {{- end }}
             - name: MEMORY_WORLDS_STORAGE_BACKEND
               value: {{ .Values.storage.backend | quote }}
             - name: MEMORY_WORLDS_DATABASE_URL
@@ -136,6 +140,9 @@ spec:
           volumeMounts:
             - {name: data, mountPath: /data}
             - {name: tmp, mountPath: /tmp}
+            {{- if .Values.organization.existingConfigMap }}
+            - {name: organization, mountPath: /etc/memory-worlds/organization, readOnly: true}
+            {{- end }}
             {{- if and (eq .Values.storage.backend "postgres") .Values.storage.postgres.caExistingSecret }}
             - {name: postgres-ca, mountPath: /secrets/postgres/ca.pem, subPath: ca.pem, readOnly: true}
             {{- end }}
@@ -150,6 +157,15 @@ spec:
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 128Mi}
+        {{- if .Values.organization.existingConfigMap }}
+        - name: organization
+          configMap:
+            name: {{ .Values.organization.existingConfigMap | quote }}
+            defaultMode: 292
+            items:
+              - key: {{ .Values.organization.configKey | quote }}
+                path: organization.toml
+        {{- end }}
         {{- if and (eq .Values.storage.backend "postgres") .Values.storage.postgres.caExistingSecret }}
         - name: postgres-ca
           secret:

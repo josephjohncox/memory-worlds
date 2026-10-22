@@ -11,7 +11,7 @@ credential and corporate user token.
 
 The corporate operator deploys the [Helm chart](../helm.md), selects PostgreSQL
 shared journals and an authenticated FalkorDB graph backend, and configures TLS,
-[OIDC/Okta](../oidc-okta.md), shared worlds and group mappings. Amazon RDS can supply
+[organization access policy](../corporate-access.md) and [Okta](../oidc-okta.md). Amazon RDS can supply
 the [PostgreSQL journals](../rds-postgresql.md); no graph extension or Neptune service
 is required. Multiple API replicas share one corporate authority UUID and its
 backends. Scaling the API does not replicate the bundled FalkorDB pod.

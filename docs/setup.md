@@ -33,6 +33,10 @@ Have these settings ready:
 - For hybrid mode, the corporate API URL and either a user token file or the
   public OAuth issuer/client configuration supplied by your operator.
 
+Embedding requests default to one input each, including bulk graph work. For a
+batch-capable endpoint, set `[embedding].batch_size` in the TOML; see
+[provider settings](reference/setup.md#configuration).
+
 The wizard shows the paths, model destinations, credential audiences and planned
 files before saving. Secret entry is hidden. Hybrid discovery uses your ordinary
 corporate identity, and no corporate worlds are mounted until you select them.
@@ -118,6 +122,10 @@ corporate profiles. Automatic retrieval, capture and sharing start disabled.
 The [hybrid guide](hybrid.md#pi-profiles-and-mixed-sessions) explains when to use
 each profile; the [setup reference](reference/setup.md#generated-files-and-client-profiles)
 shows how to launch one.
+
+For Codex, Claude Code and OpenCode, use [client export and native integrations](clients.md).
+Exports reuse the applied setup's credentials and leave global agent settings
+unchanged. Each harness connects to this same running service.
 
 ## Scripted local setup
 

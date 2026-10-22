@@ -1,0 +1,7 @@
+organization:
+  existingConfigMap: synthetic-organization
+  configKey: corporate.toml
+router:
+  enabled: true
+  mountsExistingSecret: synthetic-mounts
+  tokensExistingSecret: synthetic-remote-tokens

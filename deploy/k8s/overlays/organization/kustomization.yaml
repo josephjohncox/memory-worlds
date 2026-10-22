@@ -1,0 +1,32 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: memory-worlds
+resources:
+  - ../../base
+# Create memory-worlds-organization with an organization.toml key before applying.
+patches:
+  - target:
+      kind: StatefulSet
+      name: memory-worlds
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: MEMORY_WORLDS_ORGANIZATION_FILE
+          value: /etc/memory-worlds/organization/organization.toml
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: organization
+          mountPath: /etc/memory-worlds/organization
+          readOnly: true
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: organization
+          configMap:
+            name: memory-worlds-organization
+            defaultMode: 292
+            items:
+              - key: organization.toml
+                path: organization.toml

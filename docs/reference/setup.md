@@ -34,6 +34,7 @@ base_url = "http://127.0.0.1:9000/v1"
 provider = "openai-compatible"
 model = "your-embedding-model"
 base_url = "http://127.0.0.1:9001/v1"
+batch_size = 1
 ```
 
 For authenticated providers, add `api_key_file` to the relevant section.
@@ -41,6 +42,13 @@ For authenticated providers, add `api_key_file` to the relevant section.
 explicit `base_url` and allows an unauthenticated endpoint. Secret values are
 not inline configuration fields. Relative paths resolve beside the TOML, `~`
 expands to your home directory, and no shell evaluates configuration.
+
+`[embedding].batch_size` limits inputs per embedding request. It defaults to `1`
+and accepts integers from 1 to 2,048. Keep `1` for single-input endpoints; raise it
+only when the endpoint accepts batches. The adapter splits bulk work into
+sequential requests, restores response order and checks the configured minimum
+vector dimensions. This transport setting can change without rebuilding graph
+generations. It is not valid in `[extraction]`.
 
 `data_dir` and `state_dir` must be separate dedicated directories. API and graph
 ports must differ and bind `127.0.0.1`. Setup refuses a remote Docker context.

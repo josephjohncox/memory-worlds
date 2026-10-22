@@ -1,14 +1,16 @@
 # OIDC identity, delegation and revocation
 
-This reference defines the security behavior of the [Okta setup guide](../oidc-okta.md).
-It also applies to other configured OIDC providers.
+This reference defines the security behavior of [organization configuration](organization.md)
+and the [Okta setup guide](../oidc-okta.md). It applies to all configured OIDC
+providers.
 
 ## Identity and verifier policy
 
 Identity is the verified issuer/subject pair. Email and display names do not
-select identity. The operator pins issuer, JWKS URL, audience, accepted signing
-algorithms and any client/scope policy. Tokens cannot select a key URL. The
-verifier checks signature, issuer, audience, subject, expiry and that policy.
+select identity. The organization file's `[identity]` section pins issuer, JWKS
+URL, audience, accepted algorithms and client/scope policy. Tokens cannot select
+a key URL. The verifier checks signature, issuer, audience, subject, expiry and
+that policy.
 
 Changing the trusted issuer/audience/JWKS/signature/client/scope policy revokes
 that issuer's sessions and delegated descendants at startup. Users must obtain
@@ -23,16 +25,19 @@ The boundaries are independent:
   own explicit live grants. Parent agents and team members receive no implicit
   access to another invocation's scratch memory.
 - Every identity's private-work world remains separate. Group maps cannot target
-  personal or private-work worlds.
+  personal or private-work worlds. Configured spaces permit only company, team
+  and ad-hoc kinds.
 - OIDC sessions use live user membership. Delegated agent credentials have
   selected scopes, check their parent chain, and cannot outlive the issuing SSO
   session. Separately operator-issued local credentials retain only their own
   explicit grants and must be revoked separately.
 
-For a temporary space without a permanent IdP group, create an ad-hoc world and
-use `membership-set WORLD_ID USER_ID writer`; remove the manual membership with
+For a temporary space, declare an ad-hoc space and bind an IdP group in the
+organization file. Without a suitable group, an operator can use
+`membership-set WORLD_ID USER_ID writer`; remove that manual grant with
 `membership-set WORLD_ID USER_ID none`. Manual and mapped memberships are
-independent: removing a group does not erase an intentional manual grant.
+independent: removing configured access does not erase an intentional manual
+grant.
 
 ## Device login behavior
 
@@ -53,12 +58,13 @@ user's broad SSO token into a child process. See [scopes.md](../scopes.md) and
 
 ## Membership changes and revocation
 
-When group mappings are configured, access tokens must include a signed `iat`.
+When group bindings grant access, access tokens must include a signed `iat`.
 Okta group changes are observed through newly minted, verified access tokens.
 The service rejects older signed group states after accepting newer claims and
 rejects conflicting group states at the same `iat`. Changing the operator map
 clears obsolete mapped memberships at startup; the next accepted token applies
-the new map. This does not turn an old token into fresh IdP evidence.
+the new map. Removing a space retains its world and data. Neither change turns
+an old token into fresh IdP evidence. See [policy changes](organization.md#policy-changes).
 
 Local signature validation does not query Okta on every request. Removing a user
 from an Okta group, disabling them in Okta, or revoking a token in Okta therefore

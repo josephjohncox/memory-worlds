@@ -32,8 +32,11 @@ Your operator supplies a corporate API URL, a public OAuth client configuration
 or user API token, and access to the relevant worlds. Normal user discovery and
 mounts do not require an administrator token.
 
-For operators, use the [Helm guide](helm.md), [OIDC/Okta configuration](oidc-okta.md)
-and [RDS PostgreSQL guide](rds-postgresql.md). Shared journals use PostgreSQL;
+For operators, use the [Helm guide](helm.md), [organization access configuration](corporate-access.md),
+[Okta provider setup](oidc-okta.md) and [RDS PostgreSQL guide](rds-postgresql.md).
+The organization file belongs to the corporate service; the local wizard
+connects an ordinary user and does not administer corporate policy.
+Shared journals use PostgreSQL;
 Graphiti uses a separate graph backend. No Neptune service or PostgreSQL graph
 extension is needed.
 

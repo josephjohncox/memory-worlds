@@ -14,7 +14,9 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import httpx
@@ -23,6 +25,9 @@ import jwt
 from memory_worlds.errors import Unauthorized, Unavailable
 from memory_worlds.models import Principal, Role
 from memory_worlds.store import MemoryStore
+
+if TYPE_CHECKING:
+    from .organization import OrganizationConfig
 
 _ALGORITHMS = frozenset(
     {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
@@ -70,6 +75,7 @@ class AuthConfig:
     cache_ttl: float = 300
     refresh_cooldown: float = 5
     request_timeout: float = 5
+    organization: OrganizationConfig | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         _trusted_url(self.issuer)
@@ -111,41 +117,36 @@ class AuthConfig:
                 if not isinstance(world, str) or not world or not isinstance(role, Role):
                     raise ValueError("OIDC group mapping world roles must use Role values")
 
+    def policy_digest(self) -> str:
+        policy = {
+            "issuer": self.issuer,
+            "audience": self.audience,
+            "jwks_url": self.jwks_url,
+            "algorithms": sorted(set(self.algorithms)),
+            "client_ids": sorted(set(self.client_ids)),
+            "client_id_claim": self.client_id_claim,
+            "required_scopes": sorted(set(self.required_scopes)),
+            "scopes_claim": self.scopes_claim,
+            "groups_claim": self.groups_claim,
+        }
+        return hashlib.sha256(
+            json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+
     @classmethod
     def from_env(cls) -> AuthConfig | None:
-        names = ("ISSUER", "AUDIENCE", "JWKS_URL")
-        values = {name: os.environ.get(_PREFIX + name) for name in names}
-        configured = any(key.startswith(_PREFIX) for key in os.environ)
-        if not configured:
+        if any(key.startswith(_PREFIX) for key in os.environ):
+            raise ValueError(
+                "Identity and group access must be configured in MEMORY_WORLDS_ORGANIZATION_FILE"
+            )
+        path = os.environ.get("MEMORY_WORLDS_ORGANIZATION_FILE")
+        if path is None:
             return None
-        if not all(values.values()):
-            raise ValueError("OIDC requires ISSUER, AUDIENCE and JWKS_URL together")
-        try:
-            raw = json.loads(os.environ.get(_PREFIX + "GROUP_MAPPINGS", "{}"))
-            if not isinstance(raw, dict):
-                raise ValueError("OIDC group mappings must be a JSON object")
-            mappings = {
-                group: {world: Role(role) for world, role in worlds.items()}
-                for group, worlds in raw.items()
-            }
-        except (ValueError, TypeError, AttributeError) as error:
-            raise ValueError("Invalid OIDC group mapping JSON") from error
-        return cls(
-            issuer=values["ISSUER"],
-            audience=values["AUDIENCE"],
-            jwks_url=values["JWKS_URL"],
-            algorithms=tuple(os.environ.get(_PREFIX + "ALGORITHMS", "RS256").split(",")),
-            groups_claim=os.environ.get(_PREFIX + "GROUPS_CLAIM", "groups"),
-            group_mappings=mappings,
-            client_ids=tuple(
-                value.strip()
-                for value in os.environ.get(_PREFIX + "CLIENT_IDS", "").split(",")
-                if value.strip()
-            ),
-            client_id_claim=os.environ.get(_PREFIX + "CLIENT_ID_CLAIM", "cid"),
-            required_scopes=tuple(os.environ.get(_PREFIX + "REQUIRED_SCOPES", "").split()),
-            scopes_claim=os.environ.get(_PREFIX + "SCOPES_CLAIM", "scp"),
-        )
+        if not path.strip():
+            raise ValueError("MEMORY_WORLDS_ORGANIZATION_FILE must select a configuration file")
+        from .organization import load_organization
+
+        return load_organization(Path(path).expanduser()).auth_config()
 
 
 class OIDCAuthenticator:
@@ -161,21 +162,11 @@ class OIDCAuthenticator:
 
     def reconcile(self) -> None:
         """Apply trusted verifier and mapping changes under the daemon lock."""
-        policy = {
-            "issuer": self.config.issuer,
-            "audience": self.config.audience,
-            "jwks_url": self.config.jwks_url,
-            "algorithms": sorted(set(self.config.algorithms)),
-            "client_ids": sorted(set(self.config.client_ids)),
-            "client_id_claim": self.config.client_id_claim,
-            "required_scopes": sorted(set(self.config.required_scopes)),
-            "scopes_claim": self.config.scopes_claim,
-            "groups_claim": self.config.groups_claim,
-        }
-        digest = hashlib.sha256(
-            json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()
-        self.store.reconcile_oidc_policy(self.config.issuer, digest)
+        if self.config.organization is not None:
+            self.config = replace(
+                self.config, group_mappings=self.config.organization.reconcile(self.store)
+            )
+        self.store.reconcile_oidc_policy(self.config.issuer, self.config.policy_digest())
         self.store.reconcile_oidc_mappings(self.config.issuer, self.config.group_mappings)
 
     def _refresh(self) -> None:
@@ -314,4 +305,5 @@ class OIDCAuthenticator:
             groups=groups,
             group_mappings=self.config.group_mappings,
             issued_at=claims.get("iat"),
+            policy_digest=self.config.policy_digest(),
         )

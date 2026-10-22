@@ -24,6 +24,7 @@ and procedures for a boundary you already know you need to configure or inspect.
 | Reference | Contents | Task guide |
 | --- | --- | --- |
 | [Helm values](helm-values.md) | Storage, identity, routing, egress, backups and monitoring | [Helm installation](../helm.md) |
+| [Organization](organization.md) | Shared spaces, reusable role profiles and group bindings | [Company/team access](../corporate-access.md) |
 | [OIDC security](oidc-security.md) | Claim validation, group state and revocation | [Okta configuration](../oidc-okta.md) |
 | [Kustomize](kustomize.md) | Raw manifests and overlay configuration | [Deployment choices](../deployments.md) |
 | [Kind validation](kind-validation.md) | Lifecycle and storage checks | [Deployment choices](../deployments.md) |

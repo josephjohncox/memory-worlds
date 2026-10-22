@@ -107,6 +107,33 @@
         "existingSecret"
       ]
     },
+    "organization": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingConfigMap": {
+          "type": "string",
+          "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "configKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253,
+          "pattern": "^[A-Za-z0-9._-]+$",
+          "not": {
+            "enum": [
+              ".",
+              ".."
+            ]
+          }
+        }
+      },
+      "required": [
+        "existingConfigMap",
+        "configKey"
+      ]
+    },
     "graph": {
       "type": "object",
       "additionalProperties": false,
@@ -1100,6 +1127,7 @@
     "imagePullSecrets",
     "serviceAccount",
     "runtime",
+    "organization",
     "graph",
     "persistence",
     "resources",

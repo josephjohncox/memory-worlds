@@ -1,0 +1,43 @@
+# Replace identity placeholders before deployment. This file contains no secrets.
+# Spaces, application roles and signed IdP groups are configured independently.
+[identity]
+issuer = "https://YOUR_OKTA_DOMAIN/oauth2/YOUR_AUTHORIZATION_SERVER_ID"
+audience = "api://memory-worlds"
+jwks_url = "https://YOUR_OKTA_DOMAIN/oauth2/YOUR_AUTHORIZATION_SERVER_ID/v1/keys"
+algorithms = ["RS256"]
+client_ids = ["YOUR_NATIVE_APPLICATION_CLIENT_ID"]
+client_id_claim = "cid"
+required_scopes = ["memory-worlds"]
+scopes_claim = "scp"
+groups_claim = "groups"
+
+[spaces.company]
+name = "Company"
+kind = "company"
+
+[spaces.data]
+name = "Data"
+kind = "team"
+
+[spaces.incident]
+name = "Incident 42"
+kind = "ad-hoc"
+alias = "incident-42"
+
+[roles.employee]
+worlds = { company = "reader" }
+
+[roles.data-member]
+worlds = { data = "writer" }
+
+[roles.data-lead]
+worlds = { data = "manager" }
+
+[roles.incident-member]
+worlds = { incident = "writer" }
+
+[groups]
+mw-company = ["employee"]
+mw-data-team = ["employee", "data-member"]
+mw-data-leads = ["employee", "data-lead"]
+mw-incident-42 = ["incident-member"]

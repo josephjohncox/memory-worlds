@@ -41,6 +41,9 @@ include = [
   "/src", "/tests", "/docs", "/deploy", "/scripts", "/packages/pi/src", "/packages/pi/test",
   "/packages/pi/package.json", "/packages/pi/package-lock.json", "/packages/pi/tsconfig.json",
   "/packages/pi/README.md", "/packages/pi/LICENSE", "/pyproject.toml", "/README.md", "/LICENSE", "/uv.lock",
+  "/packages/opencode/src", "/packages/opencode/test", "/packages/opencode/package.json",
+  "/packages/opencode/package-lock.json", "/packages/opencode/tsconfig.json",
+  "/packages/opencode/README.md", "/packages/opencode/LICENSE", "/plugins",
   "/.env.example", "/.python-version", "/.dockerignore", "/.gitignore",
   "/mise.toml", "/mise.lock", "/tasks",
 ]

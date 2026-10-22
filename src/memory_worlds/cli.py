@@ -50,13 +50,21 @@ def emit(value):
 
 
 def read_token(args) -> str:
-    value = (
-        args.token_file.read_text().strip()
-        if args.token_file
-        else os.getenv("MEMORY_WORLDS_TOKEN", "").strip()
-    )
+    if args.token_file:
+        from .setup_files import private_read
+
+        try:
+            value = private_read(args.token_file, maximum=16_386).decode("ascii").strip()
+        except (MemoryError, UnicodeError):
+            raise MemoryError(
+                "token file must be an owned private regular file with one bounded ASCII token"
+            ) from None
+    else:
+        value = os.getenv("MEMORY_WORLDS_TOKEN", "").strip()
     if not value:
         raise MemoryError("set MEMORY_WORLDS_TOKEN or --token-file")
+    if len(value) > 16_384 or any(not 0x21 <= ord(character) <= 0x7E for character in value):
+        raise MemoryError("credential must be one ASCII bearer token of at most 16384 characters")
     return value
 
 
@@ -174,6 +182,13 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--url", default=os.getenv("MEMORY_WORLDS_URL", "http://127.0.0.1:8787"))
     p.add_argument("--token-file", type=Path)
     sub = p.add_subparsers(dest="command", required=True)
+    organization = sub.add_parser(
+        "organization", help="validate or inspect organization access configuration offline"
+    )
+    organization_commands = organization.add_subparsers(dest="organization_command", required=True)
+    for action in ("validate", "plan"):
+        operation = organization_commands.add_parser(action)
+        operation.add_argument("--config", type=Path, required=True)
     init = sub.add_parser("init", help="initialize owner and print a one-time admin credential")
     init.add_argument("--user", default="owner")
     serve = sub.add_parser("serve", help="run the local HTTP daemon")
@@ -445,6 +460,9 @@ def parser() -> argparse.ArgumentParser:
     from .setup_cli import add_setup_parser
 
     add_setup_parser(sub)
+    from .client_setup import add_clients_parser
+
+    add_clients_parser(sub)
     return p
 
 
@@ -501,6 +519,26 @@ def download_backup(client, artifact_id: str, target: Path):
 
 
 def run(args):
+    if args.command == "clients":
+        from .client_setup import run_clients_command
+
+        emit(run_clients_command(args))
+        return
+    if args.command == "organization":
+        from .organization import load_organization
+
+        config = load_organization(args.config)
+        emit(
+            config.plan()
+            if args.organization_command == "plan"
+            else {
+                "valid": True,
+                "spaces": len(config.spaces),
+                "roles": len(config.roles),
+                "groups": len(config.groups),
+            }
+        )
+        return
     if args.command == "setup":
         from .setup_cli import run_setup_command
 

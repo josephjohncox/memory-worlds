@@ -63,6 +63,7 @@ SOURCE_ROOTS = {
     "deploy",
     "scripts",
     "packages",
+    "plugins",
     ".github",
     "pyproject.toml",
     "README.md",
@@ -141,8 +142,13 @@ def audit_sources() -> None:
         parts = safe_parts(name)
         if parts[0] not in SOURCE_ROOTS:
             fail(f"Unexpected tracked public source path: {name}")
-        if parts[0] == "packages" and parts[:2] != ("packages", "pi"):
+        if parts[0] == "packages" and parts[:2] not in {
+            ("packages", "pi"),
+            ("packages", "opencode"),
+        }:
             fail(f"Unexpected package source path: {name}")
+        if parts[0] == "plugins" and parts[:2] != ("plugins", "claude"):
+            fail(f"Unexpected plugin source path: {name}")
         path = ROOT / name
         if not path.is_file() or path.is_symlink():
             fail(f"Tracked sources must be regular files: {name}")
@@ -218,6 +224,83 @@ def metadata(data: bytes, version: str) -> None:
         fail("Review attribution metadata before public distribution")
 
 
+def native_metadata(native: dict, files: dict[str, bytes], kind: str, version: str) -> None:
+    if not isinstance(native, dict) or (
+        native.get("name"),
+        native.get("version"),
+        native.get("license"),
+    ) != (
+        f"memory-worlds-{kind}",
+        version,
+        "Apache-2.0",
+    ):
+        fail("Native package metadata mismatch")
+    exports = native.get("exports")
+    if not isinstance(exports, dict) or "." not in exports:
+        fail("Native package requires explicit module exports")
+    entry = exports["."]
+    entry = entry.get("import") if isinstance(entry, dict) else entry
+    if entry != ("./dist/extension.js" if kind == "pi" else "./dist/index.js"):
+        fail("Native package module entry mismatch")
+    for value in exports.values():
+        targets = list(value.values()) if isinstance(value, dict) else [value]
+        if not targets:
+            fail("Native package exports must identify packaged modules")
+        for target in targets:
+            if (
+                not isinstance(target, str)
+                or not target.startswith("./dist/")
+                or "package/" + target[2:] not in files
+            ):
+                fail("Native package export references an absent or external module")
+
+
+def claude_metadata(files: dict[str, bytes], version: str) -> None:
+    prefix = "memory-worlds-claude/"
+    plugin = json.loads(files[prefix + ".claude-plugin/plugin.json"])
+    if not isinstance(plugin, dict) or (
+        plugin.get("name"),
+        plugin.get("version"),
+        plugin.get("license"),
+    ) != (
+        "memory-worlds",
+        version,
+        "Apache-2.0",
+    ):
+        fail("Claude plugin metadata mismatch")
+    config = plugin.get("userConfig")
+    if not isinstance(config, dict) or set(config) != {"runtime_python", "url", "token_file"}:
+        fail("Claude plugin requires explicit runtime, service and credential-file settings")
+    for name in ("runtime_python", "token_file"):
+        if (
+            not isinstance(config[name], dict)
+            or config[name].get("type") != "file"
+            or config[name].get("required") is not True
+        ):
+            fail("Claude plugin runtime and credential references require file settings")
+    if not isinstance(config["url"], dict) or config["url"].get("type") != "string":
+        fail("Claude plugin service URL requires a string setting")
+    mcp = json.loads(files[prefix + ".mcp.json"])
+    if mcp != {
+        "mcpServers": {
+            "memory-worlds": {
+                "command": "${user_config.runtime_python}",
+                "args": [
+                    "-I",
+                    "-m",
+                    "memory_worlds.cli",
+                    "--url",
+                    "${user_config.url}",
+                    "--token-file",
+                    "${user_config.token_file}",
+                    "mcp",
+                ],
+            }
+        }
+    }:
+        fail("Claude MCP module command must use configured runtime and credential-file references")
+
+
 def audit_distribution(archive: Path, kind: str, version: str) -> None:
     files = members(archive)
     license_bytes = (ROOT / "LICENSE").read_bytes()
@@ -245,6 +328,13 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             parts = safe_parts(name)[1:]
             if not parts or parts[0] not in SOURCE_ROOTS | {"PKG-INFO"}:
                 fail(f"Unexpected source distribution path: {name}")
+            if parts[0] == "packages" and parts[:2] not in {
+                ("packages", "pi"),
+                ("packages", "opencode"),
+            }:
+                fail(f"Unexpected package source distribution path: {name}")
+            if parts[0] == "plugins" and parts[:2] != ("plugins", "claude"):
+                fail(f"Unexpected plugin source distribution path: {name}")
         required = {
             "pyproject.toml",
             "uv.lock",
@@ -255,13 +345,27 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             "scripts/bootstrap.py",
             "tasks/setup.toml",
             "docs/setup.md",
+            "tasks/opencode.toml",
+            "packages/opencode/package.json",
+            "packages/opencode/package-lock.json",
+            "packages/opencode/tsconfig.json",
+            "packages/opencode/src/index.ts",
+            "packages/opencode/src/factory.ts",
+            "packages/opencode/test/plugin.test.mjs",
+            "packages/opencode/README.md",
+            "packages/opencode/LICENSE",
+            "plugins/claude/.claude-plugin/plugin.json",
+            "plugins/claude/.mcp.json",
+            "plugins/claude/skills/memory-worlds/SKILL.md",
+            "plugins/claude/README.md",
+            "plugins/claude/LICENSE",
         }
         if not {prefix + name for name in required} <= files.keys():
             fail("Source archive lacks required source, chart, lock or license files")
         metadata(files[prefix + "PKG-INFO"], version)
         if files[prefix + "LICENSE"] != license_bytes:
             fail("Source archive license differs from the approved license")
-    elif kind == "pi":
+    elif kind in {"pi", "opencode"}:
         for name in files:
             parts = safe_parts(name)
             if (
@@ -274,20 +378,41 @@ def audit_distribution(archive: Path, kind: str, version: str) -> None:
             "package/package.json",
             "package/README.md",
             "package/LICENSE",
-            "package/dist/extension.js",
-            "package/dist/client.js",
         }
+        required |= (
+            {"package/dist/extension.js", "package/dist/client.js"}
+            if kind == "pi"
+            else {
+                "package/dist/index.js",
+                "package/dist/index.d.ts",
+                "package/dist/factory.js",
+                "package/dist/factory.d.ts",
+                "package/dist/config.js",
+                "package/dist/service.js",
+                "package/dist/intents.js",
+            }
+        )
         if not required <= files.keys():
-            fail("Native package lacks its extension, client, metadata or license")
+            fail("Native package lacks required modules, metadata or license")
         native = json.loads(files["package/package.json"])
-        if (native["name"], native["version"], native["license"]) != (
-            "memory-worlds-pi",
-            version,
-            "Apache-2.0",
-        ):
-            fail("Native package metadata mismatch")
+        native_metadata(native, files, kind, version)
         if files["package/LICENSE"] != license_bytes:
             fail("Native package license differs from the approved license")
+    elif kind == "claude":
+        required = {
+            "memory-worlds-claude/.claude-plugin/plugin.json",
+            "memory-worlds-claude/.mcp.json",
+            "memory-worlds-claude/skills/memory-worlds/SKILL.md",
+            "memory-worlds-claude/README.md",
+            "memory-worlds-claude/LICENSE",
+        }
+        if set(files) != required:
+            fail(
+                "Claude archive requires the plugin manifest, MCP config, skill, README and license"
+            )
+        claude_metadata(files, version)
+        if files["memory-worlds-claude/LICENSE"] != license_bytes:
+            fail("Claude plugin license differs from the approved license")
     elif kind == "chart":
         if any(safe_parts(name)[0] != "memory-worlds" for name in files):
             fail("Unexpected chart root")
@@ -341,11 +466,13 @@ def audit_directory(directory: Path) -> None:
         f"memory_worlds-{version}-py3-none-any.whl": "wheel",
         f"memory_worlds-{version}.tar.gz": "sdist",
         f"memory-worlds-pi-{version}.tgz": "pi",
+        f"memory-worlds-opencode-{version}.tgz": "opencode",
+        f"memory-worlds-claude-{version}.tar.gz": "claude",
         f"memory-worlds-{version}.tgz": "chart",
     }
     names = {path.name for path in directory.iterdir()}
     if names != expected.keys() | {"manifest.json", "SHA256SUMS"}:
-        fail("Artifact directory must contain exactly four distributions, manifest and checksums")
+        fail("Artifact directory must contain exactly six distributions, manifest and checksums")
     for name in names:
         path = directory / name
         if not path.is_file() or path.is_symlink():
@@ -355,16 +482,31 @@ def audit_directory(directory: Path) -> None:
             fail(f"Artifact output exceeds the size limit: {name}")
     manifest = json.loads((directory / "manifest.json").read_text())
     if (
-        manifest.get("schema_version") != 1
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 1
         or manifest.get("project") != "memory-worlds"
         or manifest.get("version") != version
     ):
         fail("Artifact manifest identity or schema mismatch")
-    if not re.fullmatch(r"[a-f0-9]{40}", manifest.get("source", {}).get("commit", "")):
+    source = manifest.get("source")
+    if (
+        not isinstance(source, dict)
+        or not isinstance(source.get("commit"), str)
+        or not re.fullmatch(r"[a-f0-9]{40}", source["commit"])
+    ):
         fail("Artifact manifest requires the full source commit")
-    receipts = {item["filename"]: item for item in manifest["artifacts"]}
-    if set(receipts) != set(expected) or len(manifest["artifacts"]) != len(expected):
-        fail("Manifest must identify exactly the four distributions")
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list) or any(
+        not isinstance(item, dict)
+        or not isinstance(item.get("filename"), str)
+        or not isinstance(item.get("sha256"), str)
+        or not isinstance(item.get("bytes"), int)
+        for item in artifacts
+    ):
+        fail("Manifest artifact receipts must identify files, checksums and byte counts")
+    receipts = {item["filename"]: item for item in artifacts}
+    if set(receipts) != set(expected) or len(artifacts) != len(expected):
+        fail("Manifest must identify exactly the six distributions")
     checksums = {}
     for line in (directory / "SHA256SUMS").read_text().splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  ([A-Za-z0-9_.-]+)", line)

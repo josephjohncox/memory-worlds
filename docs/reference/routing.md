@@ -14,62 +14,22 @@ For a complete personal-daemon and corporate-service setup, see the
 
 ## Shared-service identity
 
-Initialize the shared service once with the ordinary `init` command. Keep its
-administrator credential with the operator. Configure these environment variables
-before starting `serve`:
+Initialize the authority once, then declare identity settings, company/team/ad-hoc
+spaces, reusable role profiles and signed group bindings in the
+[organization file](organization.md). Follow [company/team setup](../corporate-access.md)
+and [Okta provider setup](../oidc-okta.md). No world IDs need copying into group
+policy.
 
-```sh
-export MEMORY_WORLDS_OIDC_ISSUER=https://identity.example.test
-export MEMORY_WORLDS_OIDC_AUDIENCE=memory-worlds-api
-export MEMORY_WORLDS_OIDC_JWKS_URL=https://identity.example.test/.well-known/jwks.json
-```
+A verified issuer/subject receives a stable identity and private-work world.
+Group bindings grant only selected shared-world audiences. User memberships,
+agent credential grants and delegated scope grants remain separate. Email,
+forwarded headers and external administrator claims grant no authority.
 
-Use API access tokens issued for that audience. The service validates the
-configured issuer, asymmetric signature, algorithm, audience, expiry, and subject.
-Issuer and subject define identity; email addresses, administrator claims, and
-forwarded identity headers do not. JWKS URLs are operator configuration, never
-token-selected URLs. HTTPS is required outside loopback development.
-
-The first authenticated issuer/subject receives a stable opaque user ID and its
-own private-work world. Login alone grants no team or company access. `me` shows
-the authenticated user and readable worlds. Administrators create shared worlds
-and set live user membership:
-
-```sh
-memory-worlds --token-file /private/config/operator.token users
-memory-worlds --token-file /private/config/operator.token world-create Data --kind team
-memory-worlds --token-file /private/config/operator.token \
-  membership-set TEAM_WORLD_ID USER_ID writer
-memory-worlds --token-file /private/config/operator.token memberships TEAM_WORLD_ID
-memory-worlds --token-file /private/config/operator.token \
-  membership-set TEAM_WORLD_ID USER_ID none
-memory-worlds --token-file /private/config/operator.token user-set USER_ID --disable
-```
-
-Disabling a user also revokes that user's existing OIDC sessions and local
-credentials. Re-enabling the identity requires a fresh external token; old
-revoked credentials stay revoked. OIDC sessions expire with their bearer token.
-Administrators can also revoke an individual session by its credential ID.
-Issuer changes invalidate sessions belonging to the inactive issuer.
-
-An operator may map an IdP group claim to existing shared worlds:
-
-```sh
-export MEMORY_WORLDS_OIDC_GROUPS_CLAIM=groups
-export MEMORY_WORLDS_OIDC_GROUP_MAPPINGS='{"data-team":{"TEAM_WORLD_ID":"writer"},"employees":{"COMPANY_WORLD_ID":"reader"}}'
-```
-
-Mapped tokens require a signed `iat`. The service persists a per-user watermark:
-older group states and conflicting states at the same issued-at time are
-rejected. A mapping change clears obsolete mapped grants at startup, then the
-next accepted authentication applies the current map. Manual membership is
-independent. Group mappings cannot target private worlds. Membership changes
-are authorization changes; they never modify existing source records.
-
-OIDC sessions use live memberships. Local agent credentials use their explicit
-per-world grants, so an agent issued a reader credential cannot gain writer
-access through a broader membership held by its user. These credentials remain
-separately revocable. The initial local owner need not use an identity provider.
+Organization policy is read at startup. Mapped-membership changes use accepted
+signed token evidence; manual memberships remain independent. See
+[policy changes](organization.md#policy-changes) and
+[session/revocation behavior](oidc-security.md). Local owners need no identity
+provider.
 
 ## Mount a remote shared authority
 

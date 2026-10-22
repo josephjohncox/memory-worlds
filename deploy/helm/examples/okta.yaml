@@ -2,6 +2,9 @@
 # See docs/oidc-okta.md. This file contains no tokens or client secrets.
 runtime:
   existingSecret: memory-worlds-runtime
+organization:
+  existingConfigMap: memory-worlds-organization
+  configKey: organization.toml
 graph:
   backend: falkordb
 falkordb:

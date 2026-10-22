@@ -566,7 +566,7 @@ def wizard(output_path: Path, *, input_fn=input, secret_fn=getpass, output_fn=pr
         port=port,
         graph_port=graph_port,
         extraction=extraction,
-        embedding=embedding,
+        embedding=embedding.model_dump(),
         embedding_dimensions=dimensions,
         corporate=corporate,
         pi_profiles=pi_profiles,

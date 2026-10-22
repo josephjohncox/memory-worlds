@@ -200,6 +200,14 @@ class MemoryStore(ScopedStore):
                 ),
                 {"p0": active_issuer, "p1": active_issuer},
             )
+            db.execute(
+                text(
+                    f"INSERT INTO {self._table(db, 'metadata')} "
+                    f"VALUES ('oidc:active-issuer',:p0) ON CONFLICT(key) DO UPDATE "
+                    f"SET value=excluded.value"
+                ),
+                {"p0": active_issuer or ""},
+            )
 
     def reconcile_oidc_policy(self, issuer: str, policy_digest: str) -> None:
         """Invalidate sessions and descendants when the trusted token policy changes."""
@@ -271,6 +279,14 @@ class MemoryStore(ScopedStore):
                     f"g.mappings_digest<>:p2))"
                 ),
                 {"p0": "oidc:" + issuer, "p1": issuer, "p2": digest},
+            )
+            db.execute(
+                text(
+                    f"INSERT INTO {self._table(db, 'metadata')} "
+                    f"VALUES (:p0,:p1) ON CONFLICT(key) DO UPDATE "
+                    f"SET value=excluded.value"
+                ),
+                {"p0": "oidc-mappings:" + issuer, "p1": digest},
             )
 
     def _admin(self, db: Connection, principal: Principal) -> None:
@@ -401,6 +417,7 @@ class MemoryStore(ScopedStore):
         groups: list[str] | None = None,
         group_mappings: dict[str, dict[str, Role]] | None = None,
         issued_at: float | None = None,
+        policy_digest: str | None = None,
     ) -> Principal:
         """Accept only claims verified by OIDCAuthenticator, never API request data.
 
@@ -409,7 +426,21 @@ class MemoryStore(ScopedStore):
         """
         if not issuer or not subject or expires_at <= time.time():
             raise Unauthorized("Invalid identity session")
+        mappings_digest = hashlib.sha256(_canonical(group_mappings or {}).encode()).hexdigest()
         with self._control() as db, self._transaction(db):
+            # Startup activates operator policy. A stale running replica cannot
+            # recreate removed access or mint sessions with an earlier verifier.
+            for key, expected in (
+                ("oidc:active-issuer", issuer),
+                ("oidc-policy:" + issuer, policy_digest),
+                ("oidc-mappings:" + issuer, mappings_digest),
+            ):
+                active = db.execute(
+                    text(f"SELECT value FROM {self._table(db, 'metadata')} WHERE key=:p0"),
+                    {"p0": key},
+                ).scalar_one_or_none()
+                if active is not None and active != expected:
+                    raise Unavailable("Identity authorization configuration is no longer active")
             identity = (
                 db.execute(
                     text(
@@ -474,7 +505,6 @@ class MemoryStore(ScopedStore):
                 groups_digest = hashlib.sha256(
                     _canonical({"groups": sorted(set(groups or []))}).encode()
                 ).hexdigest()
-                mappings_digest = hashlib.sha256(_canonical(group_mappings).encode()).hexdigest()
                 previous = (
                     db.execute(
                         text(

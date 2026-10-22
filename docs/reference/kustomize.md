@@ -58,18 +58,29 @@ The router runs inside the API process and stores
 its outbox on the same retained volume. A separate router replica is unnecessary.
 Mounted remote credentials must be scoped on their destination authorities.
 
-See [OIDC and Okta](../oidc-okta.md) for identity setup. OIDC requires
-`MEMORY_WORLDS_OIDC_ISSUER`, `MEMORY_WORLDS_OIDC_AUDIENCE`, and
-`MEMORY_WORLDS_OIDC_JWKS_URL` together. Each verified issuer/subject receives a
-private work context. Team/company/ad-hoc access comes from explicit memberships
-or configured group-to-world mappings. IdP claim names do not grant
-administration. OIDC authenticates users; world membership still authorizes each
-operation. Token verification settings and group mappings belong in the runtime
-secret or equivalent operator-managed configuration.
-When group mappings are configured, access tokens must include a signed `iat`;
-older accepted group states and conflicting same-time states are rejected. A
-mapping change takes effect on the user's next authentication. Explicit manual
-memberships remain independent of mapped memberships.
+For shared identity, use [organization configuration](../corporate-access.md)
+and [Okta provider setup](../oidc-okta.md). Create the organization ConfigMap with
+an `organization.toml` key, then select the organization overlay instead of the
+base:
+
+```sh
+mise run kubectl -- --kubeconfig "$config" --context "$context" -n memory-worlds \
+  create configmap memory-worlds-organization \
+  --from-file=organization.toml=/private/operator/organization.toml \
+  --dry-run=client -o yaml | mise run kubectl -- --kubeconfig "$config" \
+  --context "$context" apply -f -
+mise run kubectl -- --kubeconfig "$config" --context "$context" apply \
+  -k deploy/k8s/overlays/organization
+```
+
+The overlay mounts policy read-only at
+`/etc/memory-worlds/organization/organization.toml` and sets
+`MEMORY_WORLDS_ORGANIZATION_FILE`. Keep model credentials in the runtime Secret.
+Initialize a new authority normally; configured spaces need no manual creation.
+Restart the StatefulSet after editing policy. A verified issuer/subject receives
+its own private-work world; configured groups grant shared-world access only.
+See [policy changes](organization.md#policy-changes) for retained data, manual
+membership and token freshness.
 
 The services remain internal. A shared installation needs an existing TLS
 gateway/ingress and its certificate configuration before exposing the API.

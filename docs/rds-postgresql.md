@@ -73,7 +73,8 @@ The [Helm PostgreSQL values](helm.md#postgresql-and-rds) mount the CA at
 takes precedence. Helm's storage selector, authority ID, graph and backup
 selections take precedence over matching runtime Secret entries.
 
-Keep the existing runtime Secret for explicit model/provider and OIDC settings,
+Keep the existing runtime Secret for explicit model/provider settings. Configure
+shared identity and groups through the [organization ConfigMap](corporate-access.md),
 and retain the FalkorDB password Secret and graph volume. The SQL profile needs
 no shared filesystem or SQLite PVC. Staged/downloaded backup artifacts need
 private temporary space and separate durable artifact storage; see

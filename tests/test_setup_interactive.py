@@ -67,7 +67,7 @@ def corporate(monkeypatch, tmp_path):
         data_dir=tmp_path / "data",
         state_dir=tmp_path / "state",
         extraction=provider,
-        embedding=provider,
+        embedding=provider.model_dump(),
         corporate=CorporateSettings(url=SERVICE, token_file=source, world_ids=["team"]),
     )
     state = {

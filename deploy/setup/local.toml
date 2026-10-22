@@ -20,3 +20,4 @@ base_url = "http://127.0.0.1:11434/v1"
 provider = "openai-compatible"
 model = "YOUR_EMBEDDING_MODEL"
 base_url = "http://127.0.0.1:11434/v1"
+batch_size = 1

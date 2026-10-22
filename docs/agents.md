@@ -14,6 +14,10 @@ administrator token; delegated children see only their granted audience.
 | CLI | Discovery, explicit capture/import and operator workflows |
 | MCP stdio facade | Hosts that integrate tools through MCP |
 
+For ready-to-use Pi, Codex, Claude Code and OpenCode configuration, follow
+[the coding-agent guide](clients.md). It exports client files from an applied
+local/hybrid setup and describes the native plugins.
+
 Start with [discovery](discovery.md) to find world IDs, scope UUIDs and mounts.
 Read selections and write destinations are separate. A context records selection
 and attribution; a delegated credential sets a child's actual permission ceiling.
@@ -80,12 +84,18 @@ daemon; the stdio process opens no storage and grants no additional permissions.
 | `memory_search`, `memory_remote_search`, `memory_episodes` | Retrieve selected evidence |
 | `memory_capture`, `memory_publish` | Save or explicitly publish selected text |
 | `memory_bind_context`, `memory_context`, `memory_scope_status` | Bind context or inspect scoped state |
+| `memory_scope_flow` | Check live audience containment for selected read scopes and a write target |
 | `memory_deliveries` | Inspect the caller's remote publication receipts |
 
 Scope selections and context IDs are explicit tool arguments. The facade exposes
 no credential issuance, delegation or grant-administration tool. A harness that
 needs to issue child credentials uses the typed client or CLI through a private
 channel, keeping bearer tokens out of model-visible output.
+
+`memory_scope_flow` returns whether every current reader of the write target can
+read the selected source scopes. It checks current authorization, grants no
+permissions and records no session exposure. A successful check does not replace
+the user's authorization to publish selected information.
 
 ## Native Pi
 
@@ -96,4 +106,5 @@ integration require neither MCP nor a Pi fork.
 
 Automatic capture starts disabled. Publication requires a user command or a
 user-enabled [per-chat sharing rule](chat-sharing.md). For corporate login,
-mounts and team mappings, see [OIDC](oidc-okta.md) and [local plus corporate memory](hybrid.md).
+mounts and team mappings, see [organization policy](corporate-access.md),
+[OIDC](oidc-okta.md) and [local plus corporate memory](hybrid.md).

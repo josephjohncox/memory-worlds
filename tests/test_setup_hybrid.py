@@ -120,6 +120,22 @@ def test_normal_user_hybrid_discovery_and_mount_audiences_over_http(tmp_path, mo
                 result = client.request("POST", "/v1/router/search", json=body)
                 assert "cobalt queue" in json.dumps(result)
                 assert private.id not in json.dumps(result)
+        # Export references the applied corporate binding, never a replaced token.
+        from memory_worlds.client_setup import connection
+        from memory_worlds.setup_config import save_config
+
+        config_file = tmp_path / "config" / "setup.toml"
+        save_config(config, config_file)
+        profile = connection(config_file, "corporate")
+        assert profile["url"] == url
+        assert profile["tokenFile"] == str(config.path("corporate.token"))
+        assert profile["readScopes"] == [] and "writeScope" not in profile
+        token_path = config.path("corporate.token")
+        original_token = private_read(token_path)
+        token_path.write_text("replaced-corporate-token\n")
+        with pytest.raises(MemoryError):
+            connection(config_file, "corporate")
+        token_path.write_bytes(original_token)
         # An explicit private-world selection cannot become a router mount.
         config.corporate.world_ids = [private.id]
         with pytest.raises(MemoryError, match="accessible shared"):

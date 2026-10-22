@@ -4,18 +4,22 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
+import io
 import json
 import os
 import re
 import subprocess
 import sys
+import tarfile
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "deploy/helm/memory-worlds"
+CLAUDE = ROOT / "plugins/claude"
 
 
 def command(arguments: list[str], *, cwd: Path = ROOT, capture: bool = False) -> str:
@@ -26,6 +30,8 @@ def command(arguments: list[str], *, cwd: Path = ROOT, capture: bool = False) ->
 def versions() -> dict[str, str]:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     native = json.loads((ROOT / "packages/pi/package.json").read_text())
+    opencode = json.loads((ROOT / "packages/opencode/package.json").read_text())
+    claude = json.loads((ROOT / "plugins/claude/.claude-plugin/plugin.json").read_text())
     chart_text = (CHART / "Chart.yaml").read_text()
     chart = {}
     for field in ("name", "version", "appVersion"):
@@ -33,18 +39,56 @@ def versions() -> dict[str, str]:
         if match is None:
             raise SystemExit(f"Chart.yaml must contain {field}")
         chart[field] = match[1]
-    if (project["name"], native["name"], chart["name"]) != (
+    if (project["name"], native["name"], opencode["name"], claude["name"], chart["name"]) != (
         "memory-worlds",
         "memory-worlds-pi",
+        "memory-worlds-opencode",
+        "memory-worlds",
         "memory-worlds",
     ):
         raise SystemExit("Package names must use the Memory Worlds names")
     release = project["version"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release):
         raise SystemExit("Release versions currently require a three-component stable version")
-    if {release, native["version"], chart["version"], chart["appVersion"]} != {release}:
-        raise SystemExit("Python, Pi, chart and chart appVersion must match")
-    return {"python": release, "pi": release, "chart": release, "app": release}
+    if {
+        release,
+        native["version"],
+        opencode["version"],
+        claude["version"],
+        chart["version"],
+        chart["appVersion"],
+    } != {release}:
+        raise SystemExit("Python, Pi, OpenCode, Claude, chart and chart appVersion must match")
+    return dict.fromkeys(("python", "pi", "opencode", "claude", "chart", "app"), release)
+
+
+def claude_archive(output: Path, version: str, timestamp: int) -> Path:
+    """Archive only reviewed tracked plugin files with reproducible gzip/tar headers."""
+    names = command(["git", "ls-files", "-z", "--", "plugins/claude"], capture=True).split("\0")
+    paths = sorted(filter(None, names))
+    if not paths:
+        raise SystemExit("The Claude plugin requires tracked source files")
+    target = output / f"memory-worlds-claude-{version}.tar.gz"
+    with target.open("wb") as stream:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=stream, mtime=timestamp) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                for name in paths:
+                    source = ROOT / name
+                    if (
+                        not source.is_relative_to(CLAUDE)
+                        or not source.is_file()
+                        or source.is_symlink()
+                    ):
+                        raise SystemExit("Claude plugin inputs must be tracked regular files")
+                    data = source.read_bytes()
+                    member = tarfile.TarInfo(
+                        "memory-worlds-claude/" + source.relative_to(CLAUDE).as_posix()
+                    )
+                    member.size = len(data)
+                    member.mode = 0o644
+                    member.mtime = timestamp
+                    archive.addfile(member, io.BytesIO(data))
+    return target
 
 
 def source_receipt(expected_sha: str | None, require_clean: bool) -> dict[str, object]:
@@ -130,13 +174,15 @@ def main() -> None:
             sys.executable,
         ]
     )
-    if not args.skip_npm_install:
-        command([args.npm, "ci", "--ignore-scripts"], cwd=ROOT / "packages/pi")
-    command([args.npm, "run", "build"], cwd=ROOT / "packages/pi")
-    command(
-        [args.npm, "pack", "--ignore-scripts", "--pack-destination", str(output)],
-        cwd=ROOT / "packages/pi",
-    )
+    for package in ("pi", "opencode"):
+        if not args.skip_npm_install:
+            command([args.npm, "ci", "--ignore-scripts"], cwd=ROOT / "packages" / package)
+        command([args.npm, "run", "build"], cwd=ROOT / "packages" / package)
+        command(
+            [args.npm, "pack", "--ignore-scripts", "--pack-destination", str(output)],
+            cwd=ROOT / "packages" / package,
+        )
+    claude_archive(output, release_versions["claude"], int(source["commit_timestamp"]))
     command(
         [
             args.helm,

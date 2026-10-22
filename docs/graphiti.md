@@ -24,6 +24,7 @@ MEMORY_WORLDS_EMBEDDING_PROVIDER=openai-compatible
 MEMORY_WORLDS_EMBEDDING_MODEL=your-embedding-model
 MEMORY_WORLDS_EMBEDDING_BASE_URL=http://127.0.0.1:9001/v1
 MEMORY_WORLDS_EMBEDDING_DIMENSIONS=1536
+MEMORY_WORLDS_EMBEDDING_BATCH_SIZE=1
 ```
 
 ```sh
@@ -37,6 +38,12 @@ Alternatively select `openai` for each provider, choose models, and supply
 `MEMORY_WORLDS_LLM_API_KEY` and `MEMORY_WORLDS_EMBEDDING_API_KEY` or `OPENAI_API_KEY`.
 Model processing occurs at those configured providers. Graphiti telemetry is
 disabled by default. See [.env.example](../.env.example) for all options.
+
+Embedding batch size defaults to `1`, supporting endpoints that accept one input
+per request. `MEMORY_WORLDS_EMBEDDING_BATCH_SIZE` accepts 1 to 2,048 inputs per
+request; increase it only for an endpoint that supports batches. Bulk embeddings
+are split sequentially and restored to input order. This setting controls
+transport and does not change graph configuration identity or require a rebuild.
 
 ## Check extraction and rebuild
 
@@ -56,8 +63,9 @@ mise run cli -- --token-file ~/.config/memory-worlds/admin.token \
 
 Rebuild normally includes every source. Use `--projected-only` to restrict a
 rebuild to sources already selected for extraction. A rebuild creates an isolated
-graph generation and activates it only after success. Changed model/embedding configuration requires
-a rebuild. Explicit bounded retention retires old generations and terminal
+graph generation and activates it only after success. Changed provider/model
+settings or embedding dimensions require a rebuild. Batch-size changes do not.
+Explicit bounded retention retires old generations and terminal
 delivery payloads. Lifecycle actions retract or erase source evidence, retain
 replay tombstones, and queue tracked namespace cleanup. Final graph purge
 requires drained writers. See [lifecycle and retention](lifecycle.md).

@@ -3,23 +3,57 @@
 import json
 import os
 import sys
+import tomllib
 from pathlib import Path
 
-from memory_worlds.models import CreateScope, CreateWorld, EpisodeInput, ScopeKind, WorldKind
+from memory_worlds.models import CreateScope, EpisodeInput, ScopeKind
+from memory_worlds.organization import OrganizationConfig
 from memory_worlds.store import MemoryStore
 
 directory = Path("/data/state")
 receipt = Path("/data/qualification.json")
+organization_path = Path("/data/organization.toml")
+
+
+def organization_document(issuer):
+    return f"""[identity]
+issuer = {json.dumps(issuer)}
+audience = "api://memory-worlds"
+jwks_url = {json.dumps(issuer + "/protocol/openid-connect/certs")}
+client_ids = ["mw-native", "mw-wrong-audience"]
+client_id_claim = "azp"
+required_scopes = ["memory-worlds"]
+scopes_claim = "scope"
+[spaces.company]
+name = "Company"
+kind = "company"
+[spaces.data]
+name = "Data"
+kind = "team"
+[roles.employee]
+worlds = {{company = "reader"}}
+[roles.data-member]
+worlds = {{data = "writer"}}
+[groups]
+mw-company = ["employee"]
+mw-data-team = ["data-member"]
+"""
 
 
 def bootstrap():
     store = MemoryStore(directory)
     world, token = store.bootstrap("synthetic-operator")
     operator = store.authenticate(token)
-    worlds = {}
-    for name, kind in (("Company", WorldKind.COMPANY), ("Data", WorldKind.TEAM)):
-        created = store.create_world(operator, CreateWorld(name=name, kind=kind))
-        worlds[name.lower()] = created.model_dump(mode="json")
+    organization = OrganizationConfig.model_validate(
+        tomllib.loads(organization_document("https://qualification.invalid"))
+    )
+    organization.reconcile(store)
+    worlds = {
+        key: store.get_world(operator, organization.space_id(store.authority_id, key)).model_dump(
+            mode="json"
+        )
+        for key in organization.spaces
+    }
     private = store.create_scope(
         operator,
         world.id,
@@ -54,22 +88,11 @@ def serve():
 
     from memory_worlds.api import create_app
 
-    data = json.loads(receipt.read_text())
     issuer = os.environ["QUALIFICATION_ISSUER"]
+    organization_path.write_text(organization_document(issuer))
+    organization_path.chmod(0o600)
     os.environ.update(
-        MEMORY_WORLDS_OIDC_ISSUER=issuer,
-        MEMORY_WORLDS_OIDC_JWKS_URL=f"{issuer}/protocol/openid-connect/certs",
-        MEMORY_WORLDS_OIDC_AUDIENCE="api://memory-worlds",
-        MEMORY_WORLDS_OIDC_CLIENT_IDS="mw-native,mw-wrong-audience",
-        MEMORY_WORLDS_OIDC_CLIENT_ID_CLAIM="azp",
-        MEMORY_WORLDS_OIDC_REQUIRED_SCOPES="memory-worlds",
-        MEMORY_WORLDS_OIDC_SCOPES_CLAIM="scope",
-        MEMORY_WORLDS_OIDC_GROUP_MAPPINGS=json.dumps(
-            {
-                "mw-company": {data["worlds"]["company"]["id"]: "reader"},
-                "mw-data-team": {data["worlds"]["data"]["id"]: "writer"},
-            }
-        ),
+        MEMORY_WORLDS_ORGANIZATION_FILE=str(organization_path),
         MEMORY_WORLDS_GRAPH_BACKEND="disabled",
     )
     uvicorn.run(create_app(directory), host="0.0.0.0", port=8787, log_level="warning")

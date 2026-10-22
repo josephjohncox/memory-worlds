@@ -39,6 +39,7 @@ class GraphConfig:
     llm_base_url: str | None = None
     embedding_base_url: str | None = None
     embedding_dimensions: int = 1536
+    embedding_batch_size: int = 1
     host: str = "127.0.0.1"
     port: int = 6379
     username: str | None = None
@@ -99,8 +100,11 @@ class GraphConfig:
         ep, em, ek, eu = provider_settings("EMBEDDING")
         port = int(env.get(PREFIX + "FALKORDB_PORT", "6379"))
         dimensions = int(env.get(PREFIX + "EMBEDDING_DIMENSIONS", "1536"))
+        batch_size = int(env.get(PREFIX + "EMBEDDING_BATCH_SIZE", "1"))
         if not 1 <= port <= 65535 or dimensions <= 0:
             raise ValueError("invalid graph port or embedding dimensions")
+        if not 1 <= batch_size <= 2048:
+            raise ValueError("embedding batch size must be between 1 and 2048")
         neptune_host = aoss_host = None
         neptune_port = int(env.get(PREFIX + "NEPTUNE_PORT", "8182"))
         aoss_port = int(env.get(PREFIX + "AOSS_PORT", "443"))
@@ -133,6 +137,7 @@ class GraphConfig:
             llm_base_url=lu,
             embedding_base_url=eu,
             embedding_dimensions=dimensions,
+            embedding_batch_size=batch_size,
             host=env.get(PREFIX + "FALKORDB_HOST", "127.0.0.1"),
             port=port,
             username=env.get(PREFIX + "FALKORDB_USERNAME") or None,
@@ -236,10 +241,12 @@ class GraphitiAdapter:
         try:
             from graphiti_core import Graphiti
             from graphiti_core.cross_encoder.client import CrossEncoderClient
-            from graphiti_core.embedder.openai import OpenAIEmbedder, OpenAIEmbedderConfig
+            from graphiti_core.embedder.openai import OpenAIEmbedderConfig
             from graphiti_core.llm_client.config import LLMConfig
             from graphiti_core.llm_client.openai_client import OpenAIClient
             from graphiti_core.llm_client.openai_generic_client import OpenAIGenericClient
+
+            from .embedding import BatchingOpenAIEmbedder
         except ImportError as exc:
             raise Unavailable(
                 "Graphiti dependencies are unavailable; reinstall Memory Worlds"
@@ -261,13 +268,14 @@ class GraphitiAdapter:
             if c.llm_provider == "openai"
             else OpenAIGenericClient(config=llm_config)
         )
-        embedder = OpenAIEmbedder(
+        embedder = BatchingOpenAIEmbedder(
             config=OpenAIEmbedderConfig(
                 api_key=c.embedding_api_key,
                 embedding_model=c.embedding_model,
                 embedding_dim=c.embedding_dimensions,
                 base_url=c.embedding_base_url,
-            )
+            ),
+            batch_size=c.embedding_batch_size,
         )
         if c.backend == "neptune":
             try:

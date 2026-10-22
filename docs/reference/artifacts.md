@@ -4,12 +4,18 @@
 
 `manifest.json` records the full source commit, whether the checkout was clean, the
 tracked working-tree digest, the actual mise and build-tool versions, and each
-distribution's size and SHA-256. `SHA256SUMS` covers all four distributions and the
+distribution's size and SHA-256. `SHA256SUMS` covers all six distributions and the
 manifest. The manifest is a build receipt; it is not a cryptographic signature. The
 builder sets `SOURCE_DATE_EPOCH` from the source commit timestamp. Use the artifact
 checksums to identify built bytes; the source commit identifies their code.
 
-Python, Pi, chart version and chart `appVersion` must match. Release tags must use
+The six distributions are listed in [the build guide](../releases.md). Native
+OpenCode uses npm's `package/` archive root. The Claude plugin archive uses
+`memory-worlds-claude/` and preserves `.claude-plugin/plugin.json` and `.mcp.json`.
+Its gzip/tar metadata uses the source timestamp for repeatable packaging.
+
+Python, Pi, OpenCode, Claude plugin manifest, chart version and chart `appVersion`
+must match. Release tags must use
 `v<version>`, such as `v0.3.0`. Builds fail if these identities differ.
 
 ## Source identity and content auditing
@@ -28,7 +34,7 @@ sensitive string has been recognized.
 
 ## GitHub Actions
 
-The **Artifacts** workflow builds and uploads the four distributions, manifest and
+The **Artifacts** workflow builds and uploads the six distributions, manifest and
 checksums on pull requests, pushes to `main`, version tags, and manual runs. These uploads
 use the repository's Actions access controls and have a 30-day retention period. Download
 them from a run's **Artifacts** section, or with GitHub CLI:
@@ -66,7 +72,7 @@ registry tokens in chart values, manifests or Git history.
 
 The automated pipeline does not publish to PyPI, npm or a public Helm registry.
 Actions artifacts expire. Durable private releases retain the signed source tag,
-four distributions, manifest, checksums, immutable image receipt and sanitized
+six distributions, manifest, checksums, immutable image receipt and sanitized
 local qualification receipts as GitHub Release assets in the private repository.
 Create them only after the exact source commit passes CI, verify repository and
 container privacy, and verify every asset checksum after downloading it. A

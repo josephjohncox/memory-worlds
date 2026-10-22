@@ -20,6 +20,12 @@ specification = importlib.util.spec_from_file_location("artifact_audit", SCRIPT)
 assert specification and specification.loader
 audit = importlib.util.module_from_spec(specification)
 specification.loader.exec_module(audit)
+build_specification = importlib.util.spec_from_file_location(
+    "artifact_build", ROOT / "scripts/build-artifacts.py"
+)
+assert build_specification and build_specification.loader
+build = importlib.util.module_from_spec(build_specification)
+build_specification.loader.exec_module(build)
 
 
 @pytest.mark.parametrize(
@@ -164,6 +170,8 @@ def test_changed_distribution_cannot_keep_old_manifest_and_checksums(tmp_path: P
         f"memory_worlds-{version}-py3-none-any.whl",
         f"memory_worlds-{version}.tar.gz",
         f"memory-worlds-pi-{version}.tgz",
+        f"memory-worlds-opencode-{version}.tgz",
+        f"memory-worlds-claude-{version}.tar.gz",
         f"memory-worlds-{version}.tgz",
     ]
     receipts = []
@@ -187,4 +195,253 @@ def test_changed_distribution_cannot_keep_old_manifest_and_checksums(tmp_path: P
     (tmp_path / "SHA256SUMS").write_text("".join(checksums))
     (tmp_path / filenames[0]).write_bytes(b"replaced distribution")
     with pytest.raises(audit.AuditFailure, match="Checksum mismatch"):
+        audit.audit_directory(tmp_path)
+
+
+def write_tar(path: Path, files: dict[str, bytes]) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        for name, content in sorted(files.items()):
+            member = tarfile.TarInfo(name)
+            member.size = len(content)
+            archive.addfile(member, io.BytesIO(content))
+
+
+def opencode_files() -> dict[str, bytes]:
+    files = {
+        "package/package.json": (ROOT / "packages/opencode/package.json").read_bytes(),
+        "package/README.md": b"Native OpenCode memory tools.",
+        "package/LICENSE": (ROOT / "LICENSE").read_bytes(),
+    }
+    for name in ("index", "factory", "config", "service", "intents"):
+        files[f"package/dist/{name}.js"] = b"export {};\n"
+        files[f"package/dist/{name}.d.ts"] = b"export {};\n"
+    return files
+
+
+def claude_files() -> dict[str, bytes]:
+    root = ROOT / "plugins/claude"
+    return {
+        "memory-worlds-claude/" + name: (root / name).read_bytes()
+        for name in (
+            ".claude-plugin/plugin.json",
+            ".mcp.json",
+            "skills/memory-worlds/SKILL.md",
+            "README.md",
+            "LICENSE",
+        )
+    }
+
+
+@pytest.mark.parametrize("kind", ["opencode", "claude"])
+def test_current_client_distributions_pass_audit(tmp_path, kind):
+    path = tmp_path / "client.tar.gz"
+    write_tar(path, opencode_files() if kind == "opencode" else claude_files())
+    audit.audit_distribution(path, kind, "0.3.0")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"name": "unreviewed-package"},
+        {"version": "9.9.9"},
+        {"license": "unreviewed-license"},
+        {"exports": {".": "./dist/factory.js"}},
+        {"exports": {".": "./dist/index.js", "./factory": "./missing.js"}},
+        {"exports": {".": "./dist/index.js", "./factory": "/external/private.js"}},
+        {"exports": {".": "./dist/index.js", "./factory": {}}},
+        {"exports": []},
+    ],
+)
+def test_native_package_rejects_invalid_identity_or_module_exports(tmp_path, change):
+    files = opencode_files()
+    metadata = json.loads(files["package/package.json"])
+    metadata.update(change)
+    files["package/package.json"] = json.dumps(metadata).encode()
+    path = tmp_path / "client.tgz"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="metadata|module|exports"):
+        audit.audit_distribution(path, "opencode", "0.3.0")
+
+
+def test_native_package_requires_the_declared_modules_and_approved_license(tmp_path):
+    path = tmp_path / "client.tgz"
+    files = opencode_files()
+    del files["package/dist/service.js"]
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="required modules"):
+        audit.audit_distribution(path, "opencode", "0.3.0")
+    files = opencode_files()
+    files["package/LICENSE"] = b"different license"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="license differs"):
+        audit.audit_distribution(path, "opencode", "0.3.0")
+
+
+@pytest.mark.parametrize("field", ["name", "version", "license"])
+def test_claude_package_rejects_invalid_manifest_identity(tmp_path, field):
+    files = claude_files()
+    key = "memory-worlds-claude/.claude-plugin/plugin.json"
+    manifest = json.loads(files[key])
+    manifest[field] = "unreviewed"
+    files[key] = json.dumps(manifest).encode()
+    path = tmp_path / "client.tar.gz"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="metadata mismatch"):
+        audit.audit_distribution(path, "claude", "0.3.0")
+
+
+@pytest.mark.parametrize("change", ["inline-token", "alternate-command", "missing-file-setting"])
+def test_claude_mcp_requires_configured_runtime_and_private_credential_reference(tmp_path, change):
+    files = claude_files()
+    if change == "missing-file-setting":
+        key = "memory-worlds-claude/.claude-plugin/plugin.json"
+        manifest = json.loads(files[key])
+        manifest["userConfig"]["token_file"] = {"type": "string"}
+    else:
+        key = "memory-worlds-claude/.mcp.json"
+        manifest = json.loads(files[key])
+        if change == "alternate-command":
+            manifest["mcpServers"]["memory-worlds"]["command"] = "unreviewed-command"
+        else:
+            manifest["mcpServers"]["memory-worlds"]["args"] += ["--token", "synthetic-inline"]
+    files[key] = json.dumps(manifest).encode()
+    path = tmp_path / "client.tar.gz"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="credential|module command"):
+        audit.audit_distribution(path, "claude", "0.3.0")
+
+
+def test_claude_archive_rejects_unexpected_files_and_license_changes(tmp_path):
+    path = tmp_path / "client.tar.gz"
+    files = claude_files()
+    files["memory-worlds-claude/operator-settings.json"] = b"{}"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="Claude archive requires"):
+        audit.audit_distribution(path, "claude", "0.3.0")
+    files = claude_files()
+    files["memory-worlds-claude/LICENSE"] = b"different license"
+    write_tar(path, files)
+    with pytest.raises(audit.AuditFailure, match="license differs"):
+        audit.audit_distribution(path, "claude", "0.3.0")
+
+
+def test_claude_archive_is_deterministic_and_excludes_untracked_inputs(tmp_path, monkeypatch):
+    root = tmp_path / "source"
+    source = root / "plugins/claude"
+    reviewed = claude_files()
+    for name, content in reviewed.items():
+        path = source / name.removeprefix("memory-worlds-claude/")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (source / ".env").write_text("untracked operator data")
+    paths = ["plugins/claude/" + name.removeprefix("memory-worlds-claude/") for name in reviewed]
+    monkeypatch.setattr(build, "ROOT", root)
+    monkeypatch.setattr(build, "CLAUDE", source)
+
+    def tracked(arguments, *, capture):
+        assert arguments == ["git", "ls-files", "-z", "--", "plugins/claude"]
+        assert capture
+        return "\0".join(reversed(paths)) + "\0"
+
+    monkeypatch.setattr(build, "command", tracked)
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    left = build.claude_archive(first, "0.3.0", 1_792_612_800)
+    right = build.claude_archive(second, "0.3.0", 1_792_612_800)
+    assert left.read_bytes() == right.read_bytes()
+    assert audit.members(left) == reviewed
+    with tarfile.open(left, "r:gz") as archive:
+        for member in archive:
+            assert member.uid == member.gid == 0
+            assert member.mode == 0o644
+            assert member.mtime == 1_792_612_800
+
+
+@pytest.mark.parametrize("kind", ["opencode", "claude"])
+def test_release_versions_include_both_new_client_packages(tmp_path, monkeypatch, kind):
+    root = tmp_path / "source"
+    for name in (
+        "pyproject.toml",
+        "packages/pi/package.json",
+        "packages/opencode/package.json",
+        "plugins/claude/.claude-plugin/plugin.json",
+        "deploy/helm/memory-worlds/Chart.yaml",
+    ):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((ROOT / name).read_bytes())
+    monkeypatch.setattr(build, "ROOT", root)
+    monkeypatch.setattr(build, "CHART", root / "deploy/helm/memory-worlds")
+    assert build.versions() == dict.fromkeys(
+        ("python", "pi", "opencode", "claude", "chart", "app"), "0.3.0"
+    )
+    path = root / (
+        "packages/opencode/package.json"
+        if kind == "opencode"
+        else "plugins/claude/.claude-plugin/plugin.json"
+    )
+    metadata = json.loads(path.read_bytes())
+    metadata["version"] = "9.9.9"
+    path.write_text(json.dumps(metadata))
+    with pytest.raises(SystemExit, match="must match"):
+        build.versions()
+
+
+def receipt_directory(directory):
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
+    filenames = {
+        f"memory_worlds-{version}-py3-none-any.whl": "wheel",
+        f"memory_worlds-{version}.tar.gz": "sdist",
+        f"memory-worlds-pi-{version}.tgz": "pi",
+        f"memory-worlds-opencode-{version}.tgz": "opencode",
+        f"memory-worlds-claude-{version}.tar.gz": "claude",
+        f"memory-worlds-{version}.tgz": "chart",
+    }
+    receipts, checksums = [], []
+    for name in filenames:
+        data = b"distribution contents"
+        (directory / name).write_bytes(data)
+        digest = hashlib.sha256(data).hexdigest()
+        receipts.append({"filename": name, "sha256": digest, "bytes": len(data)})
+        checksums.append(f"{digest}  {name}\n")
+    manifest = {
+        "schema_version": 1,
+        "project": "memory-worlds",
+        "version": version,
+        "source": {"commit": "a" * 40},
+        "artifacts": receipts,
+    }
+    data = json.dumps(manifest).encode()
+    (directory / "manifest.json").write_bytes(data)
+    checksums.append(f"{hashlib.sha256(data).hexdigest()}  manifest.json\n")
+    (directory / "SHA256SUMS").write_text("".join(checksums))
+    return filenames, manifest
+
+
+def test_complete_receipts_audit_every_current_distribution_kind(tmp_path, monkeypatch):
+    expected, _ = receipt_directory(tmp_path)
+    checked = {}
+    monkeypatch.setattr(
+        audit,
+        "audit_distribution",
+        lambda path, kind, version: checked.update({path.name: kind}),
+    )
+    audit.audit_directory(tmp_path)
+    assert checked == expected
+
+
+@pytest.mark.parametrize("kind", ["wheel", "sdist", "pi", "opencode", "claude", "chart"])
+def test_artifact_directory_requires_all_six_distributions(tmp_path, kind):
+    files, _ = receipt_directory(tmp_path)
+    next(tmp_path / name for name, item_kind in files.items() if item_kind == kind).unlink()
+    with pytest.raises(audit.AuditFailure, match="exactly six"):
+        audit.audit_directory(tmp_path)
+
+
+def test_manifest_cannot_duplicate_a_distribution_receipt(tmp_path):
+    _, manifest = receipt_directory(tmp_path)
+    manifest["artifacts"].append(manifest["artifacts"][0])
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(audit.AuditFailure, match="exactly the six"):
         audit.audit_directory(tmp_path)

@@ -147,7 +147,10 @@ backup scheduling, authenticated monitoring and egress rules.
 
 ### Shared identity, router, and ingress
 
-Configure [OIDC/Okta](oidc-okta.md) for user identity and group mappings, then use
+Declare spaces, role profiles and external groups in the
+[organization file](corporate-access.md), then configure [Okta](oidc-okta.md)
+or your OIDC provider. Organization policy uses an existing ConfigMap; model
+credentials remain in the runtime Secret. Use
 the [networking and router settings](reference/helm-values.md#shared-identity-router-and-ingress)
 to expose a TLS gateway and mount scoped remote credentials.
 
@@ -176,7 +179,7 @@ Neptune requires external AWS and OpenSearch infrastructure. See the
 Keep the release name, authority identity and installation values stable. Take
 an appropriate coordinated backup before upgrading, apply with
 `helm upgrade --install ... --values FILE --wait`, then run `helm test`.
-Environment Secret changes and single-file `subPath` key/CA rotations require an
+Organization ConfigMap changes, environment Secret changes and single-file `subPath` key/CA rotations require an
 explicit StatefulSet or Deployment rollout. Coordinate graph password rotation
 between API and graph workloads.
 

@@ -15,6 +15,10 @@ serviceAccount:
 runtime:
   # Operator-created Secret containing explicit extraction/embedding provider settings.
   existingSecret: ""
+organization:
+  # Optional operator-owned identity, spaces, roles and group configuration.
+  existingConfigMap: ""
+  configKey: organization.toml
 graph:
   # Graphiti is the normal memory engine; disabled is for maintenance/recovery only.
   backend: falkordb
