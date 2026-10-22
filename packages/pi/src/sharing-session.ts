@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { MemoryWorldsError, scopeKey, scopeSelection, type MemoryWorldsClient, type ScopeSelection } from "./client.js";
+import { MemoryWorldsError, isPrivateScope, scopeKey, scopeSelection, type MemoryWorldsClient, type ScopeSelection } from "./client.js";
 import { cleanTerminal, entryEpisode, type MemoryState } from "./state.js";
 import { classifySharingWithPi, parseSharingSettings, sharingBlocked, validateSharingDecisions, type SharingCandidate, type SharingDecision, type SharingSettings } from "./sharing.js";
 export * from "./sharing.js";
@@ -140,7 +140,7 @@ export class ChatSharing {
     const context = await client.context(rule.binding.contextId, signal);
     if (context.credential_id !== rule.binding.credentialId || !sameScope(context.write_scope, rule.binding.source)) throw new SharingError("Sharing context changed.", true);
     const source = await client.scope(rule.binding.source, signal);
-    if (!["invocation-private", "agent-persistent"].includes(source.kind)) throw new SharingError("Chat sharing requires an invocation-private or agent-persistent source.", true);
+    if (!isPrivateScope(source.kind)) throw new SharingError("Chat sharing requires an invocation-private, thread-private or agent-persistent source.", true);
     if (rule.destination.kind === "local") {
       const destination = rule.destination, world = (await client.worlds(signal)).find(item => item.id === destination.scope.world_id);
       const scope = await client.scope(destination.scope, signal);

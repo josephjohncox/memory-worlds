@@ -6,6 +6,15 @@ Validation reports identify the source and environment exercised. Counts from
 different snapshots or overlapping selections are separate results. The
 [detailed record](reference/validation.md) retains the earlier runs and limits.
 
+## Private thread maintenance
+
+The PR #2 implementation passed 1,128 Python tests with 12 skips on Python 3.15.0,
+with an isolated PostgreSQL 18.6 server enabled alongside SQLite. Native Pi passed
+165 tests and all three actual runtime/service/sharing smokes; OpenCode passed 27
+tests. Helm passed 10 rendered profiles and rejected 49 unsafe configurations.
+The [maintenance record](reference/validation.md#private-thread-maintenance)
+describes the exercised failure cases and infrastructure limits.
+
 ## Guided setup review fixes
 
 Setup commit `1cef120431b8e121859079b0ea5f3561ab5f0fcf` was checked locally on

@@ -7,6 +7,7 @@ from pydantic import Field
 
 from . import __version__
 from .client import Client
+from .maintenance_models import MaintenanceReceipt, MaintenanceRequest
 from .models import (
     AgentContext,
     BindContext,
@@ -22,6 +23,7 @@ from .models import (
 )
 from .mounts import MountView
 from .outbox import Delivery, RouterSearch
+from .thread_models import Thread
 
 
 def create_mcp(url: str, token: str):
@@ -49,6 +51,102 @@ def create_mcp(url: str, token: str):
             # exception chain. Validation errors can quote upstream private data.
             raise RuntimeError(
                 "Memory discovery failed; verify service, credential and world selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_threads(world_id: str | None = None, include_expired: bool = False) -> list[Thread]:
+        """Discover this caller's private threads without expanding reads or destinations."""
+        try:
+            with Client(url, token) as client:
+                return client.threads(world_id=world_id, include_expired=include_expired)
+        except Exception:
+            raise RuntimeError("Thread discovery failed; verify service and credential") from None
+
+    @mcp.tool()
+    def memory_thread(thread_id: UUID) -> Thread:
+        """Inspect one authorized thread's revision, retention state and private scope."""
+        try:
+            with Client(url, token) as client:
+                return client.thread(thread_id)
+        except Exception:
+            raise RuntimeError(
+                "Thread inspection failed; verify credential and thread selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_context_bundle(thread_id: UUID, bundle_id: UUID) -> dict[str, Any]:
+        """Recover archived thread context. Its contents retain their private source audience."""
+        try:
+            with Client(url, token) as client:
+                return client.context_bundle(thread_id, bundle_id).model_dump(mode="json")
+        except Exception:
+            raise RuntimeError(
+                "Context recovery failed; verify credential and bundle selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_maintenance_submit(request: MaintenanceRequest) -> MaintenanceReceipt:
+        """Explicitly summarize or assess enrichment for selected private context bundles.
+
+        The operator configures model profiles. Workers propose derived knowledge;
+        this tool does not publish, purge sources, change retention or grant access.
+        Reuse the complete original request and operation UUID unchanged on retries.
+        """
+        try:
+            with Client(url, token) as client:
+                return client.submit_maintenance(request)
+        except Exception:
+            raise RuntimeError(
+                "Maintenance submission failed; verify credential and job input"
+            ) from None
+
+    @mcp.tool()
+    def memory_maintenance_status(job_id: UUID) -> MaintenanceReceipt:
+        """Read an authorized job receipt without starting additional model work."""
+        try:
+            with Client(url, token) as client:
+                return client.maintenance_job(job_id)
+        except Exception:
+            raise RuntimeError(
+                "Maintenance inspection failed; verify credential and job selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_maintenance_wait(
+        job_id: UUID,
+        timeout_seconds: Annotated[
+            float, Field(ge=0, le=60, allow_inf_nan=False, strict=True)
+        ] = 30,
+    ) -> MaintenanceReceipt:
+        """Wait up to 60 seconds for explicit durable work; timeout does not cancel it."""
+        try:
+            with Client(url, token) as client:
+                return client.wait_maintenance(job_id, timeout_seconds=timeout_seconds)
+        except Exception:
+            raise RuntimeError(
+                "Maintenance wait failed; verify credential and job selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_maintenance_cancel(job_id: UUID) -> MaintenanceReceipt:
+        """Explicitly request cancellation. The receipt reports unresolved running effects."""
+        try:
+            with Client(url, token) as client:
+                return client.cancel_maintenance(job_id)
+        except Exception:
+            raise RuntimeError(
+                "Maintenance cancellation failed; verify credential and job selection"
+            ) from None
+
+    @mcp.tool()
+    def memory_maintenance_artifact(artifact_id: UUID) -> dict[str, Any]:
+        """Read a derived artifact only while the caller can still read its sources."""
+        try:
+            with Client(url, token) as client:
+                return client.maintenance_artifact(artifact_id).model_dump(mode="json")
+        except Exception:
+            raise RuntimeError(
+                "Artifact recovery failed; verify credential and source access"
             ) from None
 
     @mcp.tool()

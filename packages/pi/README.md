@@ -76,8 +76,8 @@ Then select reads and the existing private write destination:
 ```
 
 Use IDs returned by discovery. An existing `@alias` can replace a world or scope
-ID. The private target must be an `agent-persistent` or `invocation-private`
-scope that your credential can write. Reading a scope never selects a write
+ID. The private target must be an `agent-persistent`, `thread-private` or
+`invocation-private` scope that your credential can write. Reading a scope never selects a write
 destination. `/memory capture on` enables future user/assistant capture after
 the service checks the audience; `/memory capture off` stops it.
 
@@ -87,6 +87,14 @@ scopes, the write target and pending deliveries. Evidence messages retain
 authority, scope and source references. `/memory source QUERY` searches durable
 records explicitly.
 
+Thread-private scopes support the same explicit recall, capture, graph actions,
+imports and per-chat sharing rules. Create and archive threads through the
+[maintenance CLI or MCP tools](https://github.com/josephjohncox/memory-worlds/blob/main/docs/maintenance.md).
+Pi currently discovers these scopes through ordinary scope discovery; it does not
+query the thread registry or filter expired threads from that list. Existing
+read selections can still recall an expired thread, while the service rejects
+new writes after expiry. Pi does not automatically archive, compact or evict context.
+
 ## Go deeper
 
 - [Startup audit](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/pi-startup.md):
@@ -94,7 +102,7 @@ records explicitly.
 - [Pi reference](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/pi.md):
   configuration, `/memory` and `/graph` commands, offline spool and native SDK.
 - [Agent and subagent scopes](https://github.com/josephjohncox/memory-worlds/blob/main/docs/scopes.md):
-  world-shared, run-shared, agent-persistent and invocation-private audiences.
+  world-shared, run-shared, agent-persistent, thread-private and invocation-private audiences.
 - [Chat sharing](https://github.com/josephjohncox/memory-worlds/blob/main/docs/chat-sharing.md):
   user-enabled review or automatic publication of selected excerpts.
 - [Chat import](https://github.com/josephjohncox/memory-worlds/blob/main/docs/chat-import.md):

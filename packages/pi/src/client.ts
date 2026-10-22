@@ -40,13 +40,16 @@ export interface Publication {
   content: string; occurred_at: string; project: boolean;
 }
 
-export type ScopeKind = "world-shared" | "run-shared" | "agent-persistent" | "invocation-private";
+export type ScopeKind = "world-shared" | "run-shared" | "agent-persistent" | "thread-private" | "invocation-private";
+export function isPrivateScope(kind: ScopeKind): boolean {
+  return ["agent-persistent", "thread-private", "invocation-private"].includes(kind);
+}
 export type ScopeOperation = "read" | "write" | "publish" | "delegate" | "manage";
 export interface ScopeSelection { world_id: string; scope_id: string }
 export interface Scope extends ScopeSelection {
   id: string; kind: ScopeKind; name: string; created_at: string;
   alias?: string | null;
-  run_id?: string | null; agent_id?: string | null; invocation_id?: string | null;
+  run_id?: string | null; agent_id?: string | null; thread_id?: string | null; invocation_id?: string | null;
   parent_invocation_id?: string | null; coordinator_credential_id?: string | null; generation?: string | null; projection_state: string;
 }
 export interface ScopeGrant extends ScopeSelection { operations: ScopeOperation[] }
@@ -116,7 +119,7 @@ export function scopeKey(scope: ScopeSelection): string { return `${scope.world_
 function scope(value: unknown): Scope {
   const item = object(value); const id = string(item.id);
   scopeSelection({ world_id: item.world_id, scope_id: id });
-  if (!["world-shared", "run-shared", "agent-persistent", "invocation-private"].includes(String(item.kind))) throw new Error("Invalid scope kind");
+  if (!["world-shared", "run-shared", "agent-persistent", "thread-private", "invocation-private"].includes(String(item.kind))) throw new Error("Invalid scope kind");
   if (item.alias !== undefined && item.alias !== null) checkedAlias(string(item.alias));
   return { ...item, scope_id: id } as unknown as Scope;
 }
@@ -252,7 +255,7 @@ export class MemoryWorldsClient {
       const bounded = () => { if (bytes > 2_097_152) throw new MemoryWorldsReferenceError("Discovery exceeds 2 MiB; select one world or omit scopes"); };
       bounded();
       if (options.includeScopes !== false) for (const world of worlds) {
-        const visible = (await client.scopes(world.id, signal)).map(item => metadata(item, ["id", "world_id", "scope_id", "kind", "name", "alias", "created_at", "run_id", "agent_id", "invocation_id", "parent_invocation_id", "coordinator_credential_id", "generation", "projection_state"]));
+        const visible = (await client.scopes(world.id, signal)).map(item => metadata(item, ["id", "world_id", "scope_id", "kind", "name", "alias", "created_at", "run_id", "agent_id", "thread_id", "invocation_id", "parent_invocation_id", "coordinator_credential_id", "generation", "projection_state"]));
         if (visible.some(scope => scope.world_id !== world.id) || new Set(visible.map(scope => scope.id.toLowerCase())).size !== visible.length) throw new MemoryWorldsError(502, "invalid_discovery_metadata");
         bytes += Buffer.byteLength(JSON.stringify(visible)) + Buffer.byteLength(JSON.stringify(world.id)) + 4;
         bounded(); scopes.push([world.id, visible]);

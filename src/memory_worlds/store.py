@@ -13,6 +13,7 @@ import re
 import secrets
 import threading
 import time
+from collections import deque
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -919,6 +920,16 @@ class MemoryStore(ScopedStore):
         if old:
             if old["digest"] != digest:
                 raise Conflict("Source identity already exists with different content or metadata")
+            episodes = self._table(db, "episodes")
+            if (
+                db.execute(
+                    select(episodes.c.id).where(
+                        episodes.c.id == old["id"], lifecycle.visible_clause(self, db, episodes)
+                    )
+                ).scalar_one_or_none()
+                is None
+            ):
+                raise Conflict("Source dependencies are no longer available for replay")
             return Receipt(episode=self._episode(old, world_id), replayed=True)
         episode_id, received = uuid4().hex, _now()
         state = "pending" if episode.project else "disabled"
@@ -1094,10 +1105,24 @@ class MemoryStore(ScopedStore):
                     .order_by(audit_table.c.sequence)
                 ).mappings()
             ]
+            dependency_table = self._table(db, "artifact_dependencies")
+            dependencies = [
+                dict(row)
+                for row in db.execute(
+                    select(dependency_table)
+                    .where(
+                        dependency_table.c.output_episode_id.in_(select(table.c.id).where(visible))
+                    )
+                    .order_by(
+                        dependency_table.c.output_episode_id, dependency_table.c.input_episode_id
+                    )
+                ).mappings()
+            ]
         return {
             "world": world.model_dump(mode="json"),
             "episodes": episodes,
             "audit": audit,
+            "artifact_dependencies": dependencies,
             "projection_configuration": json.loads(projection["configuration"]),
             "scope": self.get_scope(principal, world_id, world.scope_id).model_dump(mode="json"),
         }
@@ -1120,8 +1145,12 @@ class MemoryStore(ScopedStore):
             if scope["kind"] not in {
                 ScopeKind.AGENT_PERSISTENT.value,
                 ScopeKind.INVOCATION_PRIVATE.value,
+                ScopeKind.THREAD_PRIVATE.value,
             }:
-                raise Forbidden("Imports require an agent-persistent or invocation-private scope")
+                raise Forbidden(
+                    "Imports require an agent-persistent, invocation-private "
+                    "or thread-private scope"
+                )
             # Same-user agents may share private memory. A different user's live
             # explicit read grant makes this destination unsuitable for import.
             readers = (
@@ -1185,8 +1214,15 @@ class MemoryStore(ScopedStore):
             return counts
 
     def restore(
-        self, principal: Principal, world_id: str, episodes: list[EpisodeInput], scope_id=None
+        self,
+        principal: Principal,
+        world_id: str,
+        episodes: list[EpisodeInput],
+        scope_id=None,
+        *,
+        dependencies=None,
     ) -> dict:
+        dependency_edges, origins = self._restore_dependencies(episodes, dependencies)
         # Administrative imports may seed shared worlds; agent capture may not.
         with self._control() as db:
             self._admin(db, principal)
@@ -1207,11 +1243,120 @@ class MemoryStore(ScopedStore):
                 )
         counts = {"imported": 0, "replayed": 0}
         with self._world_db(world_id, sid) as db, self._transaction(db):
+            receipts = {}
             for episode in episodes:
                 normalized = episode.model_copy(update={"scope_id": UUID(sid)})
                 receipt = self._insert(db, principal, world_id, normalized)
+                receipts[episode.source_id] = receipt
                 counts["replayed" if receipt.replayed else "imported"] += 1
+            if dependency_edges:
+                mapped = {old_id: receipts[source_id] for old_id, source_id in origins.items()}
+                mapped_by_id = {receipt.episode.id: receipt for receipt in mapped.values()}
+                expected = {}
+                for edge in dependency_edges:
+                    output = mapped[edge["output_episode_id"]].episode
+                    source = mapped[edge["input_episode_id"]].episode
+                    expected.setdefault(output.id, set()).add((source.id, source.digest))
+                table = self._table(db, "artifact_dependencies")
+                for output_id, inputs in expected.items():
+                    existing = {
+                        (row.input_episode_id, row.input_digest)
+                        for row in db.execute(
+                            select(table.c.input_episode_id, table.c.input_digest).where(
+                                table.c.output_episode_id == output_id
+                            )
+                        )
+                    }
+                    replayed = mapped_by_id[output_id].replayed
+                    if replayed:
+                        if existing != inputs:
+                            raise Conflict("Restored source already has different dependencies")
+                        continue
+                    for input_id, input_digest in sorted(inputs):
+                        db.execute(
+                            table.insert().values(
+                                output_episode_id=output_id,
+                                input_episode_id=input_id,
+                                input_digest=input_digest,
+                            )
+                        )
         return counts
+
+    @staticmethod
+    def _restore_dependencies(episodes, dependencies):
+        """Validate the current archive's complete same-scope dependency graph."""
+        if dependencies is None:
+            return [], {}
+        if not isinstance(dependencies, list) or len(dependencies) > 100_000:
+            raise InvalidRequest("Restore dependencies must be a bounded list")
+        if not dependencies:
+            return [], {}
+        origins, original_digests, source_ids = {}, {}, set()
+        for episode in episodes:
+            origin = episode.metadata.get("memory_worlds_origin")
+            if not isinstance(origin, dict):
+                raise InvalidRequest("Dependency restore requires source origin identities")
+            old_id, digest = origin.get("episode_id"), origin.get("digest")
+            if (
+                not isinstance(old_id, str)
+                or not 1 <= len(old_id) <= 100
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                or old_id in origins
+                or episode.source_id in source_ids
+            ):
+                raise InvalidRequest(
+                    "Restore source origins must have unique IDs and valid digests"
+                )
+            origins[old_id] = episode.source_id
+            original_digests[old_id] = digest
+            source_ids.add(episode.source_id)
+        edges, seen = [], set()
+        parents = {old_id: set() for old_id in origins}
+        children = {old_id: set() for old_id in origins}
+        for value in dependencies:
+            edge = value.model_dump(mode="json") if hasattr(value, "model_dump") else value
+            if not isinstance(edge, dict) or set(edge) != {
+                "output_episode_id",
+                "input_episode_id",
+                "input_digest",
+            }:
+                raise InvalidRequest("Restore dependency fields are invalid")
+            output, source, digest = (
+                edge["output_episode_id"],
+                edge["input_episode_id"],
+                edge["input_digest"],
+            )
+            if not all(isinstance(item, str) for item in (output, source, digest)):
+                raise InvalidRequest("Restore dependency IDs and digests must be strings")
+            if (
+                output not in origins
+                or source not in origins
+                or output == source
+                or digest != original_digests[source]
+                or (output, source) in seen
+            ):
+                raise InvalidRequest("Restore dependency targets or source digest are invalid")
+            seen.add((output, source))
+            parents[output].add(source)
+            children[source].add(output)
+            edges.append(dict(edge))
+        for output, inputs in parents.items():
+            if any(not parents[source].issubset(inputs) for source in inputs):
+                raise InvalidRequest("Restore dependencies must include every ancestor and leaf")
+        remaining = {old_id: len(inputs) for old_id, inputs in parents.items()}
+        ready = deque(old_id for old_id, count in remaining.items() if count == 0)
+        visited = 0
+        while ready:
+            source = ready.popleft()
+            visited += 1
+            for output in children[source]:
+                remaining[output] -= 1
+                if remaining[output] == 0:
+                    ready.append(output)
+        if visited != len(origins):
+            raise InvalidRequest("Restore dependencies cannot contain a cycle")
+        return edges, origins
 
     def projection_worlds(self) -> list[World]:
         with self._control() as db:
@@ -1393,7 +1538,13 @@ class MemoryStore(ScopedStore):
                 raise Unavailable("World projection requires a rebuild")
             changed = db.execute(
                 jobs.update()
-                .where(jobs.c.episode_id == episode_id, jobs.c.state == "pending")
+                .where(
+                    jobs.c.episode_id == episode_id,
+                    jobs.c.state == "pending",
+                    jobs.c.episode_id.in_(
+                        select(episodes.c.id).where(lifecycle.visible_clause(self, db, episodes))
+                    ),
+                )
                 .values(
                     state="processing",
                     attempts=jobs.c.attempts + 1,
@@ -1428,6 +1579,15 @@ class MemoryStore(ScopedStore):
             projection = self._table(db, "projection")
             if db.execute(select(projection.c.state)).scalar_one() == "degraded":
                 raise Unavailable("World projection requires a rebuild")
+            if (
+                db.execute(
+                    select(episodes.c.id).where(
+                        episodes.c.id == episode_id, lifecycle.visible_clause(self, db, episodes)
+                    )
+                ).scalar_one_or_none()
+                is None
+            ):
+                raise NotFound("Projection source is no longer available")
             updated = db.execute(
                 jobs.update()
                 .where(

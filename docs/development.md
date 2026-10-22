@@ -47,6 +47,7 @@ remain defined by the checked-in configuration.
 | `mise run test` | Run current Python tests |
 | `mise run test -- tests/test_scopes.py` | Pass additional arguments directly to pytest |
 | `mise run format` | Apply the locked Ruff formatter |
+| `mise run api:schema` | Regenerate the checked-in OpenAPI contract using isolated state |
 | `mise run pi:verify` | Check and test the native Pi package |
 | `mise run pi:smoke` | Run real Pi runtime, scoped service, and classifier-driven sharing smokes |
 | `mise run cli -- --help` | Run the current Memory Worlds CLI |

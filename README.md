@@ -58,6 +58,7 @@ Within each world, a **scope** defines the intended audience:
 | World-shared | Knowledge for the world's authorized readers |
 | Run-shared | Context shared within one agent run |
 | Agent-persistent | One agent's memory across runs and chats |
+| Thread-private | Recoverable context for one resumable conversation |
 | Invocation-private | Scratch memory for one invocation or delegated subagent |
 
 Credentials and grants enforce access. Names, aliases and UUIDs identify objects;
@@ -77,6 +78,7 @@ sharing rule for selected information, with exclusions. See [agent scopes](docs/
 | Discover accessible worlds, scopes and mounts with an ordinary token | [Discovery](docs/discovery.md) |
 | Connect agents on another machine | [SSH access](docs/remote-access.md) |
 | Import extracted ChatGPT/Claude chats or exported documents | [Directory import](docs/chat-import.md) |
+| Archive context and run explicit summary or enrichment workers | [Memory maintenance](docs/maintenance.md) |
 | Export memory or sync a completed backup to cloud storage | [Portable archives](docs/portable-archives.md) and [authority recovery](docs/recovery.md) |
 | Deploy a shared service with Helm, kind or PostgreSQL/RDS | [Deployments](docs/deployments.md) |
 | Configure company spaces, roles and groups | [Organization access](docs/corporate-access.md) |

@@ -55,7 +55,23 @@ evidence becomes unavailable for graph use until maintenance succeeds. A SQL
 commit alone does not mean the external graph has been erased.
 
 The receipt reports `source_state`, `source_checkpointed`, `graph_state`,
-`pending_generations` and `erasure_complete`. For native SQLite storage, secure
+`pending_generations` and `erasure_complete`. It also reports
+`dependent_erased_records`, `pending_dependent_records` and
+`dependent_cleanup_state` (`not-required`, `pending` or `complete`). Every derived
+source holds same-scope, digest-qualified references to all input ancestors and
+leaves. Ordinary source reads reject a derivative immediately if an input is
+missing, changed or tombstoned, including lookup, replay, search, export and
+graph-worker reads. A retained retraction hides derivatives without erasing
+their payloads.
+
+Erase removes up to 500 dependent outputs per retry, including artifact payloads
+and projection jobs. It retains minimal ID/digest dependency edges and
+tombstones. Repeat the complete original apply request until the pending count
+reaches zero; `erasure_complete` additionally requires that cleanup. Removing a
+thread member invalidates dependent revision snapshots; current thread heads
+cannot append through missing members. Use a new thread after removal.
+
+For native SQLite storage, secure
 deletion is enabled and the source WAL must truncate after the deletion commits.
 A busy checkpoint leaves the operation incomplete and retryable. An erase is
 complete only after source cleanup and every affected graph namespace purge
@@ -134,7 +150,9 @@ receipt = retention.apply(administrator, request)
 
 Retention preview/apply routes are `POST /v1/retention/preview` and
 `POST /v1/retention`; receipt lookup is `GET /v1/retention/{operation_id}`.
-An `applied` retention receipt means its frozen source/envelope cleanup and graph
+Retention remains `pending` while any deterministic child source operation has
+unfinished dependent cleanup; its `source_operations` identify those children.
+Replay the same parent request to resume them. An `applied` retention receipt means its frozen source/envelope cleanup and graph
 purge intents committed. Graph deletion still requires the drained-worker
 maintenance step. Retention does not schedule itself or silently choose a
 retention period.

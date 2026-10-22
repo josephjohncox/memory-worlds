@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -15,6 +15,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from . import __version__
 from .auth import AuthConfig, OIDCAuthenticator
+from .context_archive import ContextArchive
+from .context_models import ArtifactReceipt, ContextBundle, ContextBundleInput, ContextBundleReceipt
 from .errors import MemoryError, Unauthorized, Unavailable
 from .identity_names import (
     CreateIdentity,
@@ -25,6 +27,8 @@ from .identity_names import (
 )
 from .lifecycle import EpisodeLifecycle, LifecycleRequest, RetentionEngine, RetentionRequest
 from .locking import DaemonLock
+from .maintenance_jobs import MaintenanceJobs
+from .maintenance_models import MaintenanceReceipt, MaintenanceRequest
 from .metrics import Metrics
 from .models import (
     MAX_IMPORT_BYTES,
@@ -55,6 +59,8 @@ from .operations import BackupRequest, BackupService
 from .outbox import Delivery, RoutedPublication, RouterSearch
 from .router import WorldRouter
 from .store import MemoryStore
+from .thread_models import CreateThread, Thread
+from .threads import ThreadService
 
 bearer = HTTPBearer(auto_error=False)
 _IMPORT_ROUTE = re.compile(
@@ -73,6 +79,9 @@ def create_app(
     mount_config=None,
     store=None,
     backups=None,
+    maintenance=None,
+    maintenance_profiles=None,
+    maintenance_provider=None,
 ) -> FastAPI:
     store = store or MemoryStore.from_env(data_dir)
     identities = IdentityRegistry(store)
@@ -83,6 +92,17 @@ def create_app(
         config = AuthConfig.from_env()
         auth = OIDCAuthenticator(store, config) if config else None
     router = router or WorldRouter(store, mount_config or MountConfig.from_env())
+    threads = ThreadService(store)
+    context_archive = ContextArchive(store, threads)
+    maintenance = maintenance or MaintenanceJobs(
+        store,
+        input_loader=context_archive.load_inputs,
+        output_writer=context_archive.write_artifact,
+        result_reader=context_archive.artifact,
+        authorize_job=context_archive.authorize_job,
+        profiles=maintenance_profiles,
+        provider=maintenance_provider,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -95,6 +115,8 @@ def create_app(
                 tasks.append(asyncio.create_task(graph.run(), name="graph-projection"))
             if router.mounts:
                 tasks.append(asyncio.create_task(router.run(), name="publication-outbox"))
+            if maintenance.profiles.profiles:
+                tasks.append(asyncio.create_task(maintenance.run(), name="memory-maintenance"))
             app.state.workers = tasks
             app.state.started = True
             try:
@@ -106,10 +128,14 @@ def create_app(
                 await asyncio.gather(*tasks, return_exceptions=True)
                 if graph is not None:
                     await graph.close()
+                await maintenance.close()
 
     app = FastAPI(title="Memory Worlds", version=__version__, lifespan=lifespan)
     app.state.store = store
     app.state.router = router
+    app.state.threads = threads
+    app.state.context_archive = context_archive
+    app.state.maintenance = maintenance
     app.state.started = False
     app.state.workers = []
 
@@ -172,6 +198,61 @@ def create_app(
         raise Unauthorized("credential is invalid or revoked")
 
     User = Annotated[Principal, Depends(principal)]
+
+    @app.post("/v1/threads", response_model=Thread)
+    def create_thread(body: CreateThread, user: User):
+        return threads.create(user, body)
+
+    @app.get("/v1/threads", response_model=list[Thread])
+    def list_threads(user: User, world_id: str | None = None, include_expired: bool = False):
+        if world_id and world_id.startswith("@"):
+            matches = [world.id for world in store.list_worlds(user) if world.alias == world_id[1:]]
+            if len(matches) != 1:
+                from .errors import NotFound
+
+                raise NotFound("No visible world matches that alias")
+            world_id = matches[0]
+        return threads.list(user, world_id=world_id, include_expired=include_expired)
+
+    @app.get("/v1/threads/{thread_id}", response_model=Thread)
+    def get_thread(thread_id: UUID, user: User):
+        return threads.get(user, thread_id)
+
+    @app.post("/v1/threads/{thread_id}/bundles", response_model=ContextBundleReceipt)
+    def archive_context(thread_id: UUID, body: ContextBundleInput, user: User):
+        return context_archive.archive(user, thread_id, body)
+
+    @app.get("/v1/threads/{thread_id}/bundles/{bundle_id}", response_model=ContextBundle)
+    def get_context_bundle(thread_id: UUID, bundle_id: UUID, user: User):
+        return context_archive.bundle(user, thread_id, bundle_id)
+
+    @app.post("/v1/maintenance/jobs", response_model=MaintenanceReceipt)
+    async def submit_maintenance(body: MaintenanceRequest, user: User):
+        return await maintenance.submit(user, body)
+
+    @app.get("/v1/maintenance/jobs", response_model=list[MaintenanceReceipt])
+    async def list_maintenance(user: User):
+        return await maintenance.list(user)
+
+    @app.get("/v1/maintenance/jobs/{job_id}", response_model=MaintenanceReceipt)
+    async def maintenance_status(job_id: UUID, user: User):
+        return await maintenance.status(user, job_id)
+
+    @app.post("/v1/maintenance/jobs/{job_id}/wait", response_model=MaintenanceReceipt)
+    async def wait_maintenance(
+        job_id: UUID,
+        user: User,
+        timeout_seconds: float = Query(default=30, ge=0, le=60, allow_inf_nan=False),
+    ):
+        return await maintenance.wait(user, job_id, wait_seconds=timeout_seconds)
+
+    @app.post("/v1/maintenance/jobs/{job_id}/cancel", response_model=MaintenanceReceipt)
+    async def cancel_maintenance(job_id: UUID, user: User):
+        return await maintenance.cancel(user, job_id)
+
+    @app.get("/v1/maintenance/artifacts/{artifact_id}", response_model=ArtifactReceipt)
+    def maintenance_artifact(artifact_id: UUID, user: User):
+        return context_archive.artifact(user, artifact_id)
 
     def is_ready():
         if not app.state.started or any(task.done() for task in app.state.workers):

@@ -1,5 +1,6 @@
 """Typed HTTP client. All agents use the daemon rather than opening its files."""
 
+import math
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
@@ -8,9 +9,11 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .context_models import ArtifactReceipt, ContextBundle, ContextBundleInput, ContextBundleReceipt
 from .errors import Conflict, NotFound
 from .identity_names import CreateIdentity, IdentityKind, NamedIdentity, UpdateIdentity
 from .lifecycle import LifecycleRequest, RetentionRequest
+from .maintenance_models import MaintenanceReceipt, MaintenanceRequest
 from .models import (
     AgentContext,
     BindContext,
@@ -32,6 +35,7 @@ from .models import (
 from .mounts import MountView
 from .operations import BackupRequest
 from .outbox import Delivery, RoutedPublication, RouterSearch
+from .thread_models import CreateThread, Thread
 
 
 class DelegationResult(BaseModel):
@@ -70,6 +74,107 @@ class Client:
         response = self.http.request(method, path, **kwargs)
         response.raise_for_status()
         return None if response.status_code == 204 else response.json()
+
+    def create_thread(self, body: CreateThread) -> Thread:
+        """Create a private thread; an operation ID makes identical retries safe."""
+        return Thread.model_validate(
+            self.request("POST", "/v1/threads", json=body.model_dump(mode="json"))
+        )
+
+    def threads(
+        self, *, world_id: str | None = None, include_expired: bool = False
+    ) -> list[Thread]:
+        """Discover only threads accessible to the current live credential."""
+        params = {}
+        if world_id is not None:
+            params["world_id"] = world_id
+        if include_expired:
+            params["include_expired"] = "true"
+        return [
+            Thread.model_validate(item)
+            for item in self.request("GET", "/v1/threads", params=params)
+        ]
+
+    def thread(self, thread_id: UUID | str) -> Thread:
+        selected = UUID(str(thread_id))
+        result = Thread.model_validate(self.request("GET", f"/v1/threads/{selected}"))
+        if result.id != selected:
+            raise ValueError("Thread response does not match the selection")
+        return result
+
+    def archive_context(
+        self, thread_id: UUID | str, body: ContextBundleInput
+    ) -> ContextBundleReceipt:
+        """Durably archive typed context before any caller removes it from active context."""
+        selected = UUID(str(thread_id))
+        result = ContextBundleReceipt.model_validate(
+            self.request(
+                "POST", f"/v1/threads/{selected}/bundles", json=body.model_dump(mode="json")
+            )
+        )
+        if result.thread_id != selected:
+            raise ValueError("Context archive response does not match the selected thread")
+        return result
+
+    def context_bundle(self, thread_id: UUID | str, bundle_id: UUID | str) -> ContextBundle:
+        selected_thread, selected_bundle = UUID(str(thread_id)), UUID(str(bundle_id))
+        result = ContextBundle.model_validate(
+            self.request("GET", f"/v1/threads/{selected_thread}/bundles/{selected_bundle}")
+        )
+        if result.thread_id != selected_thread or result.bundle_id != selected_bundle:
+            raise ValueError("Context recovery response does not match the selected bundle")
+        return result
+
+    def maintenance_artifact(self, artifact_id: UUID | str) -> ArtifactReceipt:
+        selected = UUID(str(artifact_id))
+        result = ArtifactReceipt.model_validate(
+            self.request("GET", f"/v1/maintenance/artifacts/{selected}")
+        )
+        if result.artifact_id != selected:
+            raise ValueError("Artifact response does not match the selection")
+        return result
+
+    def submit_maintenance(self, body: MaintenanceRequest) -> MaintenanceReceipt:
+        """Submit explicit work using an operator-defined model profile."""
+        return MaintenanceReceipt.model_validate(
+            self.request("POST", "/v1/maintenance/jobs", json=body.model_dump(mode="json"))
+        )
+
+    def maintenance_jobs(self) -> list[MaintenanceReceipt]:
+        return [
+            MaintenanceReceipt.model_validate(item)
+            for item in self.request("GET", "/v1/maintenance/jobs")
+        ]
+
+    def maintenance_job(self, job_id: UUID | str) -> MaintenanceReceipt:
+        return MaintenanceReceipt.model_validate(
+            self.request("GET", f"/v1/maintenance/jobs/{UUID(str(job_id))}")
+        )
+
+    def wait_maintenance(
+        self, job_id: UUID | str, *, timeout_seconds: float = 30
+    ) -> MaintenanceReceipt:
+        """Bounded synchronous wait; timing out leaves the durable job intact."""
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or not 0 <= timeout_seconds <= 60
+        ):
+            raise ValueError("timeout must be a finite number from 0 to 60 seconds")
+        return MaintenanceReceipt.model_validate(
+            self.request(
+                "POST",
+                f"/v1/maintenance/jobs/{UUID(str(job_id))}/wait",
+                params={"timeout_seconds": timeout_seconds},
+                timeout=timeout_seconds + 5,
+            )
+        )
+
+    def cancel_maintenance(self, job_id: UUID | str) -> MaintenanceReceipt:
+        return MaintenanceReceipt.model_validate(
+            self.request("POST", f"/v1/maintenance/jobs/{UUID(str(job_id))}/cancel")
+        )
 
     def worlds(self) -> list[World]:
         return [World.model_validate(w) for w in self.request("GET", "/v1/worlds")]

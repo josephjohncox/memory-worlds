@@ -27,7 +27,7 @@ repository must preserve.
   Graphiti APIs. This does not require emulating historical Memory Worlds APIs
   or maintaining a separate compatibility subsystem.
 - Every memory belongs to a world and a UUID scope. World-shared, run-shared,
-  agent-persistent, and invocation-private are distinct audiences. UUIDs are
+  agent-persistent, thread-private, and invocation-private are distinct audiences. UUIDs are
   identifiers; live delegated credentials and grants authorize access.
 - Keep read selection separate from the write destination. Parent and sibling
   agents receive no implicit access to invocation-private memory. Broader
@@ -39,6 +39,11 @@ repository must preserve.
   Graphiti performs graph extraction
   and retrieval in isolated scope namespaces. Verify these boundaries with
   meaningful current-contract tests.
+- Archive typed context durably before replacing active context. A bundle receipt
+  covers only its declared entries and omissions; it does not prove complete
+  conversation coverage or authorize compaction by itself. Derived artifacts
+  retain same-scope, digest-qualified dependency closure on every source path,
+  including portable restore. Model summaries remain tentative.
 
 ## Repository hygiene
 

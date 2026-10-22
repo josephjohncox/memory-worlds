@@ -49,13 +49,23 @@ metadata or references; referenced attachment bytes are not imported.
 
 ## What a portable archive preserves
 
-An archive contains a versioned manifest and checksummed source/audit records,
+An archive contains a versioned manifest and checksummed source, audit and dependency records,
 with sanitized model configuration and no service credentials or memberships.
 Restore preserves source identity and origin attribution while binding new
 records to the importing authority and user. Conflicts roll back the entire
 batch. Restoring an identical artifact again replays its imported records.
 Restore into a new world for an independent copy; an existing source with
 different provenance or projection intent is a conflict.
+
+Derived summaries and context sources retain their complete same-scope dependency
+graph. Restore maps original source IDs and digests to the new records; retracting
+or erasing an imported input also invalidates its imported derivatives. Archives
+with missing inputs, changed digests or incomplete dependency closure are rejected.
+
+Portable archives recover source evidence. They do not recreate thread revisions,
+context bundle receipts, maintenance jobs or active context bindings. Those
+identities remain attributed origin metadata. Use whole-authority backup to
+recover those processes and their receipts.
 
 Archives recover evidence. Re-extraction into Graphiti may produce different
 facts and entities; `.mworld` is not an exact graph-engine snapshot. Single-file

@@ -154,6 +154,13 @@ credentials remain in the runtime Secret. Use
 the [networking and router settings](reference/helm-values.md#shared-identity-router-and-ingress)
 to expose a TLS gateway and mount scoped remote credentials.
 
+### Maintenance workers
+
+Set `maintenance.existingSecret` to an existing Secret containing `maintenance.toml`
+and its model-key files. The chart stages a private, read-only copy before API
+startup; no maintenance model runs without an explicitly configured profile.
+Follow [profile delivery and rotation](reference/helm-values.md#maintenance-worker-profiles).
+
 ### Encrypted authority backups
 
 Configure the [artifact PVC, key Secret and optional CronJob](reference/helm-values.md#encrypted-authority-backups).
@@ -179,7 +186,8 @@ Neptune requires external AWS and OpenSearch infrastructure. See the
 Keep the release name, authority identity and installation values stable. Take
 an appropriate coordinated backup before upgrading, apply with
 `helm upgrade --install ... --values FILE --wait`, then run `helm test`.
-Organization ConfigMap changes, environment Secret changes and single-file `subPath` key/CA rotations require an
+Organization ConfigMap changes, environment Secret changes, staged maintenance
+configuration/key changes and single-file `subPath` key/CA rotations require an
 explicit StatefulSet or Deployment rollout. Coordinate graph password rotation
 between API and graph workloads.
 

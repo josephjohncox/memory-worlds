@@ -72,7 +72,7 @@ def check_pod(pod: dict) -> None:
     assert pod["automountServiceAccountToken"] is False
     assert pod["securityContext"]["runAsNonRoot"] is True
     assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
-    for container in pod["containers"]:
+    for container in pod["containers"] + pod.get("initContainers", []):
         security = container["securityContext"]
         assert security["readOnlyRootFilesystem"] is True
         assert security["allowPrivilegeEscalation"] is False
@@ -117,10 +117,13 @@ def check_objects(objects: list[dict], release: str) -> None:
     for volume in api["volumes"]:
         if "secret" in volume:
             assert volume["secret"]["defaultMode"] == 0o440
-            mount = next(
-                mount for mount in container["volumeMounts"] if mount["name"] == volume["name"]
-            )
-            assert mount["readOnly"] is True
+            mounts = [
+                mount
+                for item in api["containers"] + api.get("initContainers", [])
+                for mount in item["volumeMounts"]
+                if mount["name"] == volume["name"]
+            ]
+            assert mounts and all(mount["readOnly"] is True for mount in mounts)
     test = component(objects, "Pod", "test")
     assert test["metadata"]["annotations"]["helm.sh/hook"] == "test"
     assert test["spec"]["automountServiceAccountToken"] is False
@@ -187,6 +190,37 @@ def check_operations(objects: list[dict]) -> None:
     )
 
 
+def check_maintenance(objects: list[dict]) -> None:
+    pod = api_workload(objects)["spec"]["template"]["spec"]
+    api = pod["containers"][0]
+    (init,) = pod["initContainers"]
+    assert init["name"] == "maintenance-config"
+    assert init["image"] == api["image"]
+    assert init["command"] == ["python", "-c"]
+    assert init["args"][1:] == ["/var/run/secrets/memory-worlds-maintenance", "/run/memory-worlds"]
+    assert not init.get("env") and not init.get("envFrom")
+    compile(init["args"][0], "<rendered-maintenance-staging>", "exec")
+    environment = {item["name"]: item for item in api["env"]}
+    assert environment["MEMORY_WORLDS_MAINTENANCE_CONFIG"]["value"] == (
+        "/run/memory-worlds/maintenance/maintenance.toml"
+    )
+    volumes = {item["name"]: item for item in pod["volumes"]}
+    assert volumes["maintenance-source"]["secret"] == {
+        "secretName": "synthetic-maintenance",
+        "defaultMode": 0o440,
+    }
+    assert volumes["maintenance-runtime"]["emptyDir"] == {
+        "medium": "Memory",
+        "sizeLimit": "4Mi",
+    }
+    main_mounts = {item["name"]: item for item in api["volumeMounts"]}
+    init_mounts = {item["name"]: item for item in init["volumeMounts"]}
+    assert "maintenance-source" not in main_mounts
+    assert main_mounts["maintenance-runtime"]["readOnly"] is True
+    assert init_mounts["maintenance-source"]["readOnly"] is True
+    assert not init_mounts["maintenance-runtime"].get("readOnly", False)
+
+
 def validate(helm: str) -> dict:
     run(helm, "lint", "--strict", str(CHART), "--set", "runtime.existingSecret=synthetic-runtime")
     profiles = [
@@ -199,6 +233,7 @@ def validate(helm: str) -> dict:
         "postgres",
         "operations",
         "organization",
+        "maintenance",
     ]
     for profile in profiles:
         objects = render(helm, profile=profile)
@@ -242,6 +277,12 @@ def validate(helm: str) -> dict:
             assert database["value"] == "" and env["MEMORY_WORLDS_AUTHORITY_ID"] == ""
         if profile == "operations":
             check_operations(objects)
+        if profile == "maintenance":
+            check_maintenance(objects)
+        else:
+            assert "MEMORY_WORLDS_MAINTENANCE_CONFIG" not in env
+            assert not pod.get("initContainers")
+            assert not any(item["name"].startswith("maintenance-") for item in pod["volumes"])
         if profile == "postgres":
             assert env["PGSSLROOTCERT"] == "/secrets/postgres/ca.pem"
             ca = next(
@@ -329,6 +370,8 @@ def validate(helm: str) -> dict:
             "falkordb.persistence.existingClaim=synthetic-shared-pvc",
         ],
         ["unknownSetting=true"],
+        ["maintenance.existingSecret=Bad_Name"],
+        ["maintenance.inlineConfig=unsupported"],
         ["organization.existingConfigMap=Bad_Name"],
         ["organization.existingConfigMap=bad..name"],
         ["organization.existingConfigMap=-bad"],

@@ -1,0 +1,24 @@
+# Copy to a private file, mode 0600. Do not place actual keys in this TOML.
+# Set MEMORY_WORLDS_MAINTENANCE_CONFIG to its absolute path before daemon startup.
+[maintenance]
+default_profile = "lightweight"
+poll_seconds = 1.0
+
+[maintenance.profiles.lightweight]
+provider = "openai-compatible"
+route = "luna"
+# Replace these with an explicitly approved endpoint and actual model/route ID.
+endpoint = "https://models.example.test/v1"
+model = "replace-with-your-configured-luna-model-id"
+# Absolute protected regular file, mode 0600, containing only the provider key.
+api_key_file = "/absolute/private/keys/maintenance-model.key"
+max_input_tokens = 12000
+max_output_tokens = 1600
+timeout_seconds = 45.0
+max_attempts = 2
+max_concurrent_jobs = 2
+# Conservative daily admission reservations, not exact tokenizer/provider billing.
+daily_token_budget = 100000
+# Empty lists permit any caller/input already authorized by the authority.
+allowed_user_ids = []
+allowed_world_ids = []

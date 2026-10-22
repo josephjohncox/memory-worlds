@@ -1,4 +1,4 @@
-import { scopeKey, type MemoryWorldsClient, type ScopeSelection, type SearchHit } from "./client.js";
+import { isPrivateScope, scopeKey, type MemoryWorldsClient, type ScopeSelection, type SearchHit } from "./client.js";
 
 /** Native graph actions; project/global aliases are explicit capability bindings. */
 export interface GraphArguments {
@@ -53,7 +53,7 @@ export async function executeGraph(
   if (selected === "both" || scopes.length !== 1) throw new Error("Graph add requires exactly one destination");
   if (!bindings.writeScope || scopeKey(bindings.writeScope) !== scopeKey(scopes[0]!)) throw new Error("Graph add requires the configured private capture target; use explicit publication for shared scopes");
   const target = await client.scope(scopes[0]!, signal);
-  if (!["agent-persistent", "invocation-private"].includes(target.kind)) throw new Error("Graph add requires a private agent or invocation scope");
+  if (!isPrivateScope(target.kind)) throw new Error("Graph add requires a private agent, thread or invocation scope");
   if (!input.content?.trim() || input.content.length > 200000) throw new Error("Graph add requires content of 1..200000 characters");
   if (input.source === "json") { try { JSON.parse(input.content); } catch { throw new Error("Graph JSON source must contain valid JSON"); } }
   const receipt = await client.captureScope(scopes[0]!, {

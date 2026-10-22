@@ -89,7 +89,7 @@ test("a search result from an unselected scope fails closed", async t => {
   await assert.rejects(f.tools.memory_search.execute({ query: "Evidence", mode: "source" }, context()), /unselected scope/);
 });
 
-for (const kind of ["agent-persistent", "invocation-private"]) test(`explicit capture accepts ${kind} and adds SDK attribution`, async t => {
+for (const kind of ["agent-persistent", "thread-private", "invocation-private"]) test(`explicit capture accepts ${kind} and adds SDK attribution`, async t => {
   const f = await fixture(t, ({ path, body }) => {
     if (!path.endsWith("/episodes")) return json({ ...worldScope, kind });
     assert.equal(path, `/v1/worlds/${selected.world_id}/scopes/${scopeId}/episodes`);
@@ -111,7 +111,7 @@ for (const kind of ["agent-persistent", "invocation-private"]) test(`explicit ca
 
 for (const kind of ["world-shared", "run-shared"]) test(`private capture rejects ${kind} before a write`, async t => {
   const f = await fixture(t, () => json({ ...worldScope, kind }));
-  await assert.rejects(f.tools.memory_capture_private.execute(args, context()), /agent-persistent or invocation-private/);
+  await assert.rejects(f.tools.memory_capture_private.execute(args, context()), /agent-persistent, thread-private or invocation-private/);
   assert.ok(f.calls.every(call => call.options.method === "GET"));
 });
 
