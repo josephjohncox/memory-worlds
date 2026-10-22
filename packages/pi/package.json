@@ -55,6 +55,7 @@
     "smoke": "npm run build && node test/runtime-smoke.mjs",
     "smoke:service": "npm run build && node test/real-service-smoke.mjs",
     "smoke:sharing": "npm run build && node test/sharing-service-smoke.mjs",
+    "startup:audit": "node test/startup-audit.mjs",
     "prepack": "npm run build"
   },
   "dependencies": {

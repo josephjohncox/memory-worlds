@@ -80,6 +80,8 @@ try {
   const commands = await command({ type: "get_commands" });
   assert.equal(commands.success, true, JSON.stringify(commands));
   assert(commands.data.commands.some(command => command.name === "memory"), "Native /memory command must load in Pi");
+  assert(messages.some(message => message.type === "extension_ui_request" && message.method === "setStatus" && message.statusKey === "memory-worlds" && message.statusText?.includes("memory: online")), "Memory indicator must use Pi's bottom status bar");
+  assert(!messages.some(message => message.type === "extension_ui_request" && message.method === "setWidget" && message.widgetLines?.length), "Memory must not render a widget above the input");
   assert.equal((await command({ type: "prompt", message: "/memory status" })).success, true);
   assert.equal((await command({ type: "prompt", message: "/memory capture native-runtime-fixture" })).success, true);
   assert.equal(captured.length, 1);
@@ -100,7 +102,7 @@ try {
   assert(!JSON.stringify(messages).includes(token), "Credential must not appear in Pi session/RPC events");
   child.kill("SIGTERM");
   await once(child, "exit"); child = undefined;
-  console.log("Pi 1.3.0 runtime smoke passed: package loading, commands, widgets, authenticated capture/search/publication, immutable publication retry, session metadata, shutdown.");
+  console.log("Pi 1.3.0 runtime smoke passed: package loading, commands, bottom status bar, authenticated capture/search/publication, immutable publication retry, session metadata, shutdown.");
 } finally {
   child?.kill("SIGKILL");
   daemon.close();

@@ -143,9 +143,14 @@ branches, compaction and reload; changing selections cannot erase it.
 
 ## Commands and tools
 
-`/memory` opens a selector in interactive Pi. The footer and widget show connectivity,
-read scopes, capture policy and pending deliveries. Expand evidence messages to
-inspect authority/world/scope/source attribution.
+`/memory` opens a selector in interactive Pi. A compact bottom status bar shows
+connectivity, capture policy, exposure warnings and sharing mode. Use
+`/memory status` for read scopes, the write target, classifier and pending
+deliveries. Expand evidence messages to inspect authority/world/scope/source
+attribution.
+
+See the [startup audit](pi-startup.md) for measurements and a reproducible
+`mise run pi:startup:audit` command.
 
 | Command | Behavior |
 | --- | --- |

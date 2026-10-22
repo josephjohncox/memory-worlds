@@ -17,7 +17,7 @@ function message(id, parentId, text, role = "user") {
 }
 function fixture(configOverrides = {}, dependencies = {}) {
   const hooks = new Map(), tools = new Map(), commands = new Map(), renderers = new Map();
-  const entries = [], notices = [], captures = [], publications = [], widgets = new Map();
+  const entries = [], notices = [], captures = [], publications = [], widgets = new Map(), uiCalls = [];
   let branch = entries;
   let generated = 0;
   const pi = {
@@ -27,7 +27,7 @@ function fixture(configOverrides = {}, dependencies = {}) {
   };
   const ctx = {
     signal: undefined, hasUI: false, mode: "print", cwd: "/tmp",
-    ui: { notify: (text, type) => notices.push({ text, type }), setStatus: (key, value) => widgets.set(key, value), setWidget: (key, value) => widgets.set(key + ":widget", value) },
+    ui: { notify: (text, type) => notices.push({ text, type }), setStatus: (key, value) => { uiCalls.push({ method: "setStatus", key, value }); widgets.set(key, value); }, setWidget: (key, value) => { uiCalls.push({ method: "setWidget", key, value }); widgets.set(key + ":widget", value); } },
     sessionManager: { getSessionId: () => "session", getLeafId: () => branch.at(-1)?.id ?? null, getBranch: () => [...branch], getEntries: () => [...entries], getHeader: () => ({}) },
   };
   const client = {
@@ -48,7 +48,7 @@ function fixture(configOverrides = {}, dependencies = {}) {
   };
   const config = parseConfig({ writeScope: { world_id: "private", scope_id: privateScope }, readScopes: [{ world_id: "private", scope_id: privateScope }], ...configOverrides }, {});
   registerMemoryWorlds(pi, { config: async () => config, client: () => client, ...dependencies });
-  return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
+  return { pi, hooks, tools, commands, ctx, client, entries, captures, publications, notices, widgets, uiCalls, setBranch: value => { branch = value; }, run: (event, value = {}) => hooks.get(event)({ type: event, ...value }, ctx), command: args => commands.get("memory").handler(args, ctx) };
 }
 
 function usabilityClient(f) {
@@ -67,6 +67,42 @@ function usabilityClient(f) {
   };
   return f;
 }
+
+test("startup uses only the compact footer and leaves display discovery for explicit status", async () => {
+  const f = fixture();
+  f.client.worlds = async () => assert.fail("startup must not fetch display worlds");
+  f.client.deliveries = async () => assert.fail("startup must not fetch delivery counts");
+  await f.run("session_start", { reason: "startup" });
+  assert.deepEqual(f.uiCalls[1], { method: "setStatus", key: "memory-worlds", value: "memory: connecting" });
+  assert.equal(f.widgets.get("memory-worlds"), "memory: online • capture off • sharing private");
+  assert.equal(f.widgets.get("memory-worlds:widget"), undefined);
+  let worlds = 0, deliveries = 0;
+  f.client.worlds = async () => { worlds++; return [world]; };
+  f.client.deliveries = async () => { deliveries++; return [{ state: "pending" }]; };
+  await f.command("status");
+  const detail = JSON.parse(f.notices.at(-1).text);
+  assert.deepEqual(detail.readScopes, [{ world_id: "private", scope_id: privateScope }]);
+  assert.equal(detail.pendingDeliveries, 1);
+  assert.equal(worlds, 1); assert.equal(deliveries, 1);
+  f.client.scopes = async () => { throw new Error("synthetic status failure"); };
+  await f.command("read unavailable");
+  assert.match(f.widgets.get("memory-worlds"), /memory: offline/);
+  assert(!f.uiCalls.some(call => call.method === "setWidget" && call.value !== undefined));
+  await f.run("session_shutdown", { reason: "reload" });
+  assert.equal(f.widgets.get("memory-worlds"), undefined);
+});
+
+test("startup coalesces identical read write and graph aliases without caching later operations", async () => {
+  const alias = { world_id: "@personal", scope_id: "@notes" };
+  const f = usabilityClient(fixture({ readScopes: [alias], writeScope: alias, graphAliases: { project: alias, global: alias } }));
+  const resolve = f.client.resolveSelection.bind(f.client); let resolutions = 0;
+  f.client.resolveSelection = async (...args) => { resolutions++; return resolve(...args); };
+  await f.run("session_start", { reason: "startup" });
+  assert.equal(resolutions, 1);
+  assert(!f.notices.some(notice => notice.type === "error"));
+  await f.command("target @personal @notes");
+  assert.equal(resolutions, 2);
+});
 
 test("configured and command aliases resolve live and persist only canonical scope selections", async () => {
   const f = usabilityClient(fixture({ readScopes: [{ world_id: "@personal", scope_id: "@notes" }], writeScope: { world_id: "@personal", scope_id: "@notes" } }));
@@ -407,7 +443,7 @@ test("an in-memory fork preserves foreign exposure and cannot clear unknown expo
   // A genuinely new independent session does not inherit the previous session.
   f.entries.splice(0, f.entries.length);
   await f.run("session_start", { reason: "new" });
-  assert.match(f.widgets.get("memory-worlds"), /capture → private/);
+  assert.match(f.widgets.get("memory-worlds"), /capture on/);
   assert(!f.widgets.get("memory-worlds").includes("exposure unknown"));
 });
 

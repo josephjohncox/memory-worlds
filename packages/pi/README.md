@@ -81,12 +81,16 @@ scope that your credential can write. Reading a scope never selects a write
 destination. `/memory capture on` enables future user/assistant capture after
 the service checks the audience; `/memory capture off` stops it.
 
-`/memory` opens the interactive selector. The footer shows reads, capture policy
-and pending deliveries; evidence messages retain authority, scope and source
-references. `/memory source QUERY` searches durable records explicitly.
+`/memory` opens the interactive selector. The bottom status bar shows connectivity,
+capture policy, exposure warnings and sharing mode. Use `/memory status` for
+scopes, the write target and pending deliveries. Evidence messages retain
+authority, scope and source references. `/memory source QUERY` searches durable
+records explicitly.
 
 ## Go deeper
 
+- [Startup audit](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/pi-startup.md):
+  measure isolated Pi startup and memory-service latency with synthetic fixtures.
 - [Pi reference](https://github.com/josephjohncox/memory-worlds/blob/main/docs/reference/pi.md):
   configuration, `/memory` and `/graph` commands, offline spool and native SDK.
 - [Agent and subagent scopes](https://github.com/josephjohncox/memory-worlds/blob/main/docs/scopes.md):

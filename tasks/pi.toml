@@ -31,3 +31,9 @@ description = "Build and package the native Pi extension; npm pack arguments are
 depends = ["pi:deps"]
 raw_args = true
 run = "npm pack ./packages/pi"
+
+["pi:startup:audit"]
+description = "Measure isolated Pi startup against synthetic memory HTTP, without model requests"
+depends = ["pi:build"]
+raw_args = true
+run = "node packages/pi/test/startup-audit.mjs"

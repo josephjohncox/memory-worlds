@@ -116,16 +116,11 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
   const save = () => { if (state) pi.appendEntry(STATE_TYPE, { ...structuredClone(state), exposureUnknown }); };
   const paint = (ctx: ExtensionContext) => {
     if (!state) { ctx.ui.setStatus("memory-worlds", "memory: unavailable"); return; }
-    const capture = state.captureEnabled ? `capture → ${state.writeScope ? scopeKey(state.writeScope) : "unselected"}` : "capture off";
+    const capture = state.captureEnabled ? "capture on" : "capture off";
     const mixed = exposureUnknown ? " • exposure unknown" : state.exposedAuthorities.length > 1 ? " • mixed authorities" : state.captureScopeKey && (state.exposedScopes ?? []).some(key => !(state!.captureSafeScopeKeys ?? [state!.captureScopeKey]).includes(key)) ? " • private scope exposure" : "";
     const sharingState = chatSharing?.summary();
     const sharing = ` • sharing ${sharingState?.mode ?? "private"}${sharingState?.status === "paused" ? " paused" : ""}`;
     ctx.ui.setStatus("memory-worlds", cleanTerminal(`memory: ${connectivity} • ${capture}${mixed}${sharing}`));
-    ctx.ui.setWidget("memory-worlds", [
-      cleanTerminal(`Memory Worlds  ${connectivity}  ${capture}${mixed}${sharing}`),
-      cleanTerminal(`Read: ${state.readScopes.map(scopeKey).join(", ") || "none"} | Mounts: ${state.readMountIds.join(", ") || "none"} | Deliveries pending: ${pending ?? "unknown"}`),
-      ...(sharingState?.mode !== "private" && sharingState?.classifier ? [cleanTerminal(`Sharing classifier: ${sharingState.classifier.provider}/${sharingState.classifier.model} | Proposals pending: ${sharingState.pending}`)] : []),
-    ]);
   };
   const verifyFlow = async (ctx: ExtensionContext, extra: string[] = []): Promise<boolean> => {
     const { client, state } = ready();
@@ -254,13 +249,28 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
     const previousScopes = [...(state?.exposedScopes ?? [])];
     lifecycle.abort(); lifecycle = new AbortController();
     client = undefined; spool = undefined; state = undefined; inherited = []; inheritedScopes = []; exposureUnknown = false; pending = undefined;
+    connectivity = "connecting";
+    ctx.ui.setWidget("memory-worlds", undefined);
+    ctx.ui.setStatus("memory-worlds", "memory: connecting");
     try {
       config = await (dependencies.config ?? loadConfig)();
       spool = config.spoolDirectory ? new MemorySpool(config.spoolDirectory) : undefined;
       lastReviewTurn = -3;
       client = dependencies.client?.(config) ?? new MemoryWorldsClient(config.url, () => readTokenFile(config!.tokenFile));
-      const resolveConfigured = async (selected: ScopeSelection | undefined) => selected && (selected.world_id.startsWith("@") || selected.scope_id.startsWith("@")) ? client!.resolveSelection(selected.world_id, selected.scope_id, signal(ctx)) : selected;
-      config = { ...config, readScopes: await Promise.all(config.readScopes.map(async selected => (await resolveConfigured(selected))!)), writeScope: await resolveConfigured(config.writeScope), graphAliases: { project: await resolveConfigured(config.graphAliases.project), global: await resolveConfigured(config.graphAliases.global) } };
+      // Coalesce identical aliases for this startup only. Operations still use
+      // live authorization; this is not a session-wide discovery cache.
+      const selections = new Map<string, Promise<ScopeSelection>>();
+      const resolveConfigured = async (selected: ScopeSelection | undefined) => {
+        if (!selected || !selected.world_id.startsWith("@") && !selected.scope_id.startsWith("@")) return selected;
+        const key = scopeKey(selected);
+        if (!selections.has(key)) selections.set(key, client!.resolveSelection(selected.world_id, selected.scope_id, signal(ctx)));
+        return selections.get(key)!;
+      };
+      const [readScopes, writeScope, project, global] = await Promise.all([
+        Promise.all(config.readScopes.map(async selected => (await resolveConfigured(selected))!)),
+        resolveConfigured(config.writeScope), resolveConfigured(config.graphAliases.project), resolveConfigured(config.graphAliases.global),
+      ]);
+      config = { ...config, readScopes, writeScope, graphAliases: { project, global } };
       const parent = event.reason === "fork" ? event.previousSessionFile : ctx.sessionManager.getHeader()?.parentSession;
       try { const parentState = await parentExposure(parent); inherited = parentState.authorities; inheritedScopes = parentState.scopes; } catch { exposureUnknown = true; }
       if (event.reason === "fork") {
@@ -277,9 +287,10 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       // capture window at the fork leaf, so copied ancestors are not re-ingested
       // under the new session's source IDs.
       if (event.reason === "fork") { state.captureAfterId = ctx.sessionManager.getLeafId(); state.boundContext = undefined; state.captureBinding = undefined; }
+      const [identity, named] = await Promise.all([
+        client.identity(signal(ctx)), config.agent ? client.resolveIdentity("agent", config.agent, signal(ctx)) : undefined,
+      ]);
       if (state.boundContext || spool || state.readScopes?.length || state.writeScope || config.agent) {
-        const identity = await client.identity(signal(ctx));
-        const named = config.agent ? await client.resolveIdentity("agent", config.agent, signal(ctx)) : undefined;
         if (named && (named.owner_id !== identity.user_id || identity.agent_uuid && named.id !== identity.agent_uuid)) throw new CommandError("Configured agent identity does not belong to this credential");
         const selectedAgent = identity.agent_uuid ?? named?.id;
         if (selectedAgent && selectedAgent !== state.agentUuid) {
@@ -298,7 +309,6 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       }
       if (exposureUnknown || scopeUnsafe()) state.captureEnabled = false;
       if (spool && state.captureAuthority && !state.captureBinding) {
-        const identity = await client.identity(signal(ctx));
         state.captureBinding = { serviceUrl: client.url, authorityId: identity.authority_id, credentialId: identity.credential_id };
       }
       if ((state.readScopes?.length || state.writeScope) && !state.boundContext) {
@@ -306,7 +316,10 @@ export function registerMemoryWorlds(pi: ExtensionAPI, dependencies: ExtensionDe
       }
       save();
       await chatSharing!.restore(ctx, event.reason === "fork");
-      await status(ctx);
+      // Context and policy checks above gate readiness. Rich discovery and
+      // delivery counts are fetched on explicit /memory status, not startup.
+      connectivity = "online";
+      paint(ctx);
     } catch (error) { chatSharing!.stop(ctx); if (state) { state.captureEnabled = false; save(); } report(ctx, error); }
   });
 
