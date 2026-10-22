@@ -49,3 +49,7 @@ receipts.
 Design documents and implementation plans are retained under
 [specifications](superpowers/specs/) and [plans](superpowers/plans/). They record
 decisions and proposals; the task guides describe the current implementation.
+
+The [memory maintenance and context proposal](proposals/memory-maintenance.md)
+describes selectable workers, enrichment, safe compaction and retention. It is a
+design for review, not an implemented feature.
